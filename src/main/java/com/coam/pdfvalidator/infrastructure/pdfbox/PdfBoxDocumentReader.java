@@ -13,8 +13,9 @@ import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSFloat;
+import org.apache.pdfbox.cos.COSInteger;
 import org.apache.pdfbox.cos.COSName;
-import org.apache.pdfbox.cos.COSNumber;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentCatalog;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -49,7 +50,6 @@ import java.util.regex.Pattern;
 public class PdfBoxDocumentReader implements PdfDocumentReader {
 
     private static final Pattern HEADER_VERSION = Pattern.compile("%PDF-(\\d\\.\\d)");
-    private static final byte[] EOF_MARKER = "%%EOF".getBytes(StandardCharsets.US_ASCII);
     private static final int HEADER_SEARCH_WINDOW = 1024;
 
     @Override
@@ -156,14 +156,56 @@ public class PdfBoxDocumentReader implements PdfDocumentReader {
         // a /Rotate set on an ancestor /Pages node) while still letting us see
         // and report the true raw value.
         COSBase rawRotate = PDPageTree.getInheritableAttribute(page.getCOSObject(), COSName.ROTATE);
-        int rawRotation = (rawRotate instanceof COSNumber number1) ? number1.intValue() : 0;
-        Rotation rotation = Rotation.tryFromDegrees(rawRotation).orElse(Rotation.DEG_0);
+        int rawRotation = rawRotationAsInt(rawRotate);
+        boolean rotationValid = isValidRawRotation(rawRotate) && Rotation.tryFromDegrees(rawRotation).isPresent();
+        Rotation rotation = rotationValid ? Rotation.fromDegrees(rawRotation) : Rotation.DEG_0;
 
         Box mediaBox = toBox(page.getMediaBox());
         Box cropBox = toBox(page.getCropBox());
         Orientation orientation = Orientation.of(mediaBox, rotation);
 
-        return new PageInfo(number, rawRotation, rotation, mediaBox, cropBox, orientation);
+        return new PageInfo(number, rawRotation, rotationValid, rotation, mediaBox, cropBox, orientation);
+    }
+
+    /**
+     * Best-effort integer view of a raw {@code /Rotate} value, for reporting
+     * only. A missing entry (no {@code /Rotate}, {@code null}) defaults to 0;
+     * an integral {@code COSInteger} or {@code COSFloat} is truncated to its
+     * int value; anything else (a non-integral float, or a non-numeric
+     * object) also defaults to 0 here -- {@link #isValidRawRotation} is the
+     * one that actually flags those as invalid, so this truncation never
+     * silently hides them as if they were a valid multiple of 90.
+     */
+    private static int rawRotationAsInt(COSBase rawRotate) {
+        if (rawRotate instanceof COSInteger integer) {
+            return integer.intValue();
+        }
+        if (rawRotate instanceof COSFloat floatValue) {
+            return (int) floatValue.floatValue();
+        }
+        return 0;
+    }
+
+    /**
+     * Only a {@code COSInteger}, or a {@code COSFloat} with no fractional
+     * part (e.g. {@code 90.0}), is a trustworthy raw {@code /Rotate} value.
+     * A non-integral real (e.g. {@code 90.5}) or any other, non-numeric
+     * object is flagged invalid here -- never silently truncated into
+     * looking like a valid multiple of 90. A missing {@code /Rotate}
+     * ({@code null}) is valid: it simply means "not rotated" (0 degrees).
+     */
+    private static boolean isValidRawRotation(COSBase rawRotate) {
+        if (rawRotate == null) {
+            return true;
+        }
+        if (rawRotate instanceof COSInteger) {
+            return true;
+        }
+        if (rawRotate instanceof COSFloat floatValue) {
+            float value = floatValue.floatValue();
+            return value == Math.rint(value);
+        }
+        return false;
     }
 
     private static Box toBox(PDRectangle rectangle) {
@@ -171,46 +213,29 @@ public class PdfBoxDocumentReader implements PdfDocumentReader {
                 rectangle.getUpperRightX(), rectangle.getUpperRightY());
     }
 
+    /**
+     * Extracts the {@code %PDF-x.y} header version from the first bytes of
+     * the file, or {@code null} when no such header is found. A missing
+     * header does not abort the analysis: PDFBox (and real-world PDF
+     * readers generally) can often still parse a document whose header is
+     * missing, shifted, or otherwise non-conformant -- {@link #load} already
+     * succeeded by the time this is called, so the document itself is
+     * readable even though its declared version is unknown.
+     */
     private static String parseHeaderVersion(byte[] pdf) {
         String head = new String(pdf, 0, Math.min(pdf.length, HEADER_SEARCH_WINDOW), StandardCharsets.US_ASCII);
         Matcher matcher = HEADER_VERSION.matcher(head);
-        if (!matcher.find()) {
-            throw new InvalidPdfException(
-                    "PDF header '%PDF-x.y' not found in the first " + HEADER_SEARCH_WINDOW + " bytes");
-        }
-        return matcher.group(1);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     /**
-     * Counts incremental update sections by counting non-overlapping
-     * {@code %%EOF} markers in the raw bytes: one full save plus each
-     * subsequent incremental save appends its own trailer ending in
-     * {@code %%EOF}. This is a byte-level heuristic (a binary stream could
-     * coincidentally contain the same bytes), acceptable for this reader;
-     * falls back to 1 if, unexpectedly, no marker is found at all.
+     * Counts incremental-update revisions via {@link RevisionCounter}, which
+     * walks the cross-reference chain rather than naively counting
+     * {@code %%EOF} markers (see its Javadoc for why that over-reports
+     * linearized files).
      */
     private static int countRevisions(byte[] pdf) {
-        int count = 0;
-        int index = 0;
-        while ((index = indexOf(pdf, EOF_MARKER, index)) >= 0) {
-            count++;
-            index += EOF_MARKER.length;
-        }
-        return Math.max(count, 1);
-    }
-
-    private static int indexOf(byte[] haystack, byte[] needle, int fromIndex) {
-        int limit = haystack.length - needle.length;
-        outer:
-        for (int i = fromIndex; i <= limit; i++) {
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
-                }
-            }
-            return i;
-        }
-        return -1;
+        return RevisionCounter.count(pdf);
     }
 
     private static PDDocument load(byte[] pdf) {

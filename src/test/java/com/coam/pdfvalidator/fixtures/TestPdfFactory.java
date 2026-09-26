@@ -125,6 +125,35 @@ public final class TestPdfFactory {
     }
 
     /**
+     * A one-page PDF whose raw {@code /Rotate} entry is a non-integral
+     * {@code COSFloat} (e.g. {@code 90.5}): a value that, if merely
+     * truncated to an {@code int}, could misleadingly look like a valid
+     * multiple of 90 (e.g. {@code 90.9} truncates to {@code 90}).
+     */
+    public static byte[] rotatedWithNonIntegerValue(float rotation) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            page.getCOSObject().setItem(COSName.ROTATE, new org.apache.pdfbox.cos.COSFloat(rotation));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    /** A one-page PDF whose raw {@code /Rotate} entry is not a number at all (a PDF name). */
+    public static byte[] rotatedWithNonNumericValue() throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            page.getCOSObject().setItem(COSName.ROTATE, COSName.getPDFName("NotANumber"));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
      * A one-page PDF where {@code /Rotate} is set on the shared {@code
      * /Pages} node instead of on the page itself, so the page inherits it per
      * the PDF page-tree inheritance rules ({@link PDPageTree#getInheritableAttribute}).
@@ -245,6 +274,45 @@ public final class TestPdfFactory {
 
             PDMetadata metadata = new PDMetadata(document);
             metadata.importXMPMetadata(xmpBytes.toByteArray());
+            document.getDocumentCatalog().setMetadata(metadata);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * A valid, PDFBox-loadable PDF whose first bytes do not contain a
+     * {@code %PDF-x.y} header: the header bytes are overwritten in place
+     * with a same-length, non-matching prefix, so the total file length
+     * (and therefore every byte offset the xref table/trailer reference)
+     * stays unchanged. PDFBox is lenient about a missing header (it logs a
+     * warning and falls back to the catalog's declared version) rather than
+     * refusing to load the file, which is the behavior this fixture exists
+     * to exercise.
+     */
+    public static byte[] missingHeader() throws IOException {
+        byte[] pdf = unsigned();
+        byte[] patched = pdf.clone();
+        byte[] replacement = "NOTAPDF!".getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(replacement, 0, patched, 0, replacement.length);
+        return patched;
+    }
+
+    /**
+     * A PDF whose XMP metadata stream contains bytes that are not
+     * well-formed XML, so parsing it as XMP fails. Exercises the reader's
+     * fallback to {@code PdfaDeclaration.NONE} for malformed (as opposed to
+     * merely absent) metadata.
+     */
+    public static byte[] malformedXmpMetadata() throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+
+            PDMetadata metadata = new PDMetadata(document);
+            metadata.importXMPMetadata("this is not well-formed XML <<<".getBytes(StandardCharsets.UTF_8));
             document.getDocumentCatalog().setMetadata(metadata);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();

@@ -19,7 +19,7 @@ class DefensiveCopyTest {
     @Test
     void documentStructureCopiesItsPagesList() {
         Box box = new Box(0, 0, 100, 100);
-        PageInfo page = new PageInfo(1, 0, Rotation.DEG_0, box, box, Orientation.SQUARE);
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, box, box, Orientation.SQUARE);
         List<PageInfo> mutablePages = new ArrayList<>(List.of(page));
 
         DocumentStructure structure = new DocumentStructure("1.7", null, 1, mutablePages, 1);

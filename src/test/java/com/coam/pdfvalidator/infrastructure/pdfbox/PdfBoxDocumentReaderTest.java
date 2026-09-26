@@ -32,6 +32,19 @@ class PdfBoxDocumentReaderTest {
     }
 
     @Test
+    void aMissingHeaderIsReportedAsUnknownRatherThanAborting() throws Exception {
+        byte[] pdf = TestPdfFactory.missingHeader();
+
+        DocumentStructure structure = reader.readStructure(pdf);
+
+        assertThat(structure.headerVersion())
+                .as("PDFBox can still load a document with no recognizable %PDF- header; "
+                        + "the reader must not abort just because its own regex found nothing")
+                .isNull();
+        assertThat(structure.pageCount()).isEqualTo(1);
+    }
+
+    @Test
     void readsThePageCount() throws Exception {
         byte[] pdf = TestPdfFactory.unsignedMultiPage(4);
 
@@ -67,6 +80,39 @@ class PdfBoxDocumentReaderTest {
         assertThat(page.rotationValid()).isFalse();
         assertThat(page.rotation()).as("invalid /Rotate is treated as 0 for orientation purposes")
                 .isEqualTo(Rotation.DEG_0);
+    }
+
+    @Test
+    void aNonIntegralRawRotationIsFlaggedInvalidEvenWhenTruncationWouldLookLikeAMultipleOfNinety()
+            throws Exception {
+        byte[] pdf = TestPdfFactory.rotatedWithNonIntegerValue(90.9f);
+
+        PageInfo page = reader.readStructure(pdf).pages().get(0);
+
+        assertThat(page.rotationValid())
+                .as("90.9 truncates to 90 (a multiple of 90), but the raw value itself is not integral")
+                .isFalse();
+        assertThat(page.rotation()).isEqualTo(Rotation.DEG_0);
+    }
+
+    @Test
+    void anIntegralFloatRawRotationIsValid() throws Exception {
+        byte[] pdf = TestPdfFactory.rotatedWithNonIntegerValue(180.0f);
+
+        PageInfo page = reader.readStructure(pdf).pages().get(0);
+
+        assertThat(page.rotationValid()).isTrue();
+        assertThat(page.rotation()).isEqualTo(Rotation.DEG_180);
+    }
+
+    @Test
+    void aNonNumericRawRotationIsFlaggedInvalid() throws Exception {
+        byte[] pdf = TestPdfFactory.rotatedWithNonNumericValue();
+
+        PageInfo page = reader.readStructure(pdf).pages().get(0);
+
+        assertThat(page.rotationValid()).isFalse();
+        assertThat(page.rotation()).isEqualTo(Rotation.DEG_0);
     }
 
     @Test
@@ -183,6 +229,15 @@ class PdfBoxDocumentReaderTest {
     @Test
     void reportsNoneWhenThereIsNoPdfaDeclaration() throws Exception {
         byte[] pdf = TestPdfFactory.unsigned();
+
+        PdfaDeclaration declaration = reader.readPdfaDeclaration(pdf);
+
+        assertThat(declaration).isEqualTo(PdfaDeclaration.NONE);
+    }
+
+    @Test
+    void reportsNoneWhenTheXmpMetadataIsMalformed() throws Exception {
+        byte[] pdf = TestPdfFactory.malformedXmpMetadata();
 
         PdfaDeclaration declaration = reader.readPdfaDeclaration(pdf);
 

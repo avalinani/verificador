@@ -13,7 +13,7 @@ class DocumentStructureTest {
 
     @Test
     void acceptsAPageCountMatchingThePagesList() {
-        PageInfo page = new PageInfo(1, 0, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
 
         assertThatNoException()
                 .isThrownBy(() -> new DocumentStructure("1.7", null, 1, List.of(page), 1));
@@ -21,9 +21,17 @@ class DocumentStructureTest {
 
     @Test
     void rejectsAPageCountThatDoesNotMatchThePagesListSize() {
-        PageInfo page = new PageInfo(1, 0, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
 
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new DocumentStructure("1.7", null, 2, List.of(page), 1));
+    }
+
+    @Test
+    void acceptsANullHeaderVersionWhenTheHeaderCouldNotBeFound() {
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+
+        assertThatNoException()
+                .isThrownBy(() -> new DocumentStructure(null, null, 1, List.of(page), 1));
     }
 }

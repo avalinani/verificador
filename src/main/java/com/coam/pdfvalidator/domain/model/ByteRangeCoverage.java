@@ -63,6 +63,17 @@ public record ByteRangeCoverage(List<Long> ranges, long fileLength) {
         return new ByteRangeCoverage(List.of(start1, len1, start2, len2), fileLength);
     }
 
+    /**
+     * Placeholder used when a signature's raw {@code /ByteRange} is
+     * structurally invalid (hostile or malformed) and the four raw values
+     * cannot themselves be reported as a valid coverage. Reports zero
+     * coverage over a file of the given length rather than the unusable raw
+     * values, while still satisfying this record's own invariants.
+     */
+    public static ByteRangeCoverage unknown(long fileLength) {
+        return new ByteRangeCoverage(List.of(0L, 0L, 0L, 0L), fileLength);
+    }
+
     /** Offset right after the second (final) signed range. */
     public long signedRevisionEnd() {
         return ranges.get(2) + ranges.get(3);
