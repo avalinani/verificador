@@ -65,7 +65,8 @@ class DefensiveCopyTest {
                 TimestampInfo.absent(),
                 mutableChain,
                 ChainStatus.NOT_CHECKED,
-                RevocationStatus.notChecked());
+                RevocationStatus.notChecked(),
+                null);
 
         mutableChain.add(null);
 

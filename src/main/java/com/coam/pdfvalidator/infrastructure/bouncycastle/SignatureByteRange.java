@@ -19,6 +19,19 @@ import java.io.IOException;
  * {@code /ByteRange} the domain itself rejects) surfaces as an {@link
  * IllegalArgumentException}, which the caller maps to {@code
  * INVALID_SIGNATURE} rather than letting it escape.
+ *
+ * <p><b>Why the expected length must come from {@link PDSignature#getContents()}
+ * (no-arg), not {@link PDSignature#getContents(byte[])}</b>: the latter
+ * computes the hex string it decodes purely from {@code /ByteRange}'s own
+ * numbers ({@code byteRange[0]+byteRange[1]+1} to {@code byteRange[2]-1}),
+ * i.e. from the very same gap this class is trying to validate -- deriving
+ * the "expected" length from the gap and then comparing it against itself
+ * is a tautology that can never fail. {@code getContents()} instead reads
+ * the {@code /Contents} entry as PDFBox's own object parser already
+ * resolved it (a {@code COSString}, located by walking the document's
+ * object structure from the xref table, entirely independently of the
+ * {@code /ByteRange} array's declared numbers), giving a genuinely
+ * independent length to compare the gap against.
  */
 final class SignatureByteRange {
 
@@ -71,7 +84,9 @@ final class SignatureByteRange {
                     "ByteRange gap is not delimited by '<' and '>' as /Contents requires");
         }
 
-        byte[] cmsDer = signature.getContents(pdf);
+        // Independently parsed by PDFBox's own object parser -- see the
+        // class Javadoc for why this must not be signature.getContents(pdf).
+        byte[] cmsDer = signature.getContents();
         long expectedGapLength = 2L + 2L * cmsDer.length;
         long actualGapLength = gapEnd - gapStart;
         if (actualGapLength != expectedGapLength) {

@@ -79,6 +79,27 @@ public final class TestPdfFactory {
         return TestPdfSigner.sign(unsigned, identity, subFilter);
     }
 
+    /** A one-page PDF signed once, with a genuine RFC 3161 signature timestamp from an in-test TSA. */
+    public static byte[] signedWithTimestamp() throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        TestPki.TsaIdentity tsaIdentity = TestPki.issueTsaIdentity();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.signWithTimestamp(unsigned, identity, tsaIdentity);
+    }
+
+    /**
+     * Same as {@link #signedWithTimestamp()}, but the embedded timestamp
+     * token's message imprint was computed over the wrong bytes, so it does
+     * not match the actual signature value it claims to seal (the token
+     * itself is otherwise validly issued and signed by the TSA).
+     */
+    public static byte[] signedWithTamperedTimestamp() throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        TestPki.TsaIdentity tsaIdentity = TestPki.issueTsaIdentity();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.signWithTamperedTimestamp(unsigned, identity, tsaIdentity);
+    }
+
     /**
      * A signed PDF whose raw {@code /ByteRange} array text has been
      * byte-patched in place (keeping the file's total length, and every

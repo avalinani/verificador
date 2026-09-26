@@ -58,6 +58,36 @@ final class X509CertificateInfoMapper {
         return List.copyOf(result);
     }
 
+    /**
+     * The result of {@link #toDomainResilient}: the certificates that could
+     * be mapped (in the original order, skipping any that failed), and how
+     * many did not.
+     */
+    record MappingResult(List<CertificateInfo> certificates, int failedCount) {
+    }
+
+    /**
+     * Same as {@link #toDomain(List)}, but a single certificate that cannot
+     * be mapped (e.g. it cannot be DER-re-encoded) is skipped rather than
+     * aborting the whole chain: a CMS signature that verified must not be
+     * reported as an invalid signature merely because one certificate's
+     * data could not be extracted. The caller is expected to surface {@link
+     * MappingResult#failedCount()} as an anomaly note rather than silently
+     * dropping certificates.
+     */
+    static MappingResult toDomainResilient(List<X509Certificate> certificates) {
+        List<CertificateInfo> mapped = new ArrayList<>(certificates.size());
+        int failed = 0;
+        for (X509Certificate certificate : certificates) {
+            try {
+                mapped.add(toDomain(certificate));
+            } catch (RuntimeException e) {
+                failed++;
+            }
+        }
+        return new MappingResult(List.copyOf(mapped), failed);
+    }
+
     private static List<String> ocspUrls(X509Certificate certificate) {
         byte[] extensionValue = certificate.getExtensionValue(Extension.authorityInfoAccess.getId());
         if (extensionValue == null) {

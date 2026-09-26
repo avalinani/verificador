@@ -38,8 +38,7 @@ import java.util.Set;
  * <p>Chain trust and revocation are left as {@link ChainStatus#NOT_CHECKED}
  * / {@link RevocationStatus#notChecked()} placeholders, per {@link
  * SignatureVerifier}'s Javadoc: they are the use case's responsibility
- * (T06/T10). Embedded timestamps are left as {@link TimestampInfo#absent()}
- * (T05).
+ * (T06/T10).
  */
 public final class BcSignatureVerifier implements SignatureVerifier {
 
@@ -54,15 +53,47 @@ public final class BcSignatureVerifier implements SignatureVerifier {
         try (PDDocument document = Loader.loadPDF(pdf)) {
             List<SignatureReport> reports = new ArrayList<>();
             for (PDSignatureField field : document.getSignatureFields()) {
-                PDSignature signature = field.getSignature();
-                if (signature == null) {
-                    continue; // an unsigned signature field: nothing to report
+                SignatureReport report = evaluateField(pdf, field);
+                if (report != null) {
+                    reports.add(report);
                 }
-                reports.add(evaluate(pdf, field.getFullyQualifiedName(), signature));
             }
             return List.copyOf(reports);
         } catch (IOException e) {
             throw new InvalidPdfException("Failed to parse PDF for signature verification", e);
+        }
+    }
+
+    /**
+     * Evaluates one signature field, guarding the <em>entire</em> per-field
+     * evaluation -- including reading the {@link PDSignature} and its field
+     * name back from PDFBox -- against an escaping {@link RuntimeException}.
+     * A previous version only guarded {@link #evaluateUnsafe}, leaving a
+     * runtime exception thrown while merely reading the field (e.g. {@link
+     * PDSignatureField#getSignature()} or {@link
+     * PDSignatureField#getFullyQualifiedName()}) free to abort the whole
+     * document's analysis; a single hostile or malformed field must never
+     * do that.
+     */
+    SignatureReport evaluateField(byte[] pdf, PDSignatureField field) {
+        try {
+            PDSignature signature = field.getSignature();
+            if (signature == null) {
+                return null; // an unsigned signature field: nothing to report
+            }
+            return evaluate(pdf, field.getFullyQualifiedName(), signature);
+        } catch (RuntimeException e) {
+            return report(unknownFieldName(field), "", ByteRangeCoverage.unknown(pdf.length),
+                    IntegrityStatus.INVALID_SIGNATURE, null, TimestampInfo.absent(), List.of(), null);
+        }
+    }
+
+    private static String unknownFieldName(PDSignatureField field) {
+        try {
+            String name = field.getFullyQualifiedName();
+            return name != null ? name : "unknown";
+        } catch (RuntimeException e) {
+            return "unknown";
         }
     }
 
@@ -79,7 +110,7 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             return evaluateUnsafe(pdf, fieldName, subFilter, claimedSigningTime, signature);
         } catch (IOException | RuntimeException e) {
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, List.of());
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
         }
     }
 
@@ -93,19 +124,19 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             // Structurally broken /ByteRange (or a /ByteRange <-> /Contents
             // mismatch): reject without ever attempting to parse the CMS.
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, List.of());
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
         }
 
         if (!isSupported(subFilter)) {
             return report(fieldName, subFilter, byteRange.coverage(), IntegrityStatus.UNSUPPORTED,
-                    claimedSigningTime, List.of());
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
         }
 
         CmsSignatureVerification.Result cms =
                 CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider);
         if (!cms.valid()) {
             return report(fieldName, subFilter, byteRange.coverage(), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, List.of());
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
         }
 
         IntegrityStatus integrity = byteRange.coverage().coversWholeDocument()
@@ -116,32 +147,44 @@ public final class BcSignatureVerifier implements SignatureVerifier {
                 // not itself a validation failure.
                 : IntegrityStatus.MODIFIED_AFTER_SIGNING;
 
-        List<CertificateInfo> chain = X509CertificateInfoMapper.toDomain(cms.certificateChain());
+        // A CMS that verified must not be reported INVALID_SIGNATURE merely
+        // because one certificate's data could not be re-encoded: keep
+        // whatever certificates could be mapped and surface the rest as an
+        // anomaly note instead of failing the whole signature.
+        X509CertificateInfoMapper.MappingResult mapped =
+                X509CertificateInfoMapper.toDomainResilient(cms.certificateChain());
+        String anomaly = mapped.failedCount() > 0
+                ? "Failed to map " + mapped.failedCount() + " of " + cms.certificateChain().size()
+                        + " certificate(s) extracted from the signature; the reported chain may be partial"
+                : null;
 
-        return report(fieldName, subFilter, byteRange.coverage(), integrity, claimedSigningTime, chain);
+        return report(fieldName, subFilter, byteRange.coverage(), integrity, claimedSigningTime,
+                cms.timestamp(), mapped.certificates(), anomaly);
     }
 
     private static boolean isSupported(String subFilter) {
         // Unknown subfilters, adbe.pkcs7.sha1, adbe.x509.rsa_sha1, and
         // ETSI.RFC3161 (a document timestamp signature, not a content
-        // signature -- T05 handles those) are all reported as UNSUPPORTED
-        // rather than crashing or being silently skipped.
+        // signature -- kept UNSUPPORTED, see the README's T05 section for
+        // why) are all reported as UNSUPPORTED rather than crashing or
+        // being silently skipped.
         return subFilter != null && SUPPORTED_SUBFILTERS.contains(subFilter);
     }
 
     private static SignatureReport report(
             String fieldName, String subFilter, ByteRangeCoverage coverage, IntegrityStatus integrity,
-            Instant claimedSigningTime, List<CertificateInfo> chain) {
+            Instant claimedSigningTime, TimestampInfo timestamp, List<CertificateInfo> chain, String anomaly) {
         return new SignatureReport(
                 fieldName,
                 subFilter == null ? "" : subFilter,
                 coverage,
                 integrity,
                 claimedSigningTime,
-                TimestampInfo.absent(),
+                timestamp,
                 chain,
                 ChainStatus.NOT_CHECKED,
-                RevocationStatus.notChecked());
+                RevocationStatus.notChecked(),
+                anomaly);
     }
 
     private static Instant toInstant(Calendar signDate) {

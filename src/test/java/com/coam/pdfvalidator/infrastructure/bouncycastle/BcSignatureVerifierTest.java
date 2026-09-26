@@ -6,17 +6,22 @@ import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.IntegrityStatus;
 import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.fixtures.TestPdfFactory;
 import com.coam.pdfvalidator.fixtures.TestPdfSigner;
 import com.coam.pdfvalidator.fixtures.TestPki;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
+import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class BcSignatureVerifierTest {
 
@@ -157,4 +162,86 @@ class BcSignatureVerifierTest {
 
         assertThatThrownBy(() -> verifier.verify(pdf)).isInstanceOf(InvalidPdfException.class);
     }
+
+    @Test
+    void aSignatureFieldThatThrowsWhileBeingReadIsReportedInvalidNotAnException() {
+        // Reproduces a previous bug: only the CMS/ByteRange evaluation was
+        // guarded against a RuntimeException, not the earlier PDFBox reads
+        // (getSignature()/getFullyQualifiedName()) done per field.
+        PDSignatureField hostileField = mock(PDSignatureField.class);
+        when(hostileField.getSignature()).thenThrow(new IllegalStateException("boom"));
+
+        SignatureReport report = verifier.evaluateField(new byte[] {1, 2, 3}, hostileField);
+
+        assertThat(report).isNotNull();
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+    }
+
+    @Test
+    void anUnsignedFieldReportsNothing() {
+        PDSignatureField unsignedField = mock(PDSignatureField.class);
+        when(unsignedField.getSignature()).thenReturn(null);
+
+        assertThat(verifier.evaluateField(new byte[] {1, 2, 3}, unsignedField)).isNull();
+    }
+
+    @Test
+    void aSignatureWithoutATimestampReportsItAbsent() throws Exception {
+        byte[] pdf = TestPdfFactory.signed();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports.get(0).timestamp().isPresent()).isFalse();
+        assertThat(reports.get(0).timestamp()).isEqualTo(TimestampInfo.absent());
+    }
+
+    @Test
+    void aValidSignatureTimestampIsVerified() throws Exception {
+        Instant beforeSigning = Instant.now().minusSeconds(5);
+        byte[] pdf = TestPdfFactory.signedWithTimestamp();
+        Instant afterSigning = Instant.now().plusSeconds(5);
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+
+        TimestampInfo timestamp = report.timestamp();
+        assertThat(timestamp.isPresent()).isTrue();
+        assertThat(timestamp.genTime()).isBetween(beforeSigning, afterSigning);
+        assertThat(timestamp.tsaName()).contains("Spike Test TSA");
+        assertThat(timestamp.imprintValid()).isTrue();
+        assertThat(timestamp.signatureValid()).isTrue();
+        assertThat(timestamp.tsaCertificateOptional()).isPresent();
+        assertThat(timestamp.noteOptional()).isEmpty();
+    }
+
+    @Test
+    void aTimestampWithTheWrongImprintIsInvalidButTheSignatureIsStillIntact() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithTamperedTimestamp();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity())
+                .as("an invalid embedded timestamp must not affect the signature's own integrity")
+                .isEqualTo(IntegrityStatus.INTACT);
+
+        TimestampInfo timestamp = report.timestamp();
+        assertThat(timestamp.isPresent()).isTrue();
+        assertThat(timestamp.imprintValid()).isFalse();
+        assertThat(timestamp.signatureValid())
+                .as("the TSA's own CMS signature over the (wrongly-imprinted) token is still valid")
+                .isTrue();
+    }
+
+    // A TSA certificate missing the timeStamping EKU is covered by
+    // SignatureTimestampVerifierTest instead: Bouncy Castle's own
+    // TimeStampTokenGenerator refuses to issue such a token at all, so that
+    // scenario can only be produced by substituting an already-issued
+    // token's certificate (see SignatureTimestampVerifierTest and
+    // TestPki#reissueWithoutTimestampingEku), which needs BC types this
+    // black-box test does not otherwise depend on.
 }

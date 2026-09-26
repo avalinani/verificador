@@ -23,13 +23,31 @@ import java.util.Set;
  * be a fully loadable PDF (PDFBox itself never linearizes on save, so a real
  * linearized fixture cannot be produced through it).
  *
+ * <p><b>Linear, not quadratic</b>: every occurrence of the three fixed
+ * keywords this class looks for ({@code stream}, {@code startxref}, {@code
+ * /Prev}) is found with exactly one forward scan per keyword over the whole
+ * file ({@link MarkerPositions#scan}), never rescanned per hop. Each hop of
+ * the backward walk then locates its bounding markers with a binary search
+ * over those (already sorted) positions, so the total cost is {@code
+ * O(n log n)} regardless of how many revisions the chain has, rather than
+ * the previous {@code O(hops * n)} (each hop rescanning from its offset to
+ * the end of the file).
+ *
+ * <p>An invalid or out-of-range {@code startxref} value (garbage, negative,
+ * or past the end of the file) is handled the same way as finding no xref
+ * chain at all: this falls back to the {@code %%EOF}-marker heuristic rather
+ * than throwing. The already-visited-offsets guard below additionally
+ * bounds the walk against a cyclic {@code /Prev} chain (a hostile file
+ * forging two sections whose {@code /Prev} values point at each other):
+ * revisiting an offset stops the walk immediately instead of looping.
+ *
  * <p><b>Limitation</b>: this is a byte-level heuristic, same in spirit as
  * the {@code %%EOF}-counting it replaces. A hostile document could forge
  * {@code /Prev} tokens to make the walk loop or under/over-count; the
- * visited-offsets guard below prevents an infinite loop, but does not
- * guarantee the count reflects a well-formed xref chain. Only the outermost,
- * standard case (classic xref tables and cross-reference streams, in a
- * single, non-hybrid chain) is specifically handled.
+ * visited-offsets guard prevents an infinite loop, but does not guarantee
+ * the count reflects a well-formed xref chain. Only the outermost, standard
+ * case (classic xref tables and cross-reference streams, in a single,
+ * non-hybrid chain) is specifically handled.
  */
 final class RevisionCounter {
 
@@ -44,12 +62,14 @@ final class RevisionCounter {
 
     /** Counts revisions (at least 1) for the given raw PDF bytes. */
     static int count(byte[] pdf) {
-        List<Long> chain = xrefChainOffsets(pdf);
+        MarkerPositions markers = MarkerPositions.scan(pdf);
+        List<Long> chain = xrefChainOffsets(pdf, markers);
         int hops = chain.size();
         if (hops == 0) {
-            // No startxref/Prev chain could be found at all (e.g. corrupt or
-            // non-standard structure): fall back to the previous %%EOF-marker
-            // heuristic rather than reporting 0.
+            // No startxref/Prev chain could be found at all -- including an
+            // out-of-range or otherwise unusable startxref value, which
+            // never enters the loop below: fall back to the previous
+            // %%EOF-marker heuristic rather than reporting 0.
             return Math.max(countEofMarkers(pdf), 1);
         }
         if (hops > 1 && isLinearized(pdf)) {
@@ -61,23 +81,23 @@ final class RevisionCounter {
         return Math.max(hops, 1);
     }
 
-    private static List<Long> xrefChainOffsets(byte[] pdf) {
+    private static List<Long> xrefChainOffsets(byte[] pdf, MarkerPositions markers) {
         List<Long> offsets = new ArrayList<>();
         Set<Long> visited = new HashSet<>();
-        Long offset = lastStartXrefOffset(pdf);
+        Long offset = lastStartXrefOffset(pdf, markers);
         while (offset != null && offset >= 0 && offset < pdf.length && visited.add(offset)) {
             offsets.add(offset);
-            offset = prevOffset(pdf, offset);
+            offset = prevOffset(pdf, offset, markers);
         }
         return offsets;
     }
 
-    private static Long lastStartXrefOffset(byte[] pdf) {
-        int idx = lastIndexOf(pdf, STARTXREF);
-        if (idx < 0) {
+    private static Long lastStartXrefOffset(byte[] pdf, MarkerPositions markers) {
+        if (markers.startxrefOffsets.length == 0) {
             return null;
         }
-        return parseLongAfter(pdf, idx + STARTXREF.length, pdf.length);
+        long lastStartxref = markers.startxrefOffsets[markers.startxrefOffsets.length - 1];
+        return parseLongAfter(pdf, (int) lastStartxref + STARTXREF.length, pdf.length);
     }
 
     /**
@@ -91,25 +111,26 @@ final class RevisionCounter {
      * coincidental {@code /Prev}-like byte sequence elsewhere in the file
      * cannot be picked up.
      */
-    private static Long prevOffset(byte[] pdf, long offset) {
+    private static Long prevOffset(byte[] pdf, long offset, MarkerPositions markers) {
         int start = (int) offset;
         if (start < 0 || start >= pdf.length) {
             return null;
         }
-        int limit = pdf.length;
-        int streamIdx = indexOf(pdf, STREAM_KEYWORD, start, limit);
-        if (streamIdx >= 0) {
+        long limit = pdf.length;
+
+        long streamIdx = markers.firstAtOrAfter(markers.streamOffsets, start);
+        if (streamIdx >= 0 && streamIdx + STREAM_KEYWORD.length <= limit) {
             limit = streamIdx;
         }
-        int startxrefIdx = indexOf(pdf, STARTXREF, start, limit);
-        if (startxrefIdx >= 0) {
+        long startxrefIdx = markers.firstAtOrAfter(markers.startxrefOffsets, start);
+        if (startxrefIdx >= 0 && startxrefIdx + STARTXREF.length <= limit) {
             limit = startxrefIdx;
         }
-        int prevIdx = indexOf(pdf, PREV, start, limit);
-        if (prevIdx < 0) {
+        long prevIdx = markers.firstAtOrAfter(markers.prevOffsets, start);
+        if (prevIdx < 0 || prevIdx + PREV.length > limit) {
             return null;
         }
-        return parseLongAfter(pdf, prevIdx + PREV.length, limit);
+        return parseLongAfter(pdf, (int) prevIdx + PREV.length, (int) limit);
     }
 
     private static boolean isLinearized(byte[] pdf) {
@@ -151,19 +172,6 @@ final class RevisionCounter {
         return count;
     }
 
-    private static int lastIndexOf(byte[] haystack, byte[] needle) {
-        outer:
-        for (int i = haystack.length - needle.length; i >= 0; i--) {
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
-                }
-            }
-            return i;
-        }
-        return -1;
-    }
-
     private static int indexOf(byte[] haystack, byte[] needle, int fromIndex, int limit) {
         int last = Math.min(limit, haystack.length) - needle.length;
         outer:
@@ -176,5 +184,64 @@ final class RevisionCounter {
             return i;
         }
         return -1;
+    }
+
+    /**
+     * Every occurrence of {@link #STREAM_KEYWORD}, {@link #STARTXREF} and
+     * {@link #PREV} in the file, each found with one forward scan and kept
+     * sorted ascending (which a single forward scan naturally produces), so
+     * the backward xref walk can locate its bounding markers with a binary
+     * search instead of rescanning the file on every hop.
+     */
+    private static final class MarkerPositions {
+        private final long[] streamOffsets;
+        private final long[] startxrefOffsets;
+        private final long[] prevOffsets;
+
+        private MarkerPositions(long[] streamOffsets, long[] startxrefOffsets, long[] prevOffsets) {
+            this.streamOffsets = streamOffsets;
+            this.startxrefOffsets = startxrefOffsets;
+            this.prevOffsets = prevOffsets;
+        }
+
+        static MarkerPositions scan(byte[] pdf) {
+            return new MarkerPositions(
+                    allOffsetsOf(pdf, STREAM_KEYWORD),
+                    allOffsetsOf(pdf, STARTXREF),
+                    allOffsetsOf(pdf, PREV));
+        }
+
+        /** The smallest element of {@code sorted} that is {@code >= from}, or {@code -1} if none. */
+        long firstAtOrAfter(long[] sorted, long from) {
+            int lo = 0;
+            int hi = sorted.length;
+            while (lo < hi) {
+                int mid = (lo + hi) >>> 1;
+                if (sorted[mid] < from) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo < sorted.length ? sorted[lo] : -1;
+        }
+    }
+
+    private static long[] allOffsetsOf(byte[] pdf, byte[] needle) {
+        List<Long> offsets = new ArrayList<>();
+        int from = 0;
+        while (true) {
+            int idx = indexOf(pdf, needle, from, pdf.length);
+            if (idx < 0) {
+                break;
+            }
+            offsets.add((long) idx);
+            from = idx + 1;
+        }
+        long[] result = new long[offsets.size()];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = offsets.get(i);
+        }
+        return result;
     }
 }

@@ -13,6 +13,8 @@ import org.bouncycastle.cms.SignerInformationVerifier;
 import org.bouncycastle.cms.jcajce.JcaSimpleSignerInfoVerifierBuilder;
 import org.bouncycastle.util.Store;
 
+import com.coam.pdfvalidator.domain.model.TimestampInfo;
+
 import java.io.IOException;
 import java.security.Provider;
 import java.security.cert.CertificateException;
@@ -47,11 +49,18 @@ final class CmsSignatureVerification {
      *                           that issuer's issuer, and so on when the
      *                           chain can be followed; empty when no
      *                           signer certificate could be identified
+     * @param timestamp          the RFC 3161 signature timestamp attached
+     *                           to this signer, or {@link
+     *                           TimestampInfo#absent()} when there is none
      */
-    record Result(boolean valid, X509Certificate signerCertificate, List<X509Certificate> certificateChain) {
+    record Result(
+            boolean valid,
+            X509Certificate signerCertificate,
+            List<X509Certificate> certificateChain,
+            TimestampInfo timestamp) {
 
         static Result invalid() {
-            return new Result(false, null, List.of());
+            return new Result(false, null, List.of(), TimestampInfo.absent());
         }
     }
 
@@ -91,8 +100,9 @@ final class CmsSignatureVerification {
                 allCertificates.add(toJavaCertificate(holder, bcProvider));
             }
             List<X509Certificate> chain = orderSignerFirst(signerCertificate, allCertificates);
+            TimestampInfo timestamp = SignatureTimestampVerifier.verify(signerInformation, bcProvider);
 
-            return new Result(valid, signerCertificate, chain);
+            return new Result(valid, signerCertificate, chain, timestamp);
         } catch (CMSException e) {
             // Includes a digest mismatch (tampering) and an invalid
             // signature: both are simply "not a valid signature", not an

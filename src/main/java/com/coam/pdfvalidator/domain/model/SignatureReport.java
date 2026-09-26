@@ -16,6 +16,13 @@ import java.util.Optional;
  * @param claimedSigningTime the signing time claimed inside the signature
  *                           (CMS signing-time attribute), or {@code null}
  *                           when absent — see {@link #claimedSigningTimeOptional()}
+ * @param anomaly            a diagnostic note for a problem that does not
+ *                            by itself invalidate this signature's
+ *                            integrity (e.g. the CMS verified but part of
+ *                            the certificate chain could not be mapped to
+ *                            {@link CertificateInfo}, leaving it empty or
+ *                            partial), or {@code null} when there is none
+ *                            — see {@link #anomalyOptional()}
  */
 public record SignatureReport(
         String fieldName,
@@ -26,7 +33,8 @@ public record SignatureReport(
         TimestampInfo timestamp,
         List<CertificateInfo> chain,
         ChainStatus chainStatus,
-        RevocationStatus revocation) {
+        RevocationStatus revocation,
+        String anomaly) {
 
     public SignatureReport {
         Objects.requireNonNull(fieldName, "fieldName");
@@ -44,10 +52,14 @@ public record SignatureReport(
         return Optional.ofNullable(claimedSigningTime);
     }
 
+    public Optional<String> anomalyOptional() {
+        return Optional.ofNullable(anomaly);
+    }
+
     /** Returns a copy of this report with the chain/revocation status enriched by the use case. */
     public SignatureReport withChainAndRevocation(ChainStatus newChainStatus, RevocationStatus newRevocation) {
         return new SignatureReport(
                 fieldName, subFilter, coverage, integrity, claimedSigningTime, timestamp, chain,
-                newChainStatus, newRevocation);
+                newChainStatus, newRevocation, anomaly);
     }
 }
