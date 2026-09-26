@@ -1,4 +1,4 @@
-package com.coam.pdfvalidator.spike;
+package com.coam.pdfvalidator.fixtures;
 
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.Extension;

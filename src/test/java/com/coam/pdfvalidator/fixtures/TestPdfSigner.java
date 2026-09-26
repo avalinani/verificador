@@ -1,4 +1,4 @@
-package com.coam.pdfvalidator.spike;
+package com.coam.pdfvalidator.fixtures;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;

@@ -1,5 +1,7 @@
 package com.coam.pdfvalidator.spike;
 
+import com.coam.pdfvalidator.fixtures.TestPdfSigner;
+import com.coam.pdfvalidator.fixtures.TestPki;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.junit.jupiter.api.Test;
 
