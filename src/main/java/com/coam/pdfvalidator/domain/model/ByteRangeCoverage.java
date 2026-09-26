@@ -25,17 +25,36 @@ public record ByteRangeCoverage(List<Long> ranges, long fileLength) {
         long len1 = ranges.get(1);
         long start2 = ranges.get(2);
         long len2 = ranges.get(3);
+        // A hostile PDF can carry arbitrary /ByteRange values: reject negative
+        // offsets/lengths up front so the arithmetic below cannot be fooled by them.
+        if (start1 < 0 || len1 < 0 || start2 < 0 || len2 < 0) {
+            throw new IllegalArgumentException("ByteRange values must not be negative, got: " + ranges);
+        }
         if (start1 != 0) {
             throw new IllegalArgumentException("ByteRange must start at 0, got: " + start1);
         }
-        if (start2 < start1 + len1) {
+        long firstRangeEnd;
+        try {
+            firstRangeEnd = Math.addExact(start1, len1);
+        } catch (ArithmeticException e) {
             throw new IllegalArgumentException(
-                    "ByteRange ranges must not overlap: first range ends at " + (start1 + len1)
+                    "ByteRange first range overflows: start=" + start1 + ", length=" + len1, e);
+        }
+        if (start2 < firstRangeEnd) {
+            throw new IllegalArgumentException(
+                    "ByteRange ranges must not overlap: first range ends at " + firstRangeEnd
                             + ", second range starts at " + start2);
         }
-        if (start2 + len2 > fileLength) {
+        long secondRangeEnd;
+        try {
+            secondRangeEnd = Math.addExact(start2, len2);
+        } catch (ArithmeticException e) {
             throw new IllegalArgumentException(
-                    "ByteRange must not exceed the file length: covers up to " + (start2 + len2)
+                    "ByteRange second range overflows: start=" + start2 + ", length=" + len2, e);
+        }
+        if (secondRangeEnd > fileLength) {
+            throw new IllegalArgumentException(
+                    "ByteRange must not exceed the file length: covers up to " + secondRangeEnd
                             + ", file length is " + fileLength);
         }
     }

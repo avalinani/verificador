@@ -45,4 +45,31 @@ class ByteRangeCoverageTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new ByteRangeCoverage(List.of(0L, 100L, 150L), 200));
     }
+
+    @Test
+    void rejectsANegativeFirstLength() {
+        assertThatIllegalArgumentException().isThrownBy(() -> ByteRangeCoverage.of(0, -1, 150, 50, 200));
+    }
+
+    @Test
+    void rejectsANegativeSecondStart() {
+        assertThatIllegalArgumentException().isThrownBy(() -> ByteRangeCoverage.of(0, 100, -150, 50, 200));
+    }
+
+    @Test
+    void rejectsANegativeSecondLength() {
+        assertThatIllegalArgumentException().isThrownBy(() -> ByteRangeCoverage.of(0, 100, 150, -50, 200));
+    }
+
+    @Test
+    void rejectsArithmeticOverflowInTheFirstRange() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> ByteRangeCoverage.of(0, Long.MAX_VALUE, 150, 50, 200));
+    }
+
+    @Test
+    void rejectsArithmeticOverflowInTheSecondRange() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> ByteRangeCoverage.of(0, 100, Long.MAX_VALUE - 10, 50, 200));
+    }
 }

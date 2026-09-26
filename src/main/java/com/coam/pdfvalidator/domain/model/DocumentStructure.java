@@ -27,6 +27,14 @@ public record DocumentStructure(
         if (pageCount < 0) {
             throw new IllegalArgumentException("pageCount must be >= 0, got: " + pageCount);
         }
+        // Enforced rather than derived from pages.size(): pageCount stays an
+        // explicit, independently-checkable component (e.g. for JSON
+        // (de)serialization) instead of a computed accessor, at the cost of
+        // this one consistency check.
+        if (pageCount != pages.size()) {
+            throw new IllegalArgumentException(
+                    "pageCount (" + pageCount + ") must equal pages.size() (" + pages.size() + ")");
+        }
         if (revisionCount < 1) {
             throw new IllegalArgumentException("revisionCount must be >= 1, got: " + revisionCount);
         }

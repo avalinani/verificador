@@ -13,6 +13,14 @@ public record PdfaDeclaration(Integer part, String conformance) {
     /** No {@code pdfaid} metadata found in the document. */
     public static final PdfaDeclaration NONE = new PdfaDeclaration(null, null);
 
+    public PdfaDeclaration {
+        if ((part == null) != (conformance == null)) {
+            throw new IllegalArgumentException(
+                    "PdfaDeclaration must declare both part and conformance together, or neither (use NONE): "
+                            + "part=" + part + ", conformance=" + conformance);
+        }
+    }
+
     public boolean isDeclared() {
         return part != null && conformance != null;
     }

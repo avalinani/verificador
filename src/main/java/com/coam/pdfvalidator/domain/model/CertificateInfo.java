@@ -1,6 +1,7 @@
 package com.coam.pdfvalidator.domain.model;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -45,5 +46,46 @@ public record CertificateInfo(
 
     public boolean isValidAt(Instant instant) {
         return !instant.isBefore(notBefore) && !instant.isAfter(notAfter);
+    }
+
+    /**
+     * Compares {@code encoded} by content ({@link Arrays#equals(byte[], byte[])})
+     * rather than by array identity, which the record-generated {@code equals}
+     * would otherwise use.
+     */
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof CertificateInfo that)) {
+            return false;
+        }
+        return Objects.equals(subject, that.subject)
+                && Objects.equals(issuer, that.issuer)
+                && Objects.equals(serialNumberHex, that.serialNumberHex)
+                && Objects.equals(notBefore, that.notBefore)
+                && Objects.equals(notAfter, that.notAfter)
+                && Objects.equals(signatureAlgorithm, that.signatureAlgorithm)
+                && Objects.equals(ocspUrls, that.ocspUrls)
+                && Objects.equals(crlUrls, that.crlUrls)
+                && Arrays.equals(encoded, that.encoded);
+    }
+
+    /** Consistent with {@link #equals(Object)}: hashes {@code encoded} by content. */
+    @Override
+    public int hashCode() {
+        int result = Objects.hash(
+                subject, issuer, serialNumberHex, notBefore, notAfter, signatureAlgorithm, ocspUrls, crlUrls);
+        return 31 * result + Arrays.hashCode(encoded);
+    }
+
+    /** Reports the encoded certificate's length instead of dumping its bytes. */
+    @Override
+    public String toString() {
+        return ("CertificateInfo[subject=%s, issuer=%s, serialNumberHex=%s, notBefore=%s, notAfter=%s, "
+                + "signatureAlgorithm=%s, ocspUrls=%s, crlUrls=%s, encoded=%d bytes]")
+                        .formatted(subject, issuer, serialNumberHex, notBefore, notAfter, signatureAlgorithm,
+                                ocspUrls, crlUrls, encoded.length);
     }
 }

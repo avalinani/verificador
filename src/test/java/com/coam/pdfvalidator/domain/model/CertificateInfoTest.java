@@ -97,4 +97,44 @@ class CertificateInfoTest {
 
         assertThat(certificate.encoded()).containsExactly(1, 2, 3);
     }
+
+    @Test
+    void twoCertificatesWithTheSameEncodedBytesAreEqual() {
+        Instant notBefore = Instant.now().minus(1, ChronoUnit.DAYS);
+        Instant notAfter = Instant.now().plus(1, ChronoUnit.DAYS);
+        CertificateInfo first = certificateValidFor(notBefore, notAfter);
+        CertificateInfo second = certificateValidFor(notBefore, notAfter);
+
+        assertThat(first).isEqualTo(second);
+        assertThat(first.hashCode()).isEqualTo(second.hashCode());
+    }
+
+    @Test
+    void certificatesWithDifferentEncodedBytesAreNotEqual() {
+        Instant notBefore = Instant.now().minus(1, ChronoUnit.DAYS);
+        Instant notAfter = Instant.now().plus(1, ChronoUnit.DAYS);
+        CertificateInfo first = certificateValidFor(notBefore, notAfter);
+        CertificateInfo second = new CertificateInfo(
+                "CN=Test Signer",
+                "CN=Test Root CA",
+                "01",
+                notBefore,
+                notAfter,
+                "SHA256withRSA",
+                List.of("http://ocsp.example.org"),
+                List.of("http://crl.example.org"),
+                new byte[] {9, 9, 9});
+
+        assertThat(first).isNotEqualTo(second);
+    }
+
+    @Test
+    void toStringDoesNotDumpTheFullEncodedByteArray() {
+        CertificateInfo certificate = certificateValidFor(Instant.now().minus(1, ChronoUnit.DAYS), Instant.now().plus(1, ChronoUnit.DAYS));
+
+        String text = certificate.toString();
+
+        assertThat(text).contains("CN=Test Signer").contains("3 bytes");
+        assertThat(text).doesNotContain("[B@");
+    }
 }

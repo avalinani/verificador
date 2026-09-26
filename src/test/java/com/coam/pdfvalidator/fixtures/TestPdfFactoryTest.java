@@ -1,6 +1,5 @@
 package com.coam.pdfvalidator.fixtures;
 
-import com.coam.pdfvalidator.spike.SpikeSignatureChecker;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -44,14 +43,14 @@ class TestPdfFactoryTest {
         try (PDDocument document = Loader.loadPDF(pdf)) {
             assertThat(document.getSignatureDictionaries()).hasSize(1);
         }
-        PDSignature signature = SpikeSignatureChecker.firstSignature(pdf);
+        PDSignature signature = FixtureCmsVerifier.firstSignature(pdf);
         assertThat(verifies(pdf, signature)).isTrue();
     }
 
     @Test
     void signedThenIncrementallyModifiedIsLongerThanTheSignedByteRange() throws Exception {
         byte[] pdf = TestPdfFactory.signedThenIncrementallyModified();
-        PDSignature signature = SpikeSignatureChecker.firstSignature(pdf);
+        PDSignature signature = FixtureCmsVerifier.firstSignature(pdf);
         int[] byteRange = signature.getByteRange();
         int coveredEnd = byteRange[2] + byteRange[3];
         assertThat(coveredEnd).isLessThan(pdf.length);
@@ -63,7 +62,7 @@ class TestPdfFactoryTest {
     @Test
     void signedThenTamperedFailsCmsVerification() throws Exception {
         byte[] pdf = TestPdfFactory.signedThenTampered();
-        PDSignature signature = SpikeSignatureChecker.firstSignature(pdf);
+        PDSignature signature = FixtureCmsVerifier.firstSignature(pdf);
         assertThat(verifies(pdf, signature)).isFalse();
     }
 
@@ -146,9 +145,8 @@ class TestPdfFactoryTest {
         assertThatThrownBy(() -> Loader.loadPDF(bytes)).isInstanceOf(IOException.class);
     }
 
-    /** Reuses the spike's CMS verification logic instead of duplicating it. */
+    /** Uses the fixtures-local {@link FixtureCmsVerifier} instead of depending on the {@code spike} package. */
     private static boolean verifies(byte[] pdf, PDSignature signature) throws IOException {
-        SpikeSignatureChecker.ByteRangeInfo byteRange = SpikeSignatureChecker.byteRangeOf(signature);
-        return SpikeSignatureChecker.verifyCms(pdf, signature, byteRange);
+        return FixtureCmsVerifier.verifies(pdf, signature);
     }
 }

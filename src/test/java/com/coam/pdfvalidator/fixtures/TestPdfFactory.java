@@ -5,11 +5,16 @@ import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.PDPageTree;
+import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.xmpbox.XMPMetadata;
+import org.apache.xmpbox.schema.PDFAIdentificationSchema;
+import org.apache.xmpbox.xml.XmpSerializer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -96,10 +101,15 @@ public final class TestPdfFactory {
 
     /**
      * A multi-page PDF where each page's raw COS {@code /Rotate} entry is set
-     * to the corresponding value in {@code rotationsPerPage}, set directly on
-     * the page's COS dictionary (not via {@link PDPage#setRotation(int)}) so
-     * non-normalized values (negative, or not a multiple of 90) are preserved
-     * for later normalization tests.
+     * to the corresponding value in {@code rotationsPerPage}, via
+     * {@code page.getCOSObject().setInt(...)}. This is equivalent to
+     * {@link PDPage#setRotation(int)} for this purpose: both simply write the
+     * raw integer with no normalization at write time (verified against the
+     * PDFBox 3.0.8 bytecode). Normalization and page-tree inheritance only
+     * happen when {@link PDPage#getRotation()} reads the value back, so
+     * non-normalized raw values (negative, or not a multiple of 90) survive
+     * on disk either way and are available for later normalization tests via
+     * the raw COS dictionary.
      */
     public static byte[] rotated(int... rotationsPerPage) throws IOException {
         try (PDDocument document = new PDDocument()) {
@@ -108,6 +118,22 @@ public final class TestPdfFactory {
                 document.addPage(page);
                 page.getCOSObject().setInt(COSName.ROTATE, rotation);
             }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * A one-page PDF where {@code /Rotate} is set on the shared {@code
+     * /Pages} node instead of on the page itself, so the page inherits it per
+     * the PDF page-tree inheritance rules ({@link PDPageTree#getInheritableAttribute}).
+     */
+    public static byte[] rotatedViaInheritedPagesNode(int rotation) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            document.getPages().getCOSObject().setInt(COSName.ROTATE, rotation);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             document.save(out);
             return out.toByteArray();
@@ -189,6 +215,42 @@ public final class TestPdfFactory {
     /** Bytes that are not a PDF at all (no {@code %PDF-} header). */
     public static byte[] notAPdf() {
         return "This is definitely not a PDF file.".getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * A one-page PDF carrying XMP metadata with the {@code pdfaid} schema
+     * declaring the given PDF/A part and conformance level (e.g. {@code (1,
+     * "B")} for PDF/A-1b).
+     */
+    public static byte[] pdfaDeclared(int part, String conformance) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+
+            XMPMetadata xmp = XMPMetadata.createXMPMetadata();
+            PDFAIdentificationSchema pdfaSchema = xmp.createAndAddPDFAIdentificationSchema();
+            pdfaSchema.setPart(part);
+            try {
+                pdfaSchema.setConformance(conformance);
+            } catch (org.apache.xmpbox.type.BadFieldValueException e) {
+                throw new IOException("Invalid PDF/A conformance level: " + conformance, e);
+            }
+
+            ByteArrayOutputStream xmpBytes = new ByteArrayOutputStream();
+            try {
+                new XmpSerializer().serialize(xmp, xmpBytes, true);
+            } catch (javax.xml.transform.TransformerException e) {
+                throw new IOException("Failed to serialize XMP metadata", e);
+            }
+
+            PDMetadata metadata = new PDMetadata(document);
+            metadata.importXMPMetadata(xmpBytes.toByteArray());
+            document.getDocumentCatalog().setMetadata(metadata);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            document.save(out);
+            return out.toByteArray();
+        }
     }
 
     private static int[] firstByteRange(byte[] pdf) throws IOException {

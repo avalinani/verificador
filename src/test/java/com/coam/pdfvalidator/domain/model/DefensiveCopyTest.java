@@ -19,7 +19,7 @@ class DefensiveCopyTest {
     @Test
     void documentStructureCopiesItsPagesList() {
         Box box = new Box(0, 0, 100, 100);
-        PageInfo page = new PageInfo(1, Rotation.DEG_0, box, box, Orientation.SQUARE);
+        PageInfo page = new PageInfo(1, 0, Rotation.DEG_0, box, box, Orientation.SQUARE);
         List<PageInfo> mutablePages = new ArrayList<>(List.of(page));
 
         DocumentStructure structure = new DocumentStructure("1.7", null, 1, mutablePages, 1);
@@ -80,7 +80,7 @@ class DefensiveCopyTest {
                 "document.pdf",
                 1024,
                 new DocumentHashes("a".repeat(64), "b".repeat(128)),
-                new DocumentStructure("1.7", null, 1, List.of(), 1),
+                new DocumentStructure("1.7", null, 0, List.of(), 1),
                 new SecurityInfo(false, java.util.Set.of()),
                 new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of()),
                 mutableSignatures,
