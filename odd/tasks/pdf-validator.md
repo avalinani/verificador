@@ -164,5 +164,16 @@ Living README updated (`README.md`): §2.2 rewritten to describe the real `BcSig
 
 Parent spot check: `./mvnw -B verify` re-run → 115/115, `BUILD SUCCESS`; `git status --porcelain` clean (working tree) except this task-file update in progress.
 
+- Parent spot check: `./mvnw -B verify` re-run → 115/115, BUILD SUCCESS; domain library-free.
+- Review (RDD, medium, slice_budget_reached; 20 files, 1546 lines): granted, 1 lens (reliability), approved and acknowledged (lineage review-74931469b20c8719, authority burned). Advisory findings → T04b.
+- From now on review consent is auto-granted (standing user instruction "revisa siempre los cambios sin mi aprobacion").
+- CodeGraph initialized (`.codegraph/` ignored as a local per-worktree index).
+
+- [ ] T04b Verifier robustness from T04 review advisories (fold into T05):
+  - `SignatureByteRange` gap check (lines ~74-81) is self-referential: it derives the expected `/Contents` length from the same gap it validates — compare against the independently parsed `/Contents` string length instead.
+  - `RevisionCounter` is quadratic on large files (repeated backward scans) — make it linear/bounded; also handle an invalid `startxref` offset gracefully (fall back, never throw).
+  - `BcSignatureVerifier`: a runtime exception while iterating fields can escape the per-signature guard; certificate-mapping failures are reported as `INVALID_SIGNATURE` — distinguish them (signature valid but certificate data unreadable).
+  - `RevisionCounterTest` linearized case: make the hand-built layout match the real linearized shape (hint xref at file start).
+
 ## Next step
-T05 (RFC 3161 timestamp extraction/verification + certificate info extraction from the timestamp token).
+T04b + T05 (RFC 3161 timestamp extraction/verification + certificate info extraction from the timestamp token).
