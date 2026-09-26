@@ -21,7 +21,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 ## Tasks
 - [x] T01 Spike: Maven skeleton + wrapper, .gitignore, CI; JUnit test signing a PDF with a test CA (PDFBox+BC) and verifying signature + ByteRange; tampered copy detected. — route: delegated (writer trigger: pom, CI, test, helpers)
 - [x] T02 TestPdfFactory fixtures (unsigned, signed, incremental edit, rotated, encrypted, corrupt) + domain records + ports — route: delegated (writer trigger: many non-trivial files — 7 fixture files, 28 domain model files, 8 port/exception files)
-- [ ] T03 HashCalculator + PdfBoxDocumentReader (versions, pages, rotation, boxes, orientation, encryption/permissions)
+- [x] T03 HashCalculator + PdfBoxDocumentReader (versions, pages, rotation, boxes, orientation, encryption/permissions) — route: delegated (writer trigger: 2 new adapter classes + tests + fixtures)
 - [ ] T04 BcSignatureVerifier: dict extraction, ByteRange validation, CMS verification, incremental-update detection, multi-signature
 - [ ] T05 RFC 3161 timestamp extraction/verification + certificate info extraction
 - [ ] T06 BcCertificateChainValidator (PKIX, configurable trust store)
@@ -70,7 +70,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - Living README (`README.md`, Spanish) added and must be updated in every task (user request).
 
 ## Follow-up tasks
-- [ ] T02b Domain hardening from T02 review advisories (do before/with T03):
+- [x] T02b Domain hardening from T02 review advisories (do before/with T03) — route: delegated (writer trigger: 6 domain files + fixtures + new tests)
   - `ByteRangeCoverage`: reject negative offsets/lengths and arithmetic overflow (flagged by risk, reliability and resilience lenses — hostile PDFs can carry arbitrary `/ByteRange`).
   - `Rotation`: a real PDF with `/Rotate` not a multiple of 90 must not abort the whole analysis — keep strict `fromDegrees`, add a lenient path (e.g. `tryFromDegrees` → `Optional`) and let the reader report the raw value as a page anomaly.
   - `CertificateInfo`: override `equals`/`hashCode`/`toString` so `byte[] encoded` compares by content.
@@ -78,5 +78,41 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
   - `PdfaDeclaration`: reject partially-null declarations (part without conformance or vice versa).
   - Tests: `TestPdfFactoryTest` should not depend on `spike.SpikeSignatureChecker`; fix misleading `rotated` Javadoc.
 
+## Progress / Evidence (T02b, T03)
+
+- Branch `feat/document-reader` (branched from `feat/domain-model-fixtures`).
+
+### T02b — Domain hardening
+
+- **`ByteRangeCoverage`**: compact constructor now rejects negative `start1/len1/start2/len2` up front, and wraps `start1+len1`/`start2+len2` in `Math.addExact` (catches `ArithmeticException` → `IllegalArgumentException`) so a hostile `/ByteRange` (e.g. `len1=Long.MAX_VALUE`) cannot silently overflow past the overlap/file-length checks.
+- **`Rotation`**: added `static Optional<Rotation> tryFromDegrees(int)` (empty for non-multiples of 90); `fromDegrees(int)` is now implemented in terms of it and stays strict.
+- **`PageInfo`**: added `int rawRotation` component + `rotationValid()` (derived from `Rotation.tryFromDegrees(rawRotation).isPresent()`); `rotation()` stays the effective/normalized value used for `orientation` (defaulted to `DEG_0` when invalid), per the task's "simplest clean option" guidance. Existing 5-arg call sites (`DefensiveCopyTest`) updated mechanically.
+- **`CertificateInfo`**: overrode `equals`/`hashCode` (content-based via `Arrays.equals`/`Arrays.hashCode` on `encoded`, `Objects.equals`/`Objects.hash` on the rest) and `toString` (reports `encoded.length` instead of the array). Caught and fixed a real bug while writing the test for this: `("a"+"b").formatted(...)` requires parentheses around the concatenation — `"a" + "b".formatted(...)` binds `.formatted()` to the second literal only (verified by reproducing it in isolation: `IllegalFormatConversionException: d != java.time.Instant`, because the first literal's `%s` placeholders were left un-substituted and the second literal's own placeholders were shifted against the full argument list).
+- **`DocumentStructure`**: enforces `pageCount == pages.size()` in the compact constructor (`IllegalArgumentException` otherwise). Chose enforcement over deriving `pageCount` from `pages.size()`: keeps the record's shape and existing call sites unchanged, and keeps `pageCount` as an explicit, independently round-trippable component for JSON (de)serialization.
+- **`PdfaDeclaration`**: compact constructor rejects `part`/`conformance` where exactly one is `null` (XOR check); `NONE` (both null) and fully-populated declarations remain valid.
+- **`TestPdfFactoryTest`**: replaced the `spike.SpikeSignatureChecker` dependency with a new fixtures-local, package-private `FixtureCmsVerifier` (byte-range extraction + BC `CMSSignedData` verification, ~80 lines, no production dependency on `spike`). Fixed the `rotated(int...)` Javadoc: it claimed raw COS access was needed because `PDPage#setRotation(int)` would normalize on write; disassembled the PDFBox 3.0.8 bytecode (`javap -c`) and confirmed `setRotation` is a thin wrapper over the exact same `COSDictionary#setInt` call — normalization/inheritance only happen on read, via `PDPage#getRotation()` (confirmed the same way: it calls `PDPageTree.getInheritableAttribute`, then maps non-multiples-of-90 to `0` and otherwise normalizes to `[0,360)`).
+- **TDD**: RED — `./mvnw -q -B test-compile` → compile errors (`PageInfo` constructor arity mismatch in `PageInfoTest`/`DocumentStructureTest`/`DefensiveCopyTest`; `cannot find symbol: tryFromDegrees`/`rotationValid`), i.e. the new tests referencing not-yet-existing API, consistent with T02's own precedent of using compile-error RED for shape changes. GREEN — after implementing all six domain changes: `./mvnw -B test` → `Tests run: 72, Failures: 0, Errors: 0, Skipped: 0` (surfaced and fixed 2 real regressions along the way: the `toString` bug above, and `DefensiveCopyTest.pdfAnalysisReportCopiesItsSignaturesList` using a stale `pageCount=1` against an empty `pages` list, now `0`).
+- Commit: `3bbc70d` fix: harden domain model against hostile byte ranges and invalid rotations.
+
+### T03 — HashCalculator + PdfBoxDocumentReader
+
+- **`infrastructure/crypto/JcaHashCalculator`**: `HashCalculator` via `java.security.MessageDigest` + `HexFormat`. RED — `./mvnw -q -B test-compile` → `cannot find symbol: class JcaHashCalculator`. GREEN — `./mvnw -B -Dtest=JcaHashCalculatorTest test` → `Tests run: 3, Failures: 0, Errors: 0, Skipped: 0`, verified against the NIST SHA-256/SHA-512 vectors for the empty input and `"abc"` (values independently recomputed with a throwaway JDK `MessageDigest` probe before writing the test, not typed from memory).
+- **`infrastructure/pdfbox/PdfBoxDocumentReader`**: implements `PdfDocumentReader`. RED — `./mvnw -q -B test-compile` → `cannot find symbol: class PdfBoxDocumentReader`. GREEN — `./mvnw -B -Dtest=PdfBoxDocumentReaderTest test` → `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0` (one intermediate compile-only failure: `PDDocument.close()` throws `IOException`, needed a `catch (IOException e)` around each try-with-resources to convert it to `InvalidPdfException` since the domain port declares no checked exceptions).
+  - **Design choices** (verified against the PDFBox 3.0.8 jar with `javap -c`/`javap -p` before writing code, not assumed):
+    - **Rotation reading**: uses `PDPageTree.getInheritableAttribute(page.getCOSObject(), COSName.ROTATE)` directly (public static method) instead of `PDPage#getRotation()`. Both walk the page-tree inheritance chain (confirmed via bytecode: `getRotation()` itself calls `getInheritableAttribute`), but `getRotation()` additionally normalizes on read and silently returns `0` for a raw value that is not a multiple of 90 — which would hide exactly the anomaly the domain needs to report. Reading the raw `COSNumber` ourselves keeps the inheritance walk (confirmed working with a real inherited-`/Rotate`-on-`/Pages`-node fixture) while preserving the true raw value for `Rotation.tryFromDegrees`/`PageInfo.rotationValid()`.
+    - **Revision counting**: counts non-overlapping raw `"%%EOF"` byte occurrences, floored at 1. Documented and empirically measured against the actual fixtures (not assumed): `TestPdfFactory.signed()` already contains **2** physical revisions, not 1, because `TestPdfSigner.sign(...)` performs the signing itself via `document.saveIncremental(...)` on top of an already fully-saved (`document.save(...)`) unsigned PDF — i.e. "signed" = creation revision + signing revision. `signedThenIncrementallyModified()` is therefore **3**, not 2. This was measured with a throwaway JUnit probe counting `%%EOF`/`startxref` occurrences (`unsigned`→1/1, `signed`→2/2, `signedThenIncrementallyModified`→3/3, `doublySigned`→3/3) before writing the real test, and the test/README reflect the measured values rather than the plan's initial guess.
+    - **PDF/A declaration**: `PDMetadata#toByteArray()` → `xmpbox` `DomXmpParser#parse(byte[])` → `XMPMetadata#getPDFAIdentificationSchema()` → `getPart()`/`getConformance()`. Missing metadata, missing schema, a schema with only one of part/conformance, or a parsing failure (`XmpParsingException`) all map to `PdfaDeclaration.NONE` rather than aborting. `xmpbox` is on the classpath transitively via the already-declared `preflight` dependency (confirmed present in `~/.m2` and used directly, no `pom.xml` change needed).
+    - **Encryption**: `Loader.loadPDF(byte[])` uses the empty-string default user password; PDFBox's `InvalidPasswordException` (an `IOException` subtype) on a non-empty-password document is mapped to the domain `EncryptedPdfException`; any other `IOException` (corrupt/non-PDF) maps to `InvalidPdfException`. `AccessPermission` mapped 1:1 to `Permission` (`canPrint`→PRINT, `canModify`→MODIFY, `canExtractContent`→EXTRACT_CONTENT, `canModifyAnnotations`→ANNOTATE, `canFillInForm`→FILL_FORMS, `canExtractForAccessibility`→EXTRACT_FOR_ACCESSIBILITY, `canAssembleDocument`→ASSEMBLE, `canPrintFaithful`→PRINT_HIGH_QUALITY).
+  - **`TestPdfFactory`** gained `rotatedViaInheritedPagesNode(int)` (sets `/Rotate` on the shared `/Pages` node) and `pdfaDeclared(int, String)` (XMP with the `pdfaid` schema via `xmpbox`'s `XMPMetadata`/`XmpSerializer`), both exercised by the new reader tests.
+  - Commit: `3cdb668` feat: add SHA-256/SHA-512 hash calculator; `65f5b2a` feat: add PDFBox document reader for structure, security and PDF/A declaration.
+
+### Verify (T02b + T03, full suite)
+
+- `./mvnw -B verify` → `BUILD SUCCESS`, `Tests run: 91, Failures: 0, Errors: 0, Skipped: 0` (jar built, Spring Boot repackage, JaCoCo report generated).
+- `grep -rE "import (org\.springframework|org\.apache\.pdfbox|org\.bouncycastle)" src/main/java/com/coam/pdfvalidator/domain` → no output (domain stays library-free).
+- `grep -rE "org\.apache\.pdfbox" src/main/java/com/coam/pdfvalidator --include=*.java -l` → only `src/main/java/com/coam/pdfvalidator/infrastructure/pdfbox/PdfBoxDocumentReader.java`.
+
+- Living README updated (`README.md`): §2 gained a "Lectura de estructura, seguridad y declaración PDF/A" subsection, functionality table (hashes/structure/rotation/boxes/orientation/encryption/permissions/XMP declaration → ✅), project tree (`infrastructure/crypto`, `infrastructure/pdfbox`), tests section (91 total) and change history (2026-09-27). Commit `eb75cf7`.
+
 ## Next step
-T02b, then T03.
+T04.
