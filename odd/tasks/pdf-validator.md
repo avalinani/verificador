@@ -64,7 +64,19 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
     - Domain model: RED — `./mvnw -B -q test-compile` → 409 "cannot find symbol" compile errors across 7 new domain test classes (Rotation/Orientation/Box/ByteRangeCoverage/DocumentHashes/CertificateInfo/DefensiveCopy), no domain classes existed yet. Implemented all 20 domain model files. GREEN — surefire reports: RotationTest 5/5, OrientationTest 6/6, BoxTest 2/2, ByteRangeCoverageTest 6/6, DocumentHashesTest 6/6, CertificateInfoTest 6/6, DefensiveCopyTest 5/5 (36/36).
   - **Verify**: `./mvnw -B verify` → `BUILD SUCCESS`, `Tests run: 52, Failures: 0, Errors: 0, Skipped: 0` (jar built, Spring Boot repackage, JaCoCo report generated). `grep -rE "import (org\.springframework|org\.apache\.pdfbox|org\.bouncycastle)" src/main/java/com/coam/pdfvalidator/domain` → no output (domain stays library-free).
   - **Commits** (`feat/domain-model-fixtures`): `682bef2` test: add PDF fixture factory for signed, rotated, encrypted and corrupt documents; `8ac3bbd` feat: add immutable domain model for PDF analysis; `4841cda` feat: add domain ports and exceptions.
-  - **Gotcha**: `.github/workflows/ci.yml` shows an uncommitted working-tree change (`JDK 21` → `JDK 25` comment) that appeared mid-session without any tool of this task touching it — the repo lives under a synced OneDrive folder, so this is most likely an external sync artifact, not caused by T02. Left untouched (out of scope); flagging for the user to check before it's lost or accidentally committed by a later task.
+  - Note: the CI step rename and `README.md` seen mid-task were made by the orchestrator (living README, user request), committed as `5608ef3`.
+  - Parent spot check: `./mvnw -B verify` re-run → 52/52, BUILD SUCCESS.
+  - Review (RDD, high risk: CI shell; 46 files, 2176 lines): granted, 4 lenses, approved and acknowledged (lineage review-7159f22ba2ef3703, authority burned). Advisory findings accepted as follow-up work → task T02b.
+- Living README (`README.md`, Spanish) added and must be updated in every task (user request).
+
+## Follow-up tasks
+- [ ] T02b Domain hardening from T02 review advisories (do before/with T03):
+  - `ByteRangeCoverage`: reject negative offsets/lengths and arithmetic overflow (flagged by risk, reliability and resilience lenses — hostile PDFs can carry arbitrary `/ByteRange`).
+  - `Rotation`: a real PDF with `/Rotate` not a multiple of 90 must not abort the whole analysis — keep strict `fromDegrees`, add a lenient path (e.g. `tryFromDegrees` → `Optional`) and let the reader report the raw value as a page anomaly.
+  - `CertificateInfo`: override `equals`/`hashCode`/`toString` so `byte[] encoded` compares by content.
+  - `DocumentStructure`: enforce `pageCount == pages.size()` (or derive it).
+  - `PdfaDeclaration`: reject partially-null declarations (part without conformance or vice versa).
+  - Tests: `TestPdfFactoryTest` should not depend on `spike.SpikeSignatureChecker`; fix misleading `rotated` Javadoc.
 
 ## Next step
-T03.
+T02b, then T03.
