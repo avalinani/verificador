@@ -225,5 +225,16 @@ Living README updated (`README.md`): new §2.6 (RFC 3161 signature timestamps �
 
 Parent spot check: `./mvnw -B verify` re-run → 128/128, `BUILD SUCCESS`; `git status --porcelain` clean.
 
+- Parent spot check: `./mvnw -B verify` re-run → 128/128, BUILD SUCCESS; domain library-free.
+- Review (RDD, medium, slice_budget_reached; 19 files, 1304 lines): auto-granted (standing user instruction), 1 lens (reliability), approved and acknowledged (lineage review-92429871eb1006bc, authority burned). Advisory findings → T05b.
+- GitHub remote `origin` = https://github.com/avalinani/verificador (public). Repo-local config: `credential.useHttpPath true`, `user.email avalinani@coam.org` (user accepted it will be public). Merged `origin/master` (initial commit: README stub, GPL-3.0 LICENSE, Java .gitignore) with `--allow-unrelated-histories` to keep recorded hashes; kept our README (+ license section), combined .gitignore (wrapper-jar exception placed after `*.jar`).
+- First push of `feat/signature-verifier` failed with 403 (token authenticated as avalinani but lacks write permission — Contents/Workflows must be Read and write on `verificador`). Pending: user fixes the fine-grained token, then push.
+
+- [ ] T05b Timestamp/certificate follow-ups from T05 review advisories (fold into T06):
+  - `SignatureTimestampVerifier`: a TSA certificate mapping failure discards the whole timestamp result — keep genTime/imprint result and add an anomaly note instead.
+  - `X509CertificateInfoMapper` resilience path (malformed extensions) is untested — add a test.
+  - EKU-missing note path is effectively unreachable via BC validation (documented); keep or simplify.
+  - `RevisionCounterTest` uses a wall-clock performance assertion (flaky on slow CI) — replace with an operation-count bound or relax/tag it.
+
 ## Next step
-T06 BcCertificateChainValidator (PKIX, configurable trust store).
+Fix GitHub token and push; then T05b + T06 BcCertificateChainValidator (PKIX, configurable trust store).
