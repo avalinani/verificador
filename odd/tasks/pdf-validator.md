@@ -114,5 +114,15 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 
 - Living README updated (`README.md`): §2 gained a "Lectura de estructura, seguridad y declaración PDF/A" subsection, functionality table (hashes/structure/rotation/boxes/orientation/encryption/permissions/XMP declaration → ✅), project tree (`infrastructure/crypto`, `infrastructure/pdfbox`), tests section (91 total) and change history (2026-09-27). Commit `eb75cf7`.
 
+- Parent spot check: `./mvnw -B verify` re-run → 91/91, BUILD SUCCESS; working tree clean.
+- Review (RDD, medium, slice_budget_reached; 22 files, 1089 lines): granted, 1 lens (reliability), approved and acknowledged (lineage review-71a9a6eca8834ab4, authority burned). Advisory findings → T03b.
+
+- [ ] T03b Reader robustness from T03 review advisories (fold into T04):
+  - Revision count: `%%EOF` counting over-reports linearized PDFs (two trailers, one revision) — common in real Adobe output. Prefer counting via the xref chain (`/Prev` links from `startxref`) or exclude the linearization first-page trailer; add a linearized fixture/test.
+  - Raw `/Rotate` read only as `COSNumber.intValue()`: a real value (e.g. `90.0`, `45.5`) or non-number should be flagged invalid, not silently truncated/treated as 0.
+  - XMP fallback path (malformed XMP) has no test; add one.
+  - Missing `%PDF-` header in first 1024 bytes aborts; PDF readers tolerate it — consider reporting headerVersion as unknown instead of throwing when PDFBox can still load the file.
+  - `PageInfo`: validate consistency between `rawRotation`, `rotation` and `rotationValid`.
+
 ## Next step
-T04.
+T03b + T04.
