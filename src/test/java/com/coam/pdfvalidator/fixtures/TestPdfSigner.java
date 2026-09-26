@@ -1,5 +1,6 @@
 package com.coam.pdfvalidator.fixtures;
 
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -67,10 +68,21 @@ public final class TestPdfSigner {
     }
 
     public static byte[] sign(byte[] unsignedPdf, TestPki.IssuedIdentity identity) throws IOException {
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName());
+    }
+
+    /**
+     * Same as {@link #sign(byte[], TestPki.IssuedIdentity)}, but with an
+     * arbitrary {@code /SubFilter} name (e.g. an unsupported or unrecognized
+     * one). The CMS content itself is unaffected by this value; it only
+     * changes what the signature dictionary declares.
+     */
+    public static byte[] sign(byte[] unsignedPdf, TestPki.IssuedIdentity identity, String subFilter)
+            throws IOException {
         try (PDDocument document = org.apache.pdfbox.Loader.loadPDF(unsignedPdf)) {
             PDSignature signature = new PDSignature();
             signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
-            signature.setSubFilter(PDSignature.SUBFILTER_ETSI_CADES_DETACHED);
+            signature.setSubFilter(COSName.getPDFName(subFilter));
             signature.setName(identity.endEntityCertificate().getSubjectX500Principal().getName());
             signature.setReason("Signature spike test");
             signature.setSignDate(Calendar.getInstance());

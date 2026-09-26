@@ -67,6 +67,96 @@ public final class TestPdfFactory {
     }
 
     /**
+     * A one-page PDF signed once, declaring the given {@code /SubFilter}
+     * (e.g. an unsupported or unrecognized one). Useful for exercising a
+     * {@code SignatureVerifier}'s handling of subfilters it does not
+     * support, without needing to actually verify the CMS content (which is
+     * unaffected by this declared name).
+     */
+    public static byte[] signedWithSubFilter(String subFilter) throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.sign(unsigned, identity, subFilter);
+    }
+
+    /**
+     * A signed PDF whose raw {@code /ByteRange} array text has been
+     * byte-patched in place (keeping the file's total length, and every
+     * other byte offset, unchanged) so its last number ({@code len2})
+     * carries a hostile value: same digit width as the original, but with
+     * every digit set to {@code 9}. Since a fresh {@link #signed()} PDF's
+     * {@code /ByteRange} already covers up to the exact end of the file,
+     * any increase to {@code len2} necessarily pushes the covered range
+     * past the end of the file. The CMS signature bytes themselves are
+     * untouched; a verifier must reject this purely from the {@code
+     * /ByteRange} structure, without attempting to parse the CMS.
+     */
+    public static byte[] signedWithByteRangeExceedingFileLength() throws IOException {
+        return patchLastByteRangeNumber(signed(), digits -> "9".repeat(digits.length()));
+    }
+
+    /**
+     * Same idea as {@link #signedWithByteRangeExceedingFileLength()}, but
+     * makes {@code len2} negative instead (same digit width: the leading
+     * digit becomes a {@code -} sign).
+     */
+    public static byte[] signedWithNegativeByteRangeLength() throws IOException {
+        return patchLastByteRangeNumber(signed(),
+                digits -> digits.length() < 2 ? digits : "-" + "9".repeat(digits.length() - 1));
+    }
+
+    /**
+     * Replaces the last numeral token inside the first signature's {@code
+     * /ByteRange [a b c d]} array with {@code transform.apply(originalText)},
+     * which must return a same-length replacement so no other byte offset
+     * in the file shifts.
+     */
+    private static byte[] patchLastByteRangeNumber(byte[] pdf, java.util.function.UnaryOperator<String> transform) {
+        byte[] patched = pdf.clone();
+        byte[] byteRangeTag = "/ByteRange".getBytes(StandardCharsets.US_ASCII);
+        int byteRangeIdx = indexOf(patched, byteRangeTag, 0);
+        if (byteRangeIdx < 0) {
+            throw new IllegalStateException("No /ByteRange found in the given PDF");
+        }
+        int openBracket = indexOf(patched, "[".getBytes(StandardCharsets.US_ASCII), byteRangeIdx);
+        int closeBracket = indexOf(patched, "]".getBytes(StandardCharsets.US_ASCII), openBracket);
+
+        int i = closeBracket - 1;
+        while (Character.isWhitespace((char) patched[i])) {
+            i--;
+        }
+        int lastDigitIdx = i;
+        while (i > openBracket && Character.isDigit((char) patched[i - 1])) {
+            i--;
+        }
+        int tokenStart = i;
+
+        String original = new String(patched, tokenStart, lastDigitIdx - tokenStart + 1, StandardCharsets.US_ASCII);
+        String replacement = transform.apply(original);
+        if (replacement.length() != original.length()) {
+            throw new IllegalStateException(
+                    "Replacement must keep the same width: '" + original + "' -> '" + replacement + "'");
+        }
+        byte[] replacementBytes = replacement.getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(replacementBytes, 0, patched, tokenStart, replacementBytes.length);
+        return patched;
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle, int fromIndex) {
+        int limit = haystack.length - needle.length;
+        outer:
+        for (int i = fromIndex; i <= limit; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    /**
      * A signed PDF that was later loaded and incrementally modified
      * (document info changed, saved incrementally): the original signed
      * bytes are untouched, but the file is now longer than the signed
