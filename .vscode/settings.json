@@ -1,0 +1,22 @@
+{
+  "java.jdt.ls.java.home": "C:\\Program Files\\OpenLogic\\jdk-21.0.5.11-hotspot",
+  "java.configuration.runtimes": [
+    {
+      "name": "JavaSE-21",
+      "path": "C:\\Program Files\\OpenLogic\\jdk-21.0.5.11-hotspot",
+      "default": true
+    }
+  ],
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "maven.terminal.customEnv": [
+    {
+      "environmentVariable": "JAVA_HOME",
+      "value": "C:\\Program Files\\OpenLogic\\jdk-21.0.5.11-hotspot"
+    }
+  ],
+  "terminal.integrated.env.windows": {
+    "JAVA_HOME": "C:\\Program Files\\OpenLogic\\jdk-21.0.5.11-hotspot",
+    "PATH": "C:\\Program Files\\OpenLogic\\jdk-21.0.5.11-hotspot\\bin;${env:PATH}"
+  },
+  "java.compile.nullAnalysis.mode": "disabled"
+}
