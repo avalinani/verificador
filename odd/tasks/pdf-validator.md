@@ -236,5 +236,7 @@ Parent spot check: `./mvnw -B verify` re-run → 128/128, `BUILD SUCCESS`; `git 
   - EKU-missing note path is effectively unreachable via BC validation (documented); keep or simplify.
   - `RevisionCounterTest` uses a wall-clock performance assertion (flaky on slow CI) — replace with an operation-count bound or relax/tag it.
 
+- Push: fine-grained token kept failing (403, no Contents write); user chose GCM browser OAuth login (account-wide token, stored by GCM scoped to `github.com/avalinani/verificador.git`). `feat/timestamps` pushed; CI run 36280623690 on `0068eec` → success (Temurin 25, `./mvnw -B verify`). Resolves the earlier "Java 25 unverified in CI" advisory.
+
 ## Next step
-Fix GitHub token and push; then T05b + T06 BcCertificateChainValidator (PKIX, configurable trust store).
+T05b + T06 BcCertificateChainValidator (PKIX, configurable trust store). Decide PR slicing strategy (ask-on-risk) before opening PRs.
