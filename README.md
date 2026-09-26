@@ -45,7 +45,7 @@ api ──► application: AnalyzePdfUseCase                           ⏳
             │ orquesta los puertos del dominio
             ├─► HashCalculator            SHA-256 / SHA-512       ✅
             ├─► PdfDocumentReader         estructura, páginas, permisos, XMP  ✅
-            ├─► SignatureVerifier         /ByteRange + CMS + RFC 3161        ⏳
+            ├─► SignatureVerifier         /ByteRange + CMS                  ✅ · RFC 3161 ⏳
             ├─► CertificateChainValidator PKIX contra trust store            ⏳
             ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳
             └─► PdfaConformanceValidator  preflight PDF/A-1b                 ⏳
@@ -54,15 +54,21 @@ api ──► application: AnalyzePdfUseCase                           ⏳
 
 ### 2.2 Cómo se detecta que un documento ha cambiado después de firmarse
 
+`infrastructure/bouncycastle/BcSignatureVerifier` implementa el puerto `SignatureVerifier` sobre PDFBox 3 (para leer los diccionarios de firma) y Bouncy Castle 1.86 (para el CMS), sin dejar escapar ningún tipo de esas librerías fuera del adaptador. Recorre **cada** campo de firma (`PDDocument#getSignatureFields()`) y evalúa cada uno de forma **independiente**, con su propio nombre de campo.
+
 Una firma PDF no firma el fichero entero, sino los bytes indicados en el array **`/ByteRange`** del diccionario de firma. Ese array tiene cuatro números `[a b c d]`: dos tramos de bytes firmados que dejan un hueco en medio donde va la propia firma (`/Contents`, un contenedor CMS en hexadecimal).
 
 La verificación comprueba, en este orden:
 
-1. **Estructura del `/ByteRange`**: el primer tramo empieza en el byte 0 y el hueco entre tramos coincide exactamente con el tamaño de `/Contents`. Si no, la firma es sospechosa.
-2. **Integridad matemática**: se calcula el resumen (*digest*) de los bytes cubiertos y se compara con el `messageDigest` firmado dentro del CMS; después se verifica la firma con la clave pública del certificado. Si un solo byte firmado cambia, la verificación falla (**firma inválida**).
-3. **Cobertura del fichero**: si el final del segundo tramo (`c + d`) es menor que el tamaño del fichero, hay bytes añadidos **después** de firmar. Es lo que ocurre con las *actualizaciones incrementales* de PDF: la firma sigue siendo válida para su revisión, pero el documento **ha sido modificado después de la firma**.
+1. **Estructura del `/ByteRange`**: además de lo que ya valida el propio dominio (`ByteRangeCoverage`: empieza en 0, tramos sin solaparse, dentro del fichero), el adaptador comprueba a nivel de bytes que el hueco entre tramos está delimitado por `<`/`>` y que su longitud coincide exactamente con el tamaño hexadecimal de `/Contents`. Un `/ByteRange` hostil o inconsistente (por ejemplo, una longitud negativa o que se sale del fichero) **nunca lanza una excepción**: se captura y esa firma se informa como `INVALID_SIGNATURE`, sin abortar el análisis de las demás firmas del documento.
+2. **Integridad matemática (CMS)**: se lee `/Contents` con un único objeto ASN.1 (ver detalle técnico más abajo) y se verifica con Bouncy Castle (`SignerInformation#verify(...)`), que comprueba a la vez que el `messageDigest` firmado coincide con el resumen de los bytes cubiertos por `/ByteRange` y que la firma es válida para el certificado del firmante. Si un solo byte firmado cambia, la verificación falla (**`INVALID_SIGNATURE`**).
+3. **Cobertura del fichero**: si el final del segundo tramo (`c + d`) alcanza el tamaño del fichero, la firma es **`INTACT`**. Si es menor, hay bytes añadidos **después** de firmar (una *actualización incremental*): la firma sigue siendo matemáticamente válida para su revisión, pero el resultado es **`MODIFIED_AFTER_SIGNING`**.
 
-Estos tres casos (firma válida, byte manipulado y actualización incremental posterior) ya están demostrados con tests (ver [§7](#7-tests-y-calidad)).
+Con **varias firmas** (por ejemplo, un documento firmado dos veces) esto da un resultado que a primera vista sorprende pero es el comportamiento esperado de PDF: la **primera** firma queda como `MODIFIED_AFTER_SIGNING`, porque después de firmarse se le añadió una actualización incremental (la segunda firma); solo la **última** firma, cuyo `/ByteRange` alcanza el final real del fichero, es `INTACT`.
+
+**Subfiltros soportados**: `adbe.pkcs7.detached` y `ETSI.CAdES.detached` se verifican por completo. `adbe.pkcs7.sha1`, `adbe.x509.rsa_sha1` y cualquier subfiltro desconocido se informan como **`UNSUPPORTED`** sin intentar verificarlos. `ETSI.RFC3161` (un sello de tiempo de documento, que no firma contenido sino que sella una revisión) también se informa como `UNSUPPORTED` por ahora — su verificación llega en una tarea posterior (T05).
+
+Estos casos (firma válida, byte manipulado, actualización incremental posterior, doble firma, `/ByteRange` hostil y subfiltro no soportado) ya están demostrados con tests (ver [§7](#7-tests-y-calidad)).
 
 ### 2.3 Modelo de dominio y puertos
 
@@ -90,15 +96,21 @@ El verificador de firmas devuelve cada `SignatureReport` con la cadena y la revo
 
 `infrastructure/pdfbox/PdfBoxDocumentReader` implementa el puerto `PdfDocumentReader` sobre PDFBox 3 y `xmpbox`, sin dejar escapar ningún tipo de esas librerías fuera del adaptador:
 
-- **Versión**: la de cabecera se extrae directamente de los primeros bytes (`%PDF-x.y`, expresión regular); la del catálogo, con `PDDocumentCatalog#getVersion()` (puede ser `null` si el documento no la declara).
-- **Rotación por página**: se lee el atributo raw `/Rotate` con `PDPageTree#getInheritableAttribute`, que además de heredar el valor desde un nodo `/Pages` superior (cuando la página no lo declara ella misma) devuelve el entero **sin normalizar**. Se prefiere a `PDPage#getRotation()` porque este último ya normaliza y hereda, pero cuando el valor no es múltiplo de 90 lo convierte silenciosamente en `0`, ocultando la anomalía. El valor raw pasa por `Rotation.tryFromDegrees(...)`: si es válido se usa para calcular la orientación; si no, `PageInfo` lo expone igualmente (`rawRotation`, `rotationValid()`) y la orientación se calcula como si fuera `0°`, sin abortar el análisis.
+- **Versión**: la de cabecera se extrae directamente de los primeros bytes (`%PDF-x.y`, expresión regular); la del catálogo, con `PDDocumentCatalog#getVersion()` (puede ser `null` si el documento no la declara). Si no se encuentra la cabecera `%PDF-` en los primeros 1024 bytes pero PDFBox consigue igualmente parsear el fichero (algo que los lectores de PDF, incluido PDFBox, tratan con tolerancia), `headerVersion` se informa como `null` ("desconocida") en vez de abortar el análisis.
+- **Rotación por página**: se lee el atributo raw `/Rotate` con `PDPageTree#getInheritableAttribute`, que además de heredar el valor desde un nodo `/Pages` superior (cuando la página no lo declara ella misma) devuelve el valor **sin normalizar**. Se prefiere a `PDPage#getRotation()` porque este último ya normaliza y hereda, pero cuando el valor no es múltiplo de 90 lo convierte silenciosamente en `0`, ocultando la anomalía. Solo un `COSInteger`, o un `COSFloat` sin parte decimal (p. ej. `90.0`), se considera válido; un real no entero (p. ej. `90.5`) o un valor no numérico se marca inválido **sin truncarlo silenciosamente** -truncar `90.5` a `90` haría parecer válido un valor que no lo es-. El raw pasa por `Rotation.tryFromDegrees(...)`: si es válido se usa para calcular la orientación; si no, `PageInfo` lo expone igualmente (`rawRotation`, `rotationValid()`, ambos consistentes con `rotation` por construcción) y la orientación se calcula como si fuera `0°`, sin abortar el análisis.
 - **MediaBox / CropBox y orientación**: se leen con `PDPage#getMediaBox()`/`getCropBox()` (esta última ya hereda de la MediaBox si no está declarada) y se calcula la orientación después de aplicar la rotación efectiva.
-- **Número de revisiones**: se cuentan las apariciones no solapadas del marcador `%%EOF` en los bytes crudos del fichero (con un mínimo de 1). Es una heurística a nivel de bytes -en teoría un stream binario podría contener esa secuencia por casualidad- pero es simple y suficiente en esta fase.
+- **Número de revisiones**: `infrastructure/pdfbox/RevisionCounter` recorre la cadena de referencias cruzadas (`xref`/`trailer`) siguiendo los enlaces `/Prev` desde el último `startxref` hacia atrás, contando una revisión por cada sección de xref visitada, en vez de contar apariciones del marcador `%%EOF`. Ese conteo por marcador sobrestima los PDF *linealizados* (los que llevan una sección de xref adicional al principio del fichero para "vista web rápida" de Adobe): esa sección adicional está encadenada por `/Prev` igual que una actualización incremental real, pero es la **misma** revisión lógica, no una nueva. `RevisionCounter` detecta esta situación buscando la marca `/Linearized` cerca del principio del fichero y, si la encuentra, no cuenta esa sección de xref como una revisión aparte. PDFBox no genera ficheros linealizados al guardar, así que este caso se prueba con una estructura de bytes construida a mano en el test (dos secciones de xref con `/Prev`, la primera con `/Linearized`), no con un fixture real. Sigue siendo una heurística a nivel de bytes -un fichero deliberadamente hostil podría falsear los enlaces `/Prev`- con una salvaguarda contra bucles infinitos y una vuelta al conteo por `%%EOF` si no se encuentra ninguna cadena de xref.
 - **Cifrado y permisos**: `PDDocument#isEncrypted()` más `AccessPermission`, mapeado a los ocho valores de `Permission`. Un documento sin contraseña de usuario (o con contraseña de usuario vacía) se abre y se informan sus restricciones reales; uno con contraseña de usuario no vacía no puede abrirse y lanza `EncryptedPdfException`.
 - **Declaración PDF/A (XMP)**: se exportan los metadatos XMP del catálogo (`PDMetadata`) y se parsean con `DomXmpParser` (del artefacto `xmpbox`, dependencia transitiva de `preflight`, ya en el classpath), extrayendo `pdfaid:part`/`pdfaid:conformance` del esquema `PDFAIdentificationSchema`. Sin metadatos XMP, o sin ese esquema, o con XMP corrupto, se informa `PdfaDeclaration.NONE` en lugar de fallar todo el análisis. Esto es solo la *declaración*; la validación formal PDF/A-1b con *preflight* llega en una tarea posterior.
 - Cualquier fichero que PDFBox no pueda parsear (corrupto o que no sea un PDF) lanza `InvalidPdfException`, envolviendo la `IOException` original.
 
 `infrastructure/crypto/JcaHashCalculator` implementa `HashCalculator` con `java.security.MessageDigest` (SHA-256/SHA-512) y `HexFormat`, sin depender de PDFBox ni Bouncy Castle.
+
+### 2.5 Extracción de certificados
+
+Para cada firma con una verificación CMS válida, `BcSignatureVerifier` extrae del propio CMS el certificado del firmante y todos los certificados incluidos (normalmente firmante + emisor), y los mapea a `CertificateInfo` (sujeto y emisor en formato X.500, número de serie en hexadecimal, fechas de validez, algoritmo de firma, certificado codificado en DER). La cadena se ordena **firmante primero**, siguiendo el emisor de cada certificado hasta llegar a uno autofirmado (la raíz) o hasta que no se encuentre el siguiente emisor dentro del propio CMS.
+
+De cada certificado se leen además las URLs de sus extensiones **Authority Information Access** (OCSP) y **CRL Distribution Points**, si las declara. Una extensión ausente o mal formada no invalida el certificado: simplemente se informa sin URLs para esa extensión. La validación de la cadena contra un almacén de confianza (`chainStatus`) y la comprobación de revocación (`revocation`) quedan, por ahora, como `NOT_CHECKED`/`notChecked()` — las completará el caso de uso en tareas posteriores (T06/T10).
 
 ## 3. Stack tecnológico
 
@@ -162,7 +174,8 @@ src/main/java/com/coam/pdfvalidator/
 ├─ application/                   Casos de uso (AnalyzePdfUseCase)       ⏳
 ├─ infrastructure/                Adaptadores PDFBox, Bouncy Castle, OCSP/CRL, preflight
 │  ├─ crypto/                     JcaHashCalculator (SHA-256/SHA-512)
-│  └─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A)
+│  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
+│  └─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados)
 └─ api/                           Controlador REST, DTOs, gestión de errores  ⏳
 
 src/main/resources/
@@ -172,7 +185,8 @@ src/main/resources/
 src/test/java/com/coam/pdfvalidator/
 ├─ fixtures/                      Generación de PDFs de prueba (CA de test, firma, cifrado…)
 ├─ spike/                         Prueba de concepto inicial de verificación de firma
-└─ domain/                        Tests del modelo de dominio
+├─ domain/                        Tests del modelo de dominio
+└─ infrastructure/                Tests de los adaptadores (pdfbox, bouncycastle, crypto)
 
 odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 .github/workflows/ci.yml          Integración continua
@@ -182,15 +196,19 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 
 | Funcionalidad | Estado |
 |---|---|
-| Verificación de firma CMS y cobertura `/ByteRange` (prueba de concepto) | ✅ spike |
-| Detección de modificación posterior a la firma (actualización incremental) | ✅ spike |
-| Detección de manipulación de bytes firmados | ✅ spike |
+| Verificación de firma CMS y cobertura `/ByteRange` | ✅ |
+| Detección de modificación posterior a la firma (actualización incremental) | ✅ |
+| Detección de manipulación de bytes firmados | ✅ |
+| Firmas múltiples, evaluadas independientemente | ✅ |
+| Subfiltros soportados (`adbe.pkcs7.detached`, `ETSI.CAdES.detached`); resto → `UNSUPPORTED` | ✅ |
+| `/ByteRange` hostil o inconsistente con `/Contents` → `INVALID_SIGNATURE`, sin excepción | ✅ |
 | Hashes SHA-256 / SHA-512 del documento | ✅ |
 | Versión (cabecera y catálogo), páginas, rotación, MediaBox/CropBox, orientación | ✅ |
+| Número de revisiones (cadena de xref, tolerante a PDF linealizados) | ✅ |
 | Cifrado y permisos efectivos | ✅ |
-| Firmas múltiples y subfiltros (`adbe.pkcs7.detached`, `ETSI.CAdES.detached`) | ⏳ |
+| Datos del certificado firmante y su cadena (sujeto, emisor, fechas, URLs OCSP/CRL) | ✅ |
 | Sello de tiempo RFC 3161 | ⏳ |
-| Datos del certificado y cadena de confianza (trust store configurable) | ⏳ |
+| Cadena de confianza contra almacén configurable (trust store) | ⏳ |
 | Revocación OCSP / CRL (opcional, timeout 2 s) | ⏳ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ⏳ |
@@ -206,13 +224,15 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 
 | Suite | Qué comprueba |
 |---|---|
-| `SignatureSpikeTest` | Firma válida, byte manipulado y actualización incremental posterior |
+| `SignatureSpikeTest` | Firma válida, byte manipulado y actualización incremental posterior (prueba de concepto histórica) |
 | `TestPdfFactoryTest` | Que cada PDF de prueba tiene la propiedad que dice tener (verificación CMS con un helper propio de `fixtures`, sin depender de `spike`) |
-| `domain/model/*Test` | Reglas del modelo: normalización de rotación (estricta y tolerante), orientación, validación de `/ByteRange` (incluidos valores negativos y desbordamiento aritmético), de hashes y de declaración PDF/A, vigencia y comparación por contenido de certificados, consistencia `pageCount`/`pages`, copias defensivas |
+| `domain/model/*Test` | Reglas del modelo: normalización de rotación (estricta y tolerante), orientación, validación de `/ByteRange` (incluidos valores negativos y desbordamiento aritmético), de hashes y de declaración PDF/A, vigencia y comparación por contenido de certificados, consistencia `pageCount`/`pages`, consistencia `rawRotation`/`rotationValid`/`rotation` en `PageInfo`, copias defensivas |
 | `JcaHashCalculatorTest` | SHA-256/SHA-512 contra los vectores de prueba conocidos (entrada vacía y `"abc"`) |
-| `PdfBoxDocumentReaderTest` | Versión (cabecera/catálogo), número de páginas, las seis combinaciones de rotación (incluida una inválida y una heredada del nodo `/Pages`), orientación (incluida una página en vertical rotada informada como apaisada), MediaBox/CropBox, cifrado (con y sin contraseña de usuario), documento sin cifrar, entrada corrupta o no-PDF, número de revisiones, declaración PDF/A presente/ausente |
+| `PdfBoxDocumentReaderTest` | Versión (cabecera/catálogo, incluida cabecera ausente pero fichero cargable), número de páginas, las seis combinaciones de rotación (incluida una inválida y una heredada del nodo `/Pages`) más rotaciones no enteras y no numéricas, orientación (incluida una página en vertical rotada informada como apaisada), MediaBox/CropBox, cifrado (con y sin contraseña de usuario), documento sin cifrar, entrada corrupta o no-PDF, número de revisiones, declaración PDF/A presente/ausente/con XMP corrupto |
+| `RevisionCounterTest` | Conteo de revisiones sobre bytes crudos: una sola revisión, dos revisiones encadenadas por `/Prev`, una estructura linealizada construida a mano (una sola revisión lógica), fichero sin cadena de xref reconocible |
+| `BcSignatureVerifierTest` | Documento sin firmar (lista vacía), firma íntegra con su cadena de certificados y URLs OCSP/CRL, actualización incremental posterior a la firma, byte firmado manipulado, doble firma (`MODIFIED_AFTER_SIGNING` + `INTACT`), `/ByteRange` hostil (excede el fichero, longitud negativa) sin lanzar excepción, subfiltro no soportado, sello de tiempo de documento (`ETSI.RFC3161`) como no soportado, entrada corrupta |
 
-**Estado actual:** 91 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 115 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF y con declaración PDF/A (XMP `pdfaid`).
 
@@ -241,3 +261,4 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-26 | Paso a Spring Boot 4.1.1 y Java 25 LTS. |
 | 2026-09-26 | Generador de PDFs de prueba, modelo de dominio inmutable, puertos y excepciones (T02). |
 | 2026-09-27 | Endurecimiento del modelo de dominio frente a `/ByteRange` y rotaciones hostiles (T02b). Calculadora de hashes y lector de estructura/seguridad/PDF/A sobre PDFBox (T03). |
+| 2026-09-27 | Conteo de revisiones por cadena de xref (tolerante a PDF linealizados), rotaciones no enteras/no numéricas correctamente marcadas inválidas, cabecera `%PDF-` ausente ya no aborta el análisis (T03b). Verificador de firmas Bouncy Castle: `/ByteRange` + CMS, firmas múltiples independientes, subfiltros soportados/no soportados, extracción de la cadena de certificados con URLs OCSP/CRL (T04). |
