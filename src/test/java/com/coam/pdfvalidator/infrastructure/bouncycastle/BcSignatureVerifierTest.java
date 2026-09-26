@@ -62,6 +62,17 @@ class BcSignatureVerifierTest {
     }
 
     @Test
+    void theSignerCertificatesOcspAndCrlUrlsAreExtracted() throws Exception {
+        byte[] pdf = TestPdfFactory.signed();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        CertificateInfo signerInfo = reports.get(0).chain().get(0);
+        assertThat(signerInfo.ocspUrls()).contains("http://ocsp.example.org/ee");
+        assertThat(signerInfo.crlUrls()).contains("http://crl.example.org/ee.crl");
+    }
+
+    @Test
     void aSignatureFollowedByAnIncrementalUpdateIsModifiedAfterSigning() throws Exception {
         byte[] pdf = TestPdfFactory.signedThenIncrementallyModified();
 

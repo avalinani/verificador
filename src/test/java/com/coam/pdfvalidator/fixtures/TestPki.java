@@ -1,7 +1,14 @@
 package com.coam.pdfvalidator.fixtures;
 
+import org.bouncycastle.asn1.x509.AccessDescription;
+import org.bouncycastle.asn1.x509.AuthorityInformationAccess;
 import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.CRLDistPoint;
+import org.bouncycastle.asn1.x509.DistributionPoint;
+import org.bouncycastle.asn1.x509.DistributionPointName;
 import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.asn1.x509.KeyUsage;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
@@ -123,6 +130,18 @@ public final class TestPki {
         certBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
         certBuilder.addExtension(Extension.keyUsage, true,
                 new KeyUsage(KeyUsage.digitalSignature | KeyUsage.nonRepudiation));
+        certBuilder.addExtension(Extension.authorityInfoAccess, false,
+                new AuthorityInformationAccess(
+                        AccessDescription.id_ad_ocsp,
+                        new GeneralName(GeneralName.uniformResourceIdentifier, "http://ocsp.example.org/ee")));
+        certBuilder.addExtension(Extension.cRLDistributionPoints, false,
+                new CRLDistPoint(new DistributionPoint[] {
+                        new DistributionPoint(
+                                new DistributionPointName(new GeneralNames(
+                                        new GeneralName(GeneralName.uniformResourceIdentifier,
+                                                "http://crl.example.org/ee.crl"))),
+                                null, null)
+                }));
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
