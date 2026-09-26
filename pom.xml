@@ -18,7 +18,7 @@
   <description>PDF signature, timestamp, trust and PDF/A conformance auditor</description>
 
   <properties>
-    <java.version>21</java.version>
+    <java.version>25</java.version>
     <pdfbox.version>3.0.8</pdfbox.version>
     <bouncycastle.version>1.86</bouncycastle.version>
     <springdoc.version>3.1.1</springdoc.version>

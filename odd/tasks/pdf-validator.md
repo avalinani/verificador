@@ -4,7 +4,7 @@
 Stateless web service (TFM) that audits a PDF in one pass: signature integrity (PAdES/CMS), post-signature modifications, RFC 3161 timestamps, X.509 chain trust, optional OCSP/CRL revocation, PDF/A-1b conformance, page properties.
 
 ## Constraints
-- Java 21 (`C:\Program Files\OpenLogic\jdk-21.0.5.11-hotspot`; system `java` is 8 — always set JAVA_HOME), Maven wrapper, Spring Boot 4.1.1 (3.5.x OSS support ended 2026-06-30; user chose to move to 4).
+- Java 25 LTS (local: OpenLogic `C:\Program Files\OpenLogic\jdk-25.0.4.7-hotspot`; CI/container: Temurin 25 — same GPLv2+CE license and `crypto.policy=unlimited`; system `java` is 8 — always set JAVA_HOME). Java 27 rejected: non-LTS, outside Boot 4.1 range (17–26). Maven wrapper, Spring Boot 4.1.1 (3.5.x OSS support ended 2026-06-30; user chose to move to 4).
 - PDFBox 3.0.8 + preflight 3.0.8 (PDF/A-1b only), Bouncy Castle jdk18on 1.86, springdoc 3.1.1, ArchUnit 1.5.1.
 - Boot 4 renamed the web starter: use `spring-boot-starter-webmvc` (non-deprecated), not `spring-boot-starter-web` (deprecated in the 4.1.1 BOM in favor of it).
 - Hexagonal: `com.coam.pdfvalidator.{domain,application,infrastructure,api}`; domain free of Spring/PDFBox/BC.
@@ -13,7 +13,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - ~400 changed lines per task is advisory only.
 
 ## TDD
-- Mode: strict (source: user global config "Strict TDD Mode: enabled"). Runner: `./mvnw test` / `./mvnw verify` with JAVA_HOME set to JDK 21.
+- Mode: strict (source: user global config "Strict TDD Mode: enabled"). Runner: `./mvnw test` / `./mvnw verify` with JAVA_HOME set to JDK 25.
 
 ## Delivery
 - Strategy: ask-on-risk. Branch per work unit, Conventional Commits, no AI attribution (user rule).
@@ -47,6 +47,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
   - Full verification: `./mvnw -B verify` → `BUILD SUCCESS` (3/3 tests, jar built, Spring Boot repackage, JaCoCo report generated).
   - Commits (`feat/signature-spike`): `c14ba6e` feat: add project skeleton and PDF signature verification spike; `5cfa253` fix: mark mvnw as executable so CI can run it on Linux runners (git on this Windows checkout has `core.fileMode=false`, so `mvnw` was staged as non-executable `100644`; forced to `100755` via `git update-index --chmod=+x`).
   - Mid-task requirement change (user decision): moved from Spring Boot 3.5.16 to 4.1.1 (3.5.x OSS support ended 2026-06-30) and springdoc 2.9.1 → 3.1.1, before the first commit, so both commits above already reflect Boot 4.1.1.
+- Java 25 switch (user decision): OpenLogic JDK 25.0.4+7 installed at `C:\Program Files\OpenLogic\jdk-25.0.4.7-hotspot`; `pom.xml` java.version 25, CI java-version 25, `.vscode/settings.json` updated.
 
 ## Next step
 T02.
