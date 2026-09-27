@@ -93,6 +93,40 @@ public final class TestPki {
         }
     }
 
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but the end-entity
+     * certificate's own validity window ends well before "now" (and
+     * therefore before the signing time a fixture built with this identity
+     * signs at, which is also "now") -- while the root stays valid.
+     * Reproduces a real-world case: a qualified signature made a few months
+     * after its own signer certificate's {@code notAfter}. The root itself
+     * is unaffected, so a caller validating the chain at "now" sees an
+     * otherwise-trustable path whose leaf alone is expired.
+     */
+    public static IssuedIdentity issueSigningIdentityExpiredAtSigningTime() {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date rootNotBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date rootNotAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+            Date eeNotBefore = new Date(System.currentTimeMillis() - 400L * 24 * 60 * 60 * 1000);
+            Date eeNotAfter = new Date(System.currentTimeMillis() - 2L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, rootNotBefore, rootNotAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), eeNotBefore, eeNotAfter);
+
+            return new IssuedIdentity(
+                    rootCertificate,
+                    eeCertificate,
+                    eeKeyPair.getPrivate(),
+                    List.of(eeCertificate, rootCertificate));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with an end-entity expired at signing time", e);
+        }
+    }
+
     /** A root CA, an intermediate CA it issued, and an end-entity certificate issued by that intermediate. */
     public static ThreeTierIdentity issueThreeTierIdentity() {
         try {

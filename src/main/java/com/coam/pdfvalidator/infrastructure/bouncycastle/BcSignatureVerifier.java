@@ -42,6 +42,8 @@ import java.util.Set;
  */
 public final class BcSignatureVerifier implements SignatureVerifier {
 
+    private static final System.Logger LOG = System.getLogger(BcSignatureVerifier.class.getName());
+
     /** PAdES basic and CAdES detached signatures: the only subfilters this task verifies. */
     private static final Set<String> SUPPORTED_SUBFILTERS = Set.of(
             "adbe.pkcs7.detached", "ETSI.CAdES.detached");
@@ -83,8 +85,10 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             }
             return evaluate(pdf, field.getFullyQualifiedName(), signature);
         } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.DEBUG, "Failed to read a signature field", e);
             return report(unknownFieldName(field), "", ByteRangeCoverage.unknown(pdf.length),
-                    IntegrityStatus.INVALID_SIGNATURE, null, TimestampInfo.absent(), List.of(), null);
+                    IntegrityStatus.INVALID_SIGNATURE, null, TimestampInfo.absent(), List.of(),
+                    "signature field could not be read");
         }
     }
 
@@ -109,8 +113,9 @@ public final class BcSignatureVerifier implements SignatureVerifier {
         try {
             return evaluateUnsafe(pdf, fieldName, subFilter, claimedSigningTime, signature);
         } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.DEBUG, "Failed to evaluate a signature", e);
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), "signature could not be evaluated");
         }
     }
 
@@ -123,20 +128,39 @@ public final class BcSignatureVerifier implements SignatureVerifier {
         } catch (IllegalArgumentException e) {
             // Structurally broken /ByteRange (or a /ByteRange <-> /Contents
             // mismatch): reject without ever attempting to parse the CMS.
+            // The exception's own message already names the structural
+            // problem (e.g. "ByteRange gap is out of bounds: ..."), and is
+            // safe to surface: it describes the file's own structure, not
+            // any sensitive data.
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), e.getMessage());
         }
 
         if (!isSupported(subFilter)) {
             return report(fieldName, subFilter, byteRange.coverage(), IntegrityStatus.UNSUPPORTED,
-                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
+                    claimedSigningTime, TimestampInfo.absent(), List.of(),
+                    "unsupported /SubFilter: " + (subFilter == null ? "(none)" : subFilter));
         }
 
         CmsSignatureVerification.Result cms =
                 CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider);
+
+        // A CMS that parsed must not be reported with an empty chain merely
+        // because verification failed, or because one certificate's data
+        // could not be re-encoded: keep whatever certificates could be
+        // mapped (even when cms.valid() is false) and surface the rest as an
+        // anomaly note instead of silently dropping them.
+        X509CertificateInfoMapper.MappingResult mapped =
+                X509CertificateInfoMapper.toDomainResilient(cms.certificateChain());
+        String mappingAnomaly = mapped.failedCount() > 0
+                ? "Failed to map " + mapped.failedCount() + " of " + cms.certificateChain().size()
+                        + " certificate(s) extracted from the signature; the reported chain may be partial"
+                : null;
+
         if (!cms.valid()) {
+            String anomaly = combineNotes(combineNotes(cms.reason(), cms.anomaly()), mappingAnomaly);
             return report(fieldName, subFilter, byteRange.coverage(), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, TimestampInfo.absent(), List.of(), null);
+                    claimedSigningTime, cms.timestamp(), mapped.certificates(), anomaly);
         }
 
         IntegrityStatus integrity = byteRange.coverage().coversWholeDocument()
@@ -147,19 +171,20 @@ public final class BcSignatureVerifier implements SignatureVerifier {
                 // not itself a validation failure.
                 : IntegrityStatus.MODIFIED_AFTER_SIGNING;
 
-        // A CMS that verified must not be reported INVALID_SIGNATURE merely
-        // because one certificate's data could not be re-encoded: keep
-        // whatever certificates could be mapped and surface the rest as an
-        // anomaly note instead of failing the whole signature.
-        X509CertificateInfoMapper.MappingResult mapped =
-                X509CertificateInfoMapper.toDomainResilient(cms.certificateChain());
-        String anomaly = mapped.failedCount() > 0
-                ? "Failed to map " + mapped.failedCount() + " of " + cms.certificateChain().size()
-                        + " certificate(s) extracted from the signature; the reported chain may be partial"
-                : null;
+        String anomaly = combineNotes(cms.anomaly(), mappingAnomaly);
 
         return report(fieldName, subFilter, byteRange.coverage(), integrity, claimedSigningTime,
                 cms.timestamp(), mapped.certificates(), anomaly);
+    }
+
+    private static String combineNotes(String a, String b) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+        return a + "; " + b;
     }
 
     private static boolean isSupported(String subFilter) {

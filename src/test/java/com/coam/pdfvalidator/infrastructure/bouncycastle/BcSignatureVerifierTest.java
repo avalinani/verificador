@@ -95,7 +95,14 @@ class BcSignatureVerifierTest {
         List<SignatureReport> reports = verifier.verify(pdf);
 
         assertThat(reports).hasSize(1);
-        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        assertThat(report.anomalyOptional())
+                .as("a tampered digest must still report a human-readable reason (T09c)")
+                .contains("messageDigest does not match the signed bytes");
+        assertThat(report.chain())
+                .as("the CMS itself parsed fine (only the digest mismatched), so the chain must still be extracted")
+                .hasSize(2);
     }
 
     @Test
@@ -142,6 +149,9 @@ class BcSignatureVerifierTest {
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.UNSUPPORTED);
         assertThat(reports.get(0).subFilter()).isEqualTo("adbe.pkcs7.sha1");
+        assertThat(reports.get(0).anomalyOptional())
+                .as("UNSUPPORTED must also carry a human-readable reason (T09c)")
+                .isPresent();
     }
 
     @Test
@@ -235,6 +245,55 @@ class BcSignatureVerifierTest {
         assertThat(timestamp.signatureValid())
                 .as("the TSA's own CMS signature over the (wrongly-imprinted) token is still valid")
                 .isTrue();
+    }
+
+    /**
+     * T09c, real-world case 1 (Camerfirma): a signature whose signer
+     * certificate had already expired by the time the document was signed
+     * must still report cryptographic integrity independently of that fact.
+     * Bouncy Castle's own {@code SignerInformation#verify}, when built from
+     * an {@code X509CertificateHolder} rather than a bare public key, throws
+     * {@code CMSVerifierCertificateNotValidException} in exactly this case
+     * -- verified as genuine RED against the pre-fix code below.
+     */
+    @Test
+    void aCertificateExpiredAtSigningTimeIsIntactWithAnAnomalyNoteAndANonEmptyChain() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithCertificateExpiredAtSigningTime();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity())
+                .as("crypto integrity must not depend on the signer certificate's own validity")
+                .isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .as("the certificate's own invalidity at signing time must still be surfaced")
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("signer certificate was not valid at the declared signing time"));
+        assertThat(report.chain()).hasSize(2);
+    }
+
+    /**
+     * T09c, real-world case 2 (FNMT): a CMS whose {@code SignerInfo} encodes
+     * a SIGNATURE algorithm OID ({@code sha256WithRSAEncryption}) in its
+     * {@code digestAlgorithm} field instead of the plain digest OID -- a
+     * non-standard encoding Adobe accepts, which Bouncy Castle's default
+     * digest lookup otherwise rejects with {@code NoSuchAlgorithmException}
+     * -- verified as genuine RED against the pre-fix code below.
+     */
+    @Test
+    void aSignatureAlgorithmOidUsedAsDigestAlgorithmIsToleratedWithAnAnomalyNote() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOid();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("non-standard digestAlgorithm encoding"));
     }
 
     // A TSA certificate missing the timeStamping EKU is covered by

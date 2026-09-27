@@ -162,6 +162,113 @@ public final class TestPdfSigner {
                 content -> createDetachedCmsWithTimestamp(content, identity, tsaIdentity, true), 8);
     }
 
+    /**
+     * Same as {@link #sign(byte[], TestPki.IssuedIdentity)}, but reproduces
+     * the exact real-world structure found in a genuinely non-standard
+     * signed PDF (T09c, verified by disassembling the actual CMS bytes of a
+     * real file): a legacy-style CMS with <em>no signed attributes at all</em>
+     * (so the signature is computed directly over the signed content, per
+     * RFC 5652 -- no {@code messageDigest}, no {@code signingTime}), a bare
+     * {@code rsaEncryption} OID ({@code 1.2.840.113549.1.1.1}, no digest
+     * implied) as {@code digestEncryptionAlgorithm}, and the SIGNATURE
+     * algorithm's OID ({@code sha256WithRSAEncryption}, {@code
+     * 1.2.840.113549.1.1.11}) where the plain digest OID ({@code
+     * id-sha256}) belongs, as {@code digestAlgorithm}. Adobe accepts this
+     * encoding; Bouncy Castle's own digest-calculator lookup rejects it
+     * with {@code NoSuchAlgorithmException} unless normalized first, and
+     * (a separate, deeper issue found only by testing against the real
+     * file) its own {@code SignerInformation#verify} cannot correctly
+     * verify this exact combination even after normalizing the digest
+     * calculator -- see {@code CmsSignatureVerification}'s Javadoc.
+     *
+     * <p>Built entirely by hand (not via {@link CMSSignedDataGenerator},
+     * which always adds signed attributes): the signature itself is a
+     * plain {@code Signature.getInstance("SHA256withRSA")} over the raw
+     * content bytes, exactly what a real tool producing this structure
+     * would compute.
+     */
+    public static byte[] signWithSignatureAlgorithmOidAsDigestOid(byte[] unsignedPdf, TestPki.IssuedIdentity identity)
+            throws IOException {
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
+                content -> createDetachedCmsWithSignatureAlgorithmOidAsDigestOid(content, identity), 2);
+    }
+
+    private static byte[] createDetachedCmsWithSignatureAlgorithmOidAsDigestOid(
+            InputStream content, TestPki.IssuedIdentity identity) throws IOException {
+        try {
+            byte[] contentBytes = content.readAllBytes();
+
+            // The signature itself: a standard "hash then RSA-encrypt"
+            // operation over the raw content, exactly what a real signer
+            // would produce for a CMS with no signed attributes.
+            java.security.Signature rsaSignature =
+                    java.security.Signature.getInstance("SHA256withRSA", BouncyCastleProvider.PROVIDER_NAME);
+            rsaSignature.initSign(identity.endEntityPrivateKey());
+            rsaSignature.update(contentBytes);
+            byte[] encryptedDigest = rsaSignature.sign();
+
+            // The bug: digestAlgorithm carries the SIGNATURE algorithm's
+            // OID (a complete, valid algorithm on its own -- just in the
+            // wrong field), while digestEncryptionAlgorithm carries only
+            // the bare, under-specified rsaEncryption OID -- exactly the
+            // combination found in the real file this fixture reproduces.
+            AlgorithmIdentifier signatureOidAsDigestAlgorithm = new AlgorithmIdentifier(
+                    PKCSObjectIdentifiers.sha256WithRSAEncryption, org.bouncycastle.asn1.DERNull.INSTANCE);
+            AlgorithmIdentifier bareRsaEncryption =
+                    new AlgorithmIdentifier(PKCSObjectIdentifiers.rsaEncryption, org.bouncycastle.asn1.DERNull.INSTANCE);
+
+            org.bouncycastle.cert.X509CertificateHolder signerHolder =
+                    new org.bouncycastle.cert.X509CertificateHolder(identity.endEntityCertificate().getEncoded());
+            org.bouncycastle.asn1.cms.SignerIdentifier sid = new org.bouncycastle.asn1.cms.SignerIdentifier(
+                    new org.bouncycastle.asn1.cms.IssuerAndSerialNumber(
+                            signerHolder.getIssuer(), signerHolder.getSerialNumber()));
+
+            // No signed attributes (null): the real file this reproduces
+            // has none either -- a legacy-style detached PKCS#7 signature.
+            org.bouncycastle.asn1.cms.SignerInfo signerInfo = new org.bouncycastle.asn1.cms.SignerInfo(
+                    sid,
+                    signatureOidAsDigestAlgorithm,
+                    (org.bouncycastle.asn1.ASN1Set) null,
+                    bareRsaEncryption,
+                    new org.bouncycastle.asn1.DEROctetString(encryptedDigest),
+                    (org.bouncycastle.asn1.ASN1Set) null);
+
+            org.bouncycastle.asn1.ASN1EncodableVector signerInfosVector = new org.bouncycastle.asn1.ASN1EncodableVector();
+            signerInfosVector.add(signerInfo);
+
+            org.bouncycastle.asn1.ASN1EncodableVector digestAlgorithmsVector = new org.bouncycastle.asn1.ASN1EncodableVector();
+            digestAlgorithmsVector.add(signatureOidAsDigestAlgorithm);
+
+            org.bouncycastle.asn1.cms.ContentInfo encapContentInfo =
+                    new org.bouncycastle.asn1.cms.ContentInfo(org.bouncycastle.asn1.cms.CMSObjectIdentifiers.data, null);
+
+            org.bouncycastle.asn1.ASN1Set certificates = new org.bouncycastle.asn1.DERSet(
+                    identity.chain().stream()
+                            .map(cert -> {
+                                try {
+                                    return new org.bouncycastle.cert.X509CertificateHolder(cert.getEncoded())
+                                            .toASN1Structure();
+                                } catch (java.security.cert.CertificateEncodingException | IOException e) {
+                                    throw new IllegalStateException(e);
+                                }
+                            })
+                            .toArray(org.bouncycastle.asn1.ASN1Encodable[]::new));
+
+            org.bouncycastle.asn1.cms.SignedData signedData = new org.bouncycastle.asn1.cms.SignedData(
+                    new org.bouncycastle.asn1.DERSet(digestAlgorithmsVector),
+                    encapContentInfo,
+                    certificates,
+                    null,
+                    new org.bouncycastle.asn1.DERSet(signerInfosVector));
+
+            org.bouncycastle.asn1.cms.ContentInfo contentInfo =
+                    new org.bouncycastle.asn1.cms.ContentInfo(org.bouncycastle.asn1.cms.CMSObjectIdentifiers.signedData, signedData);
+            return contentInfo.getEncoded(org.bouncycastle.asn1.ASN1Encoding.DER);
+        } catch (java.security.GeneralSecurityException | IOException e) {
+            throw new IOException("Failed to build a CMS signature with a non-standard digestAlgorithm OID", e);
+        }
+    }
+
     /** Loads an already-signed PDF and adds a further incremental update (document info change). */
     public static byte[] applyIncrementalUpdate(byte[] signedPdf) throws IOException {
         try (PDDocument document = org.apache.pdfbox.Loader.loadPDF(signedPdf)) {
