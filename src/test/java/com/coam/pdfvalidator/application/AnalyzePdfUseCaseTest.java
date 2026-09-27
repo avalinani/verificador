@@ -2,6 +2,7 @@ package com.coam.pdfvalidator.application;
 
 import com.coam.pdfvalidator.domain.exception.EncryptedPdfException;
 import com.coam.pdfvalidator.domain.exception.InvalidPdfException;
+import com.coam.pdfvalidator.domain.model.AnalysisSection;
 import com.coam.pdfvalidator.domain.model.ByteRangeCoverage;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
@@ -17,6 +18,7 @@ import com.coam.pdfvalidator.domain.model.Permission;
 import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
+import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
@@ -162,6 +164,7 @@ class AnalyzePdfUseCaseTest {
     private static final class FakePdfaConformanceValidator implements PdfaConformanceValidator {
         private final PdfaReport report;
         private final RuntimeException toThrow;
+        private int callCount;
 
         FakePdfaConformanceValidator(PdfaReport report) {
             this(report, null);
@@ -178,6 +181,7 @@ class AnalyzePdfUseCaseTest {
 
         @Override
         public PdfaReport validate(byte[] pdf) {
+            callCount++;
             if (toThrow != null) {
                 throw toThrow;
             }
@@ -375,11 +379,12 @@ class AnalyzePdfUseCaseTest {
         PdfaReport misleadingFormalResult = new PdfaReport(
                 declaresPart2, PdfaValidationStatus.NON_COMPLIANT, List.of(new PdfaIssue("3.1.3", "not embedded")));
 
+        FakePdfaConformanceValidator pdfaValidator = new FakePdfaConformanceValidator(misleadingFormalResult);
         AnalyzePdfUseCase useCase = useCase(
                 new FakePdfDocumentReader(STRUCTURE, SECURITY, declaresPart2),
                 new FakeSignatureVerifier(List.of()),
                 new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
-                new FakePdfaConformanceValidator(misleadingFormalResult),
+                pdfaValidator,
                 new FakeRevocationChecker(RevocationStatus.notChecked()));
 
         PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
@@ -388,6 +393,10 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.pdfa().declaration()).isEqualTo(declaresPart2);
         assertThat(report.pdfa().issues()).hasSize(1);
         assertThat(report.pdfa().issues().get(0).code()).isEqualTo("PDFA_PART_NOT_SUPPORTED");
+        // T08b: the declaration is checked before invoking the formal
+        // validator, and a declared PDF/A-2/3 document skips that call
+        // entirely -- its result would only be discarded anyway.
+        assertThat(pdfaValidator.callCount).isZero();
     }
 
     @Test
@@ -426,6 +435,10 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.hashes()).isEqualTo(HASHES);
         assertThat(report.structure()).isEqualTo(STRUCTURE);
         assertThat(report.security()).isEqualTo(SECURITY);
+        // T08b: the failure must also be explicit, not just a degraded status.
+        assertThat(report.sectionErrors()).hasSize(1);
+        assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.PDFA);
+        assertThat(report.sectionErrors().get(0).message()).contains("preflight blew up");
     }
 
     @Test
@@ -442,6 +455,25 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.signatures()).isEmpty();
         assertThat(report.hashes()).isEqualTo(HASHES);
         assertThat(report.pdfa()).isEqualTo(COMPLIANT_PDFA_REPORT);
+        // T08b: an empty signatures list caused by a verifier failure must
+        // not be silently indistinguishable from "this document is unsigned".
+        assertThat(report.sectionErrors()).hasSize(1);
+        assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.SIGNATURES);
+        assertThat(report.sectionErrors().get(0).message()).contains("BC blew up");
+    }
+
+    @Test
+    void aSuccessfulAnalysisHasNoSectionErrors() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.sectionErrors()).isEmpty();
     }
 
     @Test

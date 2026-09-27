@@ -1,5 +1,6 @@
 package com.coam.pdfvalidator.application;
 
+import com.coam.pdfvalidator.domain.model.AnalysisSection;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.DocumentHashes;
@@ -11,6 +12,7 @@ import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
+import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
@@ -90,6 +92,19 @@ import java.util.Objects;
  * a byte array cannot meaningfully fail for any of this project's own
  * implementations, and {@link PdfAnalysisReport} requires non-null hashes,
  * so there is no sensible placeholder to substitute if it somehow did.
+ *
+ * <h2>T08b: an empty result must never be silently indistinguishable from a
+ * failure</h2>
+ * Before T08b, {@link #verifySignatures}'s guard reported an unexpected
+ * {@link SignatureVerifier} failure the exact same way as a legitimately
+ * unsigned document: an empty {@code signatures} list either way. A caller
+ * had no way to tell "this document has no signatures" apart from
+ * "signature verification blew up and we don't actually know". Both guarded
+ * sections above now additionally append a {@link SectionError} to {@link
+ * PdfAnalysisReport#sectionErrors()} when their own {@code RuntimeException}
+ * guard fires, so that ambiguity is always resolvable from the report
+ * itself, in addition to (not instead of) the existing degrade-gracefully
+ * behavior already described above.
  */
 public final class AnalyzePdfUseCase {
 
@@ -142,10 +157,12 @@ public final class AnalyzePdfUseCase {
         SecurityInfo security = pdfDocumentReader.readSecurity(content);
         PdfaDeclaration declaration = pdfDocumentReader.readPdfaDeclaration(content);
 
-        PdfaReport pdfa = analyzePdfa(content, declaration);
-        List<SignatureReport> signatures = verifySignatures(content, options);
+        List<SectionError> sectionErrors = new ArrayList<>();
+        PdfaReport pdfa = analyzePdfa(content, declaration, sectionErrors);
+        List<SignatureReport> signatures = verifySignatures(content, options, sectionErrors);
 
-        return new PdfAnalysisReport(fileName, content.length, hashes, structure, security, pdfa, signatures, analyzedAt);
+        return new PdfAnalysisReport(
+                fileName, content.length, hashes, structure, security, pdfa, signatures, analyzedAt, sectionErrors);
     }
 
     /**
@@ -159,16 +176,19 @@ public final class AnalyzePdfUseCase {
      * see {@code PdfaConformanceValidator}'s Javadoc and README section 2.8.
      * A document declaring PDF/A-1 (or no PDF/A part at all) uses the formal
      * validator's own status/issues unchanged.
+     *
+     * <p><b>Order of operations (T08b)</b>: the declaration is checked
+     * <em>before</em> the formal validator is invoked, and the formal
+     * validator is skipped entirely for a declared PDF/A-2/3 document -- its
+     * (almost certainly {@code NON_COMPLIANT}) result would only be
+     * discarded anyway, so there is no reason to pay for a full {@code
+     * preflight} parse (documented elsewhere as a comparatively heavy
+     * module) just to throw the result away. This also means a {@code
+     * RuntimeException} from the formal validator can only affect a
+     * PDF/A-1-or-undeclared document, since PDF/A-2/3 documents never reach
+     * that call at all.
      */
-    private PdfaReport analyzePdfa(byte[] content, PdfaDeclaration declaration) {
-        PdfaReport formal;
-        try {
-            formal = pdfaConformanceValidator.validate(content);
-        } catch (RuntimeException e) {
-            return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED, List.of(new PdfaIssue(
-                    "NOT_VALIDATED", "PDF/A-1b validation failed unexpectedly: " + e)));
-        }
-
+    private PdfaReport analyzePdfa(byte[] content, PdfaDeclaration declaration, List<SectionError> sectionErrors) {
         if (declaration.isDeclared() && declaration.declaredPart().orElseThrow() != 1) {
             int declaredPart = declaration.declaredPart().orElseThrow();
             return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED, List.of(new PdfaIssue(
@@ -177,14 +197,27 @@ public final class AnalyzePdfUseCase {
                             + "; only PDF/A-1b formal validation is supported, so this could not be validated")));
         }
 
+        PdfaReport formal;
+        try {
+            formal = pdfaConformanceValidator.validate(content);
+        } catch (RuntimeException e) {
+            String message = "PDF/A-1b validation failed unexpectedly: " + e;
+            sectionErrors.add(new SectionError(AnalysisSection.PDFA, message));
+            return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED,
+                    List.of(new PdfaIssue("NOT_VALIDATED", message)));
+        }
+
         return new PdfaReport(declaration, formal.status(), formal.issues());
     }
 
-    private List<SignatureReport> verifySignatures(byte[] content, AnalysisOptions options) {
+    private List<SignatureReport> verifySignatures(
+            byte[] content, AnalysisOptions options, List<SectionError> sectionErrors) {
         List<SignatureReport> extracted;
         try {
             extracted = signatureVerifier.verify(content);
         } catch (RuntimeException e) {
+            sectionErrors.add(new SectionError(
+                    AnalysisSection.SIGNATURES, "signature verification failed unexpectedly: " + e));
             return List.of();
         }
 

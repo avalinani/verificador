@@ -85,10 +85,31 @@ class DefensiveCopyTest {
                 new SecurityInfo(false, java.util.Set.of()),
                 new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of()),
                 mutableSignatures,
-                java.time.Instant.now());
+                java.time.Instant.now(),
+                List.of());
 
         mutableSignatures.add(null);
 
         assertThat(analysis.signatures()).isEmpty();
+    }
+
+    @Test
+    void pdfAnalysisReportCopiesItsSectionErrorsList() {
+        List<SectionError> mutableSectionErrors = new ArrayList<>();
+
+        PdfAnalysisReport analysis = new PdfAnalysisReport(
+                "document.pdf",
+                1024,
+                new DocumentHashes("a".repeat(64), "b".repeat(128)),
+                new DocumentStructure("1.7", null, 0, List.of(), 1),
+                new SecurityInfo(false, java.util.Set.of()),
+                new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of()),
+                List.of(),
+                java.time.Instant.now(),
+                mutableSectionErrors);
+
+        mutableSectionErrors.add(new SectionError(AnalysisSection.PDFA, "irrelevant"));
+
+        assertThat(analysis.sectionErrors()).isEmpty();
     }
 }

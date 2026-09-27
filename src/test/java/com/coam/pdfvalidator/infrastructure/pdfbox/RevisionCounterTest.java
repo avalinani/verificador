@@ -155,9 +155,13 @@ class RevisionCounterTest {
                     return null;
                 });
             }
-            List<Future<Void>> futures = executor.invokeAll(tasks);
+            // T08b: bound invokeAll itself (see the other concurrency test's
+            // comment below for why an unbounded invokeAll followed by a
+            // per-future timeout never actually bounds anything).
+            List<Future<Void>> futures = executor.invokeAll(tasks, 90, TimeUnit.SECONDS);
             for (Future<Void> future : futures) {
-                future.get(30, TimeUnit.SECONDS);
+                assertThat(future.isCancelled()).as("task must complete within the bounded timeout").isFalse();
+                future.get();
             }
         } finally {
             executor.shutdown();
@@ -214,9 +218,18 @@ class RevisionCounterTest {
                     });
                 }
             }
-            List<Future<Void>> futures = executor.invokeAll(tasks);
+            // T08b: executor.invokeAll(tasks) with no timeout blocks until every
+            // task finishes, however long that takes -- a per-future
+            // future.get(90, SECONDS) afterwards is unreachable-in-practice as a
+            // bound, since by the time the loop runs every future is already
+            // done. Bounding invokeAll itself makes the timeout actually take
+            // effect: a hung task is cancelled and this test fails instead of
+            // hanging (verified with a temporary artificial hang while writing
+            // this fix -- see the T08b evidence in odd/tasks/pdf-validator.md).
+            List<Future<Void>> futures = executor.invokeAll(tasks, 90, TimeUnit.SECONDS);
             for (Future<Void> future : futures) {
-                future.get(30, TimeUnit.SECONDS);
+                assertThat(future.isCancelled()).as("task must complete within the bounded timeout").isFalse();
+                future.get();
             }
         } finally {
             executor.shutdown();
