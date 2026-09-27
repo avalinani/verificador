@@ -17,12 +17,13 @@ import org.apache.xmpbox.XMPMetadata;
 import org.apache.xmpbox.schema.PDFAIdentificationSchema;
 import org.apache.xmpbox.xml.XmpSerializer;
 
+import java.awt.color.ColorSpace;
+import java.awt.color.ICC_Profile;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * Test-only factory for PDF byte arrays exercising the properties later
@@ -398,19 +399,24 @@ public final class TestPdfFactory {
     }
 
     /**
-     * The local Windows-shipped sRGB ICC profile, used only at test time to
-     * build {@link #pdfA1bCompliant()}'s {@code OutputIntent} -- never
-     * downloaded, never committed to the repository. Only available on a
-     * Windows machine with this standard system file present (any modern
-     * Windows install); {@link #isPdfA1bCompliantFixtureAvailable()} lets a
-     * test skip gracefully when it is not.
+     * The JDK's own bundled sRGB ICC profile ({@link ColorSpace#CS_sRGB}),
+     * used only at test time to build {@link #pdfA1bCompliant()}'s {@code
+     * OutputIntent} -- never downloaded, never committed to the repository.
+     *
+     * <p><b>T07b</b>: previously read from the Windows-only system file
+     * {@code C:/Windows/System32/spool/drivers/color/sRGB Color Space
+     * Profile.icm}, which meant the COMPLIANT test could only ever run (or
+     * be skipped) on a Windows machine, never on the Linux/Temurin CI
+     * runner. {@link ICC_Profile#getInstance(ColorSpace)} for {@link
+     * ColorSpace#CS_sRGB} returns the profile the JVM itself ships with
+     * (backed by the platform-independent Little CMS implementation, not an
+     * OS color-management service), so it needs no display and is available
+     * headless on every platform this project targets -- confirmed
+     * empirically: {@code preflight} accepts it as a valid {@code
+     * OutputIntent} source with no fallback needed.
      */
-    private static final Path SRGB_ICC_PROFILE =
-            Path.of("C:/Windows/System32/spool/drivers/color/sRGB Color Space Profile.icm");
-
-    /** Whether {@link #pdfA1bCompliant()} can actually be built on this machine (see {@link #SRGB_ICC_PROFILE}). */
-    public static boolean isPdfA1bCompliantFixtureAvailable() {
-        return Files.isRegularFile(SRGB_ICC_PROFILE);
+    private static byte[] sRgbIccProfileBytes() {
+        return ICC_Profile.getInstance(ColorSpace.CS_sRGB).getData();
     }
 
     /**
@@ -420,15 +426,11 @@ public final class TestPdfFactory {
      * entirely (a real PDF/A-1b document with text needs an embedded font,
      * but building one from a redistribution-safe, locally-available font
      * was not achievable deterministically; see the T07 progress notes) --
-     * an sRGB {@code OutputIntent} built from the local system's own ICC
-     * profile (see {@link #SRGB_ICC_PROFILE}; never committed), and XMP
-     * {@code pdfaid} identification (part 1, conformance B). No {@code
-     * Info} dictionary entries are set, so there is nothing for the
-     * dc/xmp-vs-Info consistency rules to disagree about.
-     *
-     * @throws IOException also thrown when {@link #SRGB_ICC_PROFILE} is not
-     *                      present on this machine; callers should check
-     *                      {@link #isPdfA1bCompliantFixtureAvailable()} first
+     * an sRGB {@code OutputIntent} built from the JDK's own bundled ICC
+     * profile (see {@link #sRgbIccProfileBytes()}; never committed, always
+     * available), and XMP {@code pdfaid} identification (part 1, conformance
+     * B). No {@code Info} dictionary entries are set, so there is nothing
+     * for the dc/xmp-vs-Info consistency rules to disagree about.
      */
     public static byte[] pdfA1bCompliant() throws IOException {
         try (PDDocument document = new PDDocument()) {
@@ -442,7 +444,7 @@ public final class TestPdfFactory {
                 // Intentionally empty.
             }
 
-            try (InputStream iccStream = Files.newInputStream(SRGB_ICC_PROFILE)) {
+            try (InputStream iccStream = new ByteArrayInputStream(sRgbIccProfileBytes())) {
                 PDOutputIntent outputIntent = new PDOutputIntent(document, iccStream);
                 outputIntent.setInfo("sRGB IEC61966-2.1");
                 outputIntent.setOutputCondition("sRGB IEC61966-2.1");

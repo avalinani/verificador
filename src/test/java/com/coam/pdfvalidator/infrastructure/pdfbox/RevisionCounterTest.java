@@ -165,6 +165,65 @@ class RevisionCounterTest {
     }
 
     /**
+     * T07b follow-up: {@link
+     * #concurrentInvocationsOnDifferentDocumentsProduceCorrectCountsForEach()}
+     * asserts on {@link RevisionCounter#count(byte[])}'s return value, which
+     * never actually depended on the step-counting field's value in the
+     * first place -- a reintroduced {@code static} scan-step counter would
+     * still let that test pass, because the revision count itself is
+     * computed independently of
+     * how many scan steps were taken. This test instead exercises {@link
+     * RevisionCounter#countScanSteps(byte[])} itself: it precomputes each
+     * document's step count serially (a deterministic baseline), then drives
+     * many threads concurrently calling {@code countScanSteps} on several
+     * distinctly-sized documents at once and asserts every single call still
+     * returns exactly its own document's baseline. A reintroduced shared
+     * {@code static} counter would very likely fail this: concurrent calls on
+     * different documents would reset/increment the same field mid-scan,
+     * polluting each other's counts into values that no longer match the
+     * precomputed serial baseline.
+     */
+    @Test
+    void concurrentScanStepCountsMatchEachDocumentsOwnSerialBaselineUnderConcurrency() throws Exception {
+        int distinctDocuments = 5;
+        int threadsPerDocument = 4;
+        int callsPerThread = 100;
+
+        byte[][] documents = new byte[distinctDocuments][];
+        long[] baselineSteps = new long[distinctDocuments];
+        for (int d = 0; d < distinctDocuments; d++) {
+            documents[d] = manyRevisionsDocument(50 + d * 37); // distinct sizes: cross-talk would change the count
+            baselineSteps[d] = RevisionCounter.countScanSteps(documents[d]);
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(distinctDocuments * threadsPerDocument);
+        try {
+            List<Callable<Void>> tasks = new java.util.ArrayList<>();
+            for (int d = 0; d < distinctDocuments; d++) {
+                int docIndex = d;
+                for (int t = 0; t < threadsPerDocument; t++) {
+                    tasks.add(() -> {
+                        for (int i = 0; i < callsPerThread; i++) {
+                            long steps = RevisionCounter.countScanSteps(documents[docIndex]);
+                            assertThat(steps)
+                                    .as("scan-step count for document " + docIndex + " must not be polluted by a "
+                                            + "concurrently-running call scanning a different document")
+                                    .isEqualTo(baselineSteps[docIndex]);
+                        }
+                        return null;
+                    });
+                }
+            }
+            List<Future<Void>> futures = executor.invokeAll(tasks);
+            for (Future<Void> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    /**
      * Two ordinary, non-linearized revisions: a trailer with no {@code
      * /Prev}, followed by a second trailer whose {@code /Prev} points back
      * to the first section's {@code xref} keyword offset.
