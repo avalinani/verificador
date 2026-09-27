@@ -502,9 +502,14 @@ Living README updated (`README.md`): new subsection under §2.2 (integrity vs. c
 
 Commits (`fix/real-world-signatures`, branched from `feat/rest-api`): `51d3620` fix: separate signature integrity from signer certificate validity; `36e3ef1` fix: return ProblemDetail for oversized uploads and avoid leaking exception messages; `8ec4cd7` feat: add Camerfirma qualified issuing CA as a non-self-signed trust anchor; `b50f406` docs: explain integrity versus certificate validity in README.
 
+- Parent spot check: `./mvnw -B verify` → 207/207, BUILD SUCCESS; user PDFs confirmed NOT in the repository.
+- Review (RDD, medium; 24 files, 1251 lines, base 1ad5242): auto-granted, 1 lens (reliability), approved and acknowledged. Advisory findings → T09d.
+- Real-file results after the fix (anonymized): Camerfirma-signed PDF → INTACT / EXPIRED (signer certificate expired before the declared signing time — a genuine finding) ; FNMT-signed PDF → INTACT / INCOMPLETE_CHAIN.
+
+- [ ] T09d Follow-ups (first task of next session, before T10):
+  - FNMT PDF chain is INCOMPLETE_CHAIN: the CMS apparently does not embed the "AC FNMT Usuarios" issuing CA, and only the FNMT root is bundled. Add the TSL-listed qualified issuing CA(s) for FNMT (at least "AC FNMT Usuarios"; check also "AC Representación", "AC Componentes Informáticos") extracted from https://tsl.digital.gob.es/TSL.xml, same provenance process as Camerfirma; alternatively/additionally fetch missing intermediates via the AIA caIssuers URL (bounded timeout) — decide. Re-test with the user's FNMT PDF.
+  - Review advisories: mislabeled-digest bypass lacks a negative test (tampered content must still fail) and a signed-attributes variant test; `BcSignatureVerifier` line ~136 ByteRange failure path leaves `anomaly` null; INVALID_SIGNATURE path (~163) should still enrich/extract the chain consistently; upload-read 500 path not proven by the test.
+  - Pending PR hygiene: PRs #5 (T07b–T08) and #6 (T08b–T09) open; this branch is stacked on #6.
+
 ## Next step
-T10 RevocationChecker (OCSP/CRL, optional flag, 2 s timeout, WireMock). User asked to be told when a local manual test is possible → already done for T09/T09b/T09c (see README §4).
-
-## Follow-up tasks (optional, not in current scope)
-
-- [ ] T14 (optional improvement) Load trust anchors automatically from the Spanish Trusted List (`https://tsl.digital.gob.es/TSL.xml`, resolved via the EU LOTL): parse `TSPService` entries of type QC (CA/QC) with status granted/withdrawn-at-time, build `TrustAnchor`s per service with validity-at-time semantics, verify the TSL XML signature against the LOTL-published signing certificates, cache with refresh + offline fallback to the bundled truststore. Rationale: covers every Spanish qualified CA without hand-curating anchors (eIDAS trust model).
+T09d (FNMT issuing CAs from TSL + review follow-ups), then T10 RevocationChecker (OCSP/CRL). Optional backlog: T14 TSL auto-load.
