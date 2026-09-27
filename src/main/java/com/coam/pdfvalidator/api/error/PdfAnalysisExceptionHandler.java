@@ -9,7 +9,6 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 import java.net.URI;
@@ -30,6 +29,11 @@ import java.net.URI;
  * {@code 500}. Scoping this advice to only the controller it exists for
  * leaves every other endpoint (Actuator, springdoc/swagger-ui, static
  * resources) on Spring Boot's own default error handling.
+ *
+ * <p><b>{@code MaxUploadSizeExceededException} is handled elsewhere (T09b)</b>:
+ * that exception is always thrown before Spring resolves a handler for the
+ * request (see {@link MaxUploadSizeExceptionHandler}'s Javadoc), so a
+ * handler scoped here would never actually see it.
  */
 @RestControllerAdvice(assignableTypes = PdfAnalysisController.class)
 public class PdfAnalysisExceptionHandler {
@@ -40,7 +44,6 @@ public class PdfAnalysisExceptionHandler {
     private static final URI NOT_A_PDF = URI.create("urn:pdfvalidator:error:not-a-pdf");
     private static final URI CORRUPT_PDF = URI.create("urn:pdfvalidator:error:corrupt-pdf");
     private static final URI ENCRYPTED_PDF = URI.create("urn:pdfvalidator:error:encrypted-pdf");
-    private static final URI FILE_TOO_LARGE = URI.create("urn:pdfvalidator:error:file-too-large");
     private static final URI INTERNAL_ERROR = URI.create("urn:pdfvalidator:error:internal-error");
 
     /** No {@code file} part at all in the multipart request (a required {@link org.springframework.web.multipart.MultipartFile} parameter). */
@@ -73,12 +76,6 @@ public class PdfAnalysisExceptionHandler {
     public ProblemDetail handleEncryptedPdf(EncryptedPdfException exception) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, ENCRYPTED_PDF,
                 "The uploaded file is encrypted and cannot be analyzed without its password.");
-    }
-
-    /** The upload exceeds the configured maximum size (see {@code spring.servlet.multipart.max-file-size}). */
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    public ProblemDetail handleTooLarge(MaxUploadSizeExceededException exception) {
-        return problem(HttpStatus.PAYLOAD_TOO_LARGE, FILE_TOO_LARGE, "The uploaded file exceeds the maximum allowed size.");
     }
 
     /**

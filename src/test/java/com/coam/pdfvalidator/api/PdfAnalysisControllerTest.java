@@ -21,14 +21,19 @@ import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -146,6 +151,31 @@ class PdfAnalysisControllerTest {
         mockMvc.perform(multipart("/api/v1/pdf/analyze").file(file))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.type").value("urn:pdfvalidator:error:encrypted-pdf"));
+    }
+
+    /**
+     * T09b: {@code MultipartFile#getBytes()} throwing {@code IOException} is
+     * not a client-input problem like a missing/empty file (the client did
+     * upload a part; this server failed to read its own temporary multipart
+     * storage back) -- it must be reported as an unexpected failure (500),
+     * not misclassified as {@code missing-file} (400), and must never leak
+     * the underlying exception's own message. {@link #readContent} is
+     * exercised directly (a genuine {@code IOException} from a servlet
+     * container's real multipart handling is impractical to trigger through
+     * {@code MockMvc}, which always resolves a normal in-memory {@code
+     * MockMultipartFile} instead).
+     */
+    @Test
+    void anUploadReadIoExceptionIsReportedAsAnUnexpectedFailureNotAMissingFile() throws IOException {
+        MultipartFile hostileFile = mock(MultipartFile.class);
+        when(hostileFile.isEmpty()).thenReturn(false);
+        when(hostileFile.getBytes()).thenThrow(new IOException("temp storage unreadable: /var/tmp/upload-9f2"));
+
+        assertThatThrownBy(() -> PdfAnalysisController.readContent(hostileFile))
+                .isInstanceOf(PdfAnalysisController.UploadReadException.class)
+                .satisfies(exception -> assertThat(exception.getMessage())
+                        .doesNotContain("temp storage unreadable")
+                        .doesNotContain("/var/tmp"));
     }
 
     @Test

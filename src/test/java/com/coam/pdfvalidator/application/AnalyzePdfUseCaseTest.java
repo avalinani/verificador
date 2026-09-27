@@ -438,7 +438,10 @@ class AnalyzePdfUseCaseTest {
         // T08b: the failure must also be explicit, not just a degraded status.
         assertThat(report.sectionErrors()).hasSize(1);
         assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.PDFA);
-        assertThat(report.sectionErrors().get(0).message()).contains("preflight blew up");
+        // T09b: the raw exception message must never reach the client.
+        assertThat(report.sectionErrors().get(0).message())
+                .doesNotContain("preflight blew up")
+                .contains("PDF/A-1b validation failed unexpectedly");
     }
 
     @Test
@@ -459,7 +462,10 @@ class AnalyzePdfUseCaseTest {
         // not be silently indistinguishable from "this document is unsigned".
         assertThat(report.sectionErrors()).hasSize(1);
         assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.SIGNATURES);
-        assertThat(report.sectionErrors().get(0).message()).contains("BC blew up");
+        // T09b: the raw exception message must never reach the client.
+        assertThat(report.sectionErrors().get(0).message())
+                .doesNotContain("BC blew up")
+                .contains("signature verification failed unexpectedly");
     }
 
     @Test

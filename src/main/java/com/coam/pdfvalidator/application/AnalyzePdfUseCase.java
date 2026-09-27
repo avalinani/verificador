@@ -108,6 +108,8 @@ import java.util.Objects;
  */
 public final class AnalyzePdfUseCase {
 
+    private static final System.Logger LOGGER = System.getLogger(AnalyzePdfUseCase.class.getName());
+
     private final HashCalculator hashCalculator;
     private final PdfDocumentReader pdfDocumentReader;
     private final SignatureVerifier signatureVerifier;
@@ -201,7 +203,11 @@ public final class AnalyzePdfUseCase {
         try {
             formal = pdfaConformanceValidator.validate(content);
         } catch (RuntimeException e) {
-            String message = "PDF/A-1b validation failed unexpectedly: " + e;
+            // T09b: the exception's own message must never reach the client
+            // (it can carry internal detail unrelated to the PDF itself);
+            // log it server-side and report a stable, non-sensitive message.
+            LOGGER.log(System.Logger.Level.WARNING, "PDF/A-1b validation failed unexpectedly", e);
+            String message = "PDF/A-1b validation failed unexpectedly";
             sectionErrors.add(new SectionError(AnalysisSection.PDFA, message));
             return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED,
                     List.of(new PdfaIssue("NOT_VALIDATED", message)));
@@ -216,8 +222,9 @@ public final class AnalyzePdfUseCase {
         try {
             extracted = signatureVerifier.verify(content);
         } catch (RuntimeException e) {
+            LOGGER.log(System.Logger.Level.WARNING, "Signature verification failed unexpectedly", e);
             sectionErrors.add(new SectionError(
-                    AnalysisSection.SIGNATURES, "signature verification failed unexpectedly: " + e));
+                    AnalysisSection.SIGNATURES, "signature verification failed unexpectedly"));
             return List.of();
         }
 
@@ -247,7 +254,10 @@ public final class AnalyzePdfUseCase {
             RevocationStatus revocation = resolveRevocation(signature, options);
             return signature.withChainAndRevocation(chainStatus, revocation);
         } catch (RuntimeException e) {
-            return withAppendedAnomaly(signature, "chain/revocation enrichment failed: " + e);
+            // T09b: never surface the raw exception to the client -- log it
+            // server-side, report a stable, non-sensitive anomaly note.
+            LOGGER.log(System.Logger.Level.WARNING, "Chain/revocation enrichment failed unexpectedly", e);
+            return withAppendedAnomaly(signature, "chain/revocation enrichment failed unexpectedly");
         }
     }
 

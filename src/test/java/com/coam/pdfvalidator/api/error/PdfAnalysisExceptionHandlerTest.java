@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MissingServletRequestParameterException;
-import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,13 +76,9 @@ class PdfAnalysisExceptionHandlerTest {
         assertThat(problem.getType().toString()).isEqualTo("urn:pdfvalidator:error:encrypted-pdf");
     }
 
-    @Test
-    void maxUploadSizeExceededMapsTo413FileTooLarge() {
-        ProblemDetail problem = handler.handleTooLarge(new MaxUploadSizeExceededException(20_000_000L));
-
-        assertThat(problem.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
-        assertThat(problem.getType().toString()).isEqualTo("urn:pdfvalidator:error:file-too-large");
-    }
+    // MaxUploadSizeExceededException is handled by MaxUploadSizeExceptionHandler
+    // instead (T09b): see MaxUploadSizeExceptionHandlerTest and that class's
+    // Javadoc for why it cannot be handled here.
 
     @Test
     void unexpectedExceptionMapsTo500WithoutLeakingItsMessage() {
