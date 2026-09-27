@@ -68,8 +68,16 @@
     </dependency>
 
     <dependency>
+      <!-- Boot 4's modular test starters mirror the matching feature starter:
+           since we use spring-boot-starter-webmvc (not -web), the matching
+           test starter is -webmvc-test, not the generic -test one. It already
+           depends on spring-boot-starter-test transitively (confirmed against
+           the resolved 4.1.1 BOM/POM), plus MockMvc autoconfiguration
+           (spring-boot-webmvc-test) and a REST test client
+           (spring-boot-resttestclient), both needed for T09's controller and
+           end-to-end tests. -->
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-test</artifactId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -85,6 +93,20 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <!-- Adds target/classes/META-INF/build-info.properties (bound to
+                 the default prepare-package phase), so BuildProperties is
+                 available at runtime for the OpenAPI "version" field and
+                 Actuator's /actuator/info endpoint. Additive: does not
+                 replace the default "repackage" execution already bound by
+                 spring-boot-starter-parent. -->
+            <id>build-info</id>
+            <goals>
+              <goal>build-info</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.jacoco</groupId>
