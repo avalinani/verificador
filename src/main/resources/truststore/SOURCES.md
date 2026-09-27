@@ -19,6 +19,7 @@ Downloaded and verified 2026-09-27.
 | `firmaprofesional-ac-raiz.pem` | Autoridad de Certificacion Firmaprofesional CIF A62634068 (2014 renewal) | `57:DE:05:83:EF:D2:B2:6E:03:61:DA:99:DA:9D:F4:64:8D:EF:7E:E8:44:1C:3B:72:8A:FA:9B:CD:E0:F9:B2:6A` | 2036-05-05 | https://crl.firmaprofesional.com/caroot256.crt | CCADB Included CA Certificate Report (row: "Autoridad de Certificacion Firmaprofesional CIF A62634068", serial `1B70E9D2FFAE6C71`, valid from 2014.09.23) — matches exactly; also https://bugzilla.mozilla.org/show_bug.cgi?id=1741930 (NSS root inclusion) |
 | `izenpe-com.pem` | Izenpe.com | `25:30:CC:8E:98:32:15:02:BA:D9:6F:9B:1F:BA:1B:09:9E:2D:29:9E:0F:45:48:BB:91:4F:36:3B:C0:D4:53:1F` | 2037-12-13 | Obtained from the CCADB record itself (izenpe.eus only exposes an interactive download portal, not a stable direct file URL) | CCADB Included CA Certificate Report (row: "Izenpe.com", serial `00B0B75A16485FBFE1CBF58BD719E67D`) — fingerprint recomputed locally from the bundled file and matches the CCADB row exactly. Note: CCADB records a TLS/website trust-bit distrust after 2026-04-15 for this root; that restriction is about browser/TLS trust only and does not apply to its use here as a document-signature (non-TLS) trust anchor |
 | `ac-raiz-dnie-2.pem` | AC RAIZ DNIE 2 (Dirección General de la Policía) | `C5:C3:80:EB:92:40:FB:36:A1:6E:15:F5:D6:BA:D0:BF:61:1F:6D:03:F0:EF:24:22:99:19:E7:D2:D8:12:6C:11` | 2043-09-27 | https://www.dnielectronico.es/ZIP/ACRAIZ-DNIE2.zip (official DNIe portal; downloaded and unzipped directly, `AC RAIZ DNIE 2.crt`) | Spain's official Trusted List (`https://tsl.digital.gob.es/TSL.xml`, per the EU List of Trusted Lists) — the embedded certificate for the "AC RAIZ DNIE 2" service was extracted and its SHA-256 recomputed locally; it matches the downloaded file exactly |
+| `ac-camerfirma-for-legal-persons-2016.pem` | AC CAMERFIRMA FOR LEGAL PERSONS - 2016 (issuer: CHAMBERS OF COMMERCE ROOT - 2016) | `3A:80:66:26:6D:28:BD:28:CC:D0:F5:64:C8:FB:C1:21:9B:4F:FA:E4:03:E0:1E:50:39:D3:0F:24:00:F0:EB:09` | 2040-03-09 | Extracted directly from Spain's official Trusted List (`https://tsl.digital.gob.es/TSL.xml`, per the EU List of Trusted Lists), not from any user PDF | Spain's TSL itself lists this exact certificate under a `TSPService` with `ServiceTypeIdentifier` `http://uri.etsi.org/TrstSvc/Svctype/CA/QC` and `ServiceStatus` `.../Svcstatus/granted`; the SHA-256 of the embedded `X509Certificate` was recomputed locally from the TSL XML and matches the bundled file exactly |
 
 Both `izenpe-com.pem` and `ac-raiz-dnie-2.pem` were added after the CA/download
 research below was originally written; unlike the four roots above, they
@@ -33,6 +34,27 @@ fingerprint against **both** a fresh direct download from
 `dnielectronico.es` (used as the bundled file itself) **and** a fresh copy
 of Spain's official TSL. Only because those independent, freshly-fetched
 checks matched exactly were these two bundled.
+
+## Not every anchor is a self-signed root
+
+`ac-camerfirma-for-legal-persons-2016.pem` is a qualified **issuing CA**, not
+a self-signed root: its own issuer, "CHAMBERS OF COMMERCE ROOT - 2016", is
+not itself published in Spain's TSL. This follows the eIDAS/EU Trusted
+Lists model directly — a TSL lists the qualified *service* (the issuing CA
+that actually signs end-entity certificates), not necessarily that CA's own
+(possibly unpublished) root. `PkixCertificateChainValidator` supports a
+non-self-signed trust anchor: the JDK's own PKIX `CertPathBuilder` resolves
+a path once it reaches any configured anchor certificate, self-signed or
+not (verified by `PkixCertificateChainValidatorTest`,
+`aChainAnchoredAtANonSelfSignedIntermediateIsTrusted`).
+
+Also worth noting: Mozilla, Google and Apple removed Camerfirma's roots
+from their TLS trust stores between 2021 and 2022 (a series of CA
+incidents/compliance findings tracked in Mozilla's `bugzilla` CA program).
+That removal is specifically about **TLS/website trust** — it does not
+affect this qualified issuing CA's standing for **eIDAS document-signature
+trust**, which follows the EU's own Trusted Lists, independently of the
+browser/TLS root programs.
 
 ## How to add your own roots
 

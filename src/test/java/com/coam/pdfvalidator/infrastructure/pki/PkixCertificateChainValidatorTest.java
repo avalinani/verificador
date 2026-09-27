@@ -82,6 +82,34 @@ class PkixCertificateChainValidatorTest {
         assertThat(status).isEqualTo(ChainStatus.EXPIRED);
     }
 
+    /**
+     * T09c follow-up (Camerfirma trust anchor): the EU Trusted Lists model
+     * publishes the qualified ISSUING CA as the trust anchor, not
+     * necessarily its (possibly unpublished) root -- e.g. Spain's TSL lists
+     * "AC CAMERFIRMA FOR LEGAL PERSONS - 2016" but not its own issuer,
+     * "CHAMBERS OF COMMERCE ROOT - 2016". A {@link
+     * java.security.cert.TrustAnchor} configured with such a non-self-signed
+     * certificate must still be usable: the JDK's own PKIX {@link
+     * java.security.cert.CertPathBuilder} treats any anchor certificate as a
+     * valid path terminus regardless of whether that certificate is itself
+     * self-signed, so a chain presented as {@code [ee, intermediate]} (the
+     * real root omitted, exactly as it would be when only the intermediate
+     * is configured as a trust anchor) must resolve to {@code TRUSTED}.
+     */
+    @Test
+    void aChainAnchoredAtANonSelfSignedIntermediateIsTrusted() {
+        TestPki.ThreeTierIdentity identity = TestPki.issueThreeTierIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.intermediateCertificate()));
+
+        List<CertificateInfo> chain =
+                toCertificateInfos(List.of(identity.endEntityCertificate(), identity.intermediateCertificate()));
+
+        ChainStatus status = validator.validate(chain, Instant.now());
+
+        assertThat(status).isEqualTo(ChainStatus.TRUSTED);
+    }
+
     @Test
     void anEmptyChainIsNotChecked() {
         PkixCertificateChainValidator validator = new PkixCertificateChainValidator(TrustAnchorProvider.of());

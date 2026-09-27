@@ -19,14 +19,23 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Loads X.509 root certificates as {@link TrustAnchor}s for {@link
+ * Loads X.509 certificates as {@link TrustAnchor}s for {@link
  * PkixCertificateChainValidator}, from up to three sources: a fixed list of
- * bundled roots on the classpath ({@code truststore/*.pem}, documented with
+ * bundled anchors on the classpath ({@code truststore/*.pem}, documented with
  * their provenance in {@code truststore/SOURCES.md}), an optional external
  * directory of certificate files (one certificate per file; PEM or DER), and
  * an optional PKCS#12 keystore file. All three are additive: every source
  * that is configured contributes its certificates to the same trust anchor
  * set.
+ *
+ * <p><b>An anchor need not be a self-signed root</b>: most bundled anchors
+ * are self-signed roots, but the EU Trusted Lists model (eIDAS) publishes
+ * the qualified ISSUING CA as the trusted service, which is not always the
+ * same as its own (possibly unpublished) root -- see {@code
+ * ac-camerfirma-for-legal-persons-2016.pem} in {@code SOURCES.md}. {@link
+ * PkixCertificateChainValidator} supports this (a non-self-signed anchor
+ * still resolves to {@code TRUSTED} via the JDK's own PKIX path builder;
+ * verified by {@code PkixCertificateChainValidatorTest}).
  *
  * <p>Spring configuration-property wiring for the external directory/PKCS#12
  * path is planned for T09; for now both are plain constructor parameters, so
@@ -50,7 +59,13 @@ public final class TrustAnchorProvider {
             "truststore/accvraiz1.pem",
             "truststore/firmaprofesional-ac-raiz.pem",
             "truststore/izenpe-com.pem",
-            "truststore/ac-raiz-dnie-2.pem");
+            "truststore/ac-raiz-dnie-2.pem",
+            // Not self-signed: per the eIDAS/EU Trusted Lists model, a TSL
+            // publishes the qualified ISSUING CA as the trust anchor, not
+            // necessarily its own (possibly unpublished) root -- see
+            // SOURCES.md. PkixCertificateChainValidator supports this
+            // (verified by PkixCertificateChainValidatorTest).
+            "truststore/ac-camerfirma-for-legal-persons-2016.pem");
 
     private final Set<TrustAnchor> trustAnchors;
 
