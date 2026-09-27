@@ -42,16 +42,18 @@ El servicio no guarda los documentos analizados: es **sin estado** y sin base de
 Cliente (UI o Swagger)
    │  POST /api/v1/pdf/analyze  (multipart, PDF ≤ 20 MB)          ⏳
    ▼
-api ──► application: AnalyzePdfUseCase                           ⏳
-            │ orquesta los puertos del dominio
+api ──► application: AnalyzePdfUseCase                           ✅
+            │ orquesta los puertos del dominio (ver §2.9)
             ├─► HashCalculator            SHA-256 / SHA-512       ✅
             ├─► PdfDocumentReader         estructura, páginas, permisos, XMP  ✅
             ├─► SignatureVerifier         /ByteRange + CMS + RFC 3161       ✅
             ├─► CertificateChainValidator PKIX contra trust store            ✅
-            ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳
+            ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳ (NoOp por ahora, T10)
             └─► PdfaConformanceValidator  preflight PDF/A-1b                 ✅
    ◄── PdfAnalysisReport (JSON)
 ```
+
+La capa `api` (controlador REST, DTOs, mapeo de errores) todavía no existe (⏳, T09); `AnalyzePdfUseCase` ya es real y está cubierto por tests de unidad, un test de integración con adaptadores reales y por las reglas de arquitectura de ArchUnit (§2.9, §2.10).
 
 ### 2.2 Cómo se detecta que un documento ha cambiado después de firmarse
 
@@ -179,7 +181,45 @@ Cada raíz se descargó por HTTPS directamente de la web oficial de su propia au
 
 **Incidencias**: cada resultado no conforme trae una lista de `PdfaIssue` (código + mensaje) deduplicada (mismo código y mensaje se cuentan una sola vez) y acotada a 200 elementos (con una incidencia `TRUNCATED` indicando cuántas se omitieron), para que un documento con un problema sistémico no produzca miles de incidencias casi idénticas.
 
-**Fixture conforme** (`TestPdfFactory#pdfA1bCompliant`): el documento más pequeño que este proyecto pudo construir y que *preflight* valida como conforme es una página en blanco (sin texto, así que no hace falta embeber ninguna fuente — evita por completo la cuestión de licencias de fuentes) con un `OutputIntent` sRGB construido a partir del perfil ICC que trae el propio Windows (`C:\Windows\System32\spool\drivers\color\sRGB Color Space Profile.icm`, leído solo en tiempo de test, nunca descargado ni incluido en el repositorio) y XMP `pdfaid` (parte 1, conformidad B). El test que usa este fixture se salta (sin fallar) si ese perfil ICC no está disponible en la máquina — por ejemplo, en el runner de CI, que no es Windows —, documentado como limitación conocida de este fixture concreto. Se probó también con `TestPdfFactory#unsigned()` (sin `OutputIntent` ni XMP) para el caso `NON_COMPLIANT`, con códigos de error reales de *preflight* capturados empíricamente (`3.1.3` fuente no embebida, `2.4.3` operador de color sin perfil, `7.1` sin metadatos PDF/A).
+**Fixture conforme** (`TestPdfFactory#pdfA1bCompliant`): el documento más pequeño que este proyecto pudo construir y que *preflight* valida como conforme es una página en blanco (sin texto, así que no hace falta embeber ninguna fuente — evita por completo la cuestión de licencias de fuentes) con un `OutputIntent` sRGB y XMP `pdfaid` (parte 1, conformidad B). Se probó también con `TestPdfFactory#unsigned()` (sin `OutputIntent` ni XMP) para el caso `NON_COMPLIANT`, con códigos de error reales de *preflight* capturados empíricamente (`3.1.3` fuente no embebida, `2.4.3` operador de color sin perfil, `7.1` sin metadatos PDF/A).
+
+**(T07b)** El `OutputIntent` sRGB de ese fixture usaba originalmente el perfil ICC del propio Windows (`C:\Windows\System32\spool\drivers\color\sRGB Color Space Profile.icm`, leído solo en tiempo de test), lo que dejaba el test de la ruta `COMPLIANT` saltado (no fallado, pero tampoco probado) en el runner de CI, que es Linux. Ahora usa el perfil sRGB que trae el propio JDK (`java.awt.color.ICC_Profile.getInstance(ColorSpace.CS_sRGB).getData()`): comprobado empíricamente que *preflight* lo acepta igual como fuente válida de `OutputIntent`, sin necesidad de entorno gráfico (la implementación es Little CMS, no un servicio de color del sistema operativo), así que el test ya no se salta en ninguna plataforma.
+
+**(T07b) Endurecimiento adicional**: la comprobación previa de cifrado/documento roto (antes de invocar *preflight*) ahora también captura una `RuntimeException` inesperada, no solo `IOException`/`InvalidPasswordException`, informando `NOT_VALIDATED` en vez de dejarla escapar. `PreflightPdfaValidatorTest` añadió cobertura directa de la rama `probe.isEncrypted()` (documento cifrado con contraseña de usuario vacía, distinta de la rama de excepción ya cubierta) y de la truncación/deduplicación de incidencias a 200 (probada llamando directamente al mapeador de errores, package-private, con una lista sintética de 250 incidencias — construir un documento real con más de 200 errores distintos de *preflight* no era práctico).
+
+### 2.9 Orquestación: `AnalyzePdfUseCase` (T08)
+
+`application/AnalyzePdfUseCase` es una clase de Java puro (sin Spring todavía; el cableado llega en T09) que orquesta, en un único método `analyze(fileName, content, options)`, todos los puertos del dominio descritos arriba, en este orden: hashes → estructura/seguridad/declaración PDF/A → validación formal PDF/A-1b (combinada con la declaración, ver más abajo) → firmas (cada una enriquecida con cadena de confianza y, opcionalmente, revocación). Recibe también un `java.time.Clock` inyectado (nunca `Instant.now()` directamente), para que `analyzedAt` y el "ahora" usado como último recurso de `validationTime` sean deterministas en los tests.
+
+**Cómo se decide `validationTime` para la cadena de confianza** (§2.7): para cada firma, por este orden de preferencia — (1) el `genTime` del sello de tiempo RFC 3161 de la firma, solo si ese sello es válido (`imprintValid` y `signatureValid` ambos `true`); (2) si no, la fecha de firma auto-declarada (`claimedSigningTime`); (3) si tampoco hay, el instante actual del `Clock` inyectado. Esto es exactamente lo que ya documentaba `PkixCertificateChainValidator`, ahora implementado por quien realmente puede decidirlo (el caso de uso, no el adaptador).
+
+**Combinación de la validación PDF/A** (contrato de §2.8): el caso de uso lee la declaración XMP `pdfaid` con `PdfDocumentReader#readPdfaDeclaration` y, por separado, el resultado formal 1b con `PdfaConformanceValidator#validate`. Si el documento declara PDF/A-2 o PDF/A-3 (`part != 1`), el informe final es `NOT_VALIDATED` con una incidencia `PDFA_PART_NOT_SUPPORTED` explicando que solo se valida formalmente PDF/A-1b — en vez del resultado formal 1b (casi con toda seguridad `NON_COMPLIANT`, con incidencias que no dicen nada real sobre la conformidad 2/3 del documento). Si declara PDF/A-1 o no declara ningún PDF/A, se usa el resultado formal tal cual.
+
+**Revocación** (§10, opcional): si `AnalysisOptions.checkRevocation()` es `false`, cada firma recibe `RevocationStatus.notChecked()` sin llamar a ningún `RevocationChecker` (ni siquiera si la firma no tiene cadena de certificados). Si es `true`, se llama al `RevocationChecker` inyectado con el certificado del firmante (primer elemento de la cadena) y su emisor inmediato (segundo elemento, o `null` si la cadena solo tiene un certificado) — salvo que la cadena esté vacía, en cuyo caso tampoco hay nada que comprobar. La implementación real (OCSP/CRL) llega en T10; mientras tanto, `application/NoOpRevocationChecker` informa siempre `RevocationState.NOT_CHECKED` con el detalle `"revocation checking not available yet"` — deliberadamente distinto de `notChecked()` (que no lleva detalle), para que "se pidió pero aún no está implementado" se pueda distinguir de "no se pidió" si ese detalle llega a exponerse.
+
+**Documento cifrado o corrupto: se propaga, no se atrapa**: `readStructure`/`readSecurity`/`readPdfaDeclaration` pueden lanzar `EncryptedPdfException` (contraseña de usuario no vacía) o `InvalidPdfException` (entrada corrupta o que no es un PDF). Ambas se propagan sin capturar fuera de `analyze(...)`: no existe un informe parcial razonable para un documento que ni siquiera se pudo abrir, y la futura capa REST (T09) debe mapear ambas a un `422`. Decisión documentada explícitamente en el Javadoc de la clase, no un descuido.
+
+**Resiliencia: el fallo de una sección no debe perder el resto del informe**: dos adaptadores cuyo propio contrato ya dice que no deberían lanzar excepciones para un documento individual reciben, además, una guarda propia en el caso de uso (defensa en profundidad frente a un fallo inesperado del adaptador, no frente a su comportamiento documentado):
+
+- `PdfaConformanceValidator#validate`: una `RuntimeException` inesperada se informa como `NOT_VALIDATED` con una incidencia explicativa, sin perder hashes/estructura/seguridad/firmas ya calculados.
+- `SignatureVerifier#verify`: una `RuntimeException` inesperada se informa como "sin firmas" (lista vacía) — no hay una firma individual a la que aislar el fallo, porque ocurrió antes de poder extraer ninguna.
+- Enriquecimiento por firma (validación de cadena + revocación): guardados juntos; un fallo dentro de uno u otro deja esa firma con sus campos de integridad/cobertura/sello ya calculados intactos y su cadena/revocación en sus valores `NOT_CHECKED`/`notChecked()` por defecto, añadiendo una nota a `SignatureReport#anomaly()` (fusionada con cualquier anomalía que el propio `SignatureVerifier` ya hubiera informado, por ejemplo un certificado que no se pudo mapear) — el resto de firmas y el resto del informe no se ven afectados.
+
+`HashCalculator#hash` es la única sección deliberadamente **sin** esta guarda: calcular un hash de un array de bytes no puede fallar de forma significativa con ninguna de las implementaciones de este proyecto, y `PdfAnalysisReport` exige hashes no nulos, así que no hay ningún valor de repuesto razonable que sustituir si de algún modo fallara.
+
+**Tests**: `AnalyzePdfUseCaseTest` (16, con *fakes* escritos a mano para cada puerto, sin Mockito) cubre la orquestación completa, las tres combinaciones de `validationTime`, el flag de revocación activado/desactivado (incluida una firma sin cadena), la declaración PDF/A-2 → `NOT_VALIDATED`, el aislamiento de fallos por sección (PDF/A, firmas, enriquecimiento de una firma sin afectar a las demás, fusión de anomalías), la propagación de `EncryptedPdfException`/`InvalidPdfException`, y `analyzedAt` viniendo del `Clock` inyectado. `AnalyzePdfUseCaseIntegrationTest` (1) cablea los adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar, comprobando un informe completo y coherente: integridad íntegra, cadena de confianza `TRUSTED`, sello de tiempo válido.
+
+### 2.10 Arquitectura hexagonal comprobada con ArchUnit (T08)
+
+`src/test/java/.../architecture/ArchitectureTest` sustituye los `grep` manuales que hasta ahora demostraban (tarea a tarea, en la evidencia de este mismo documento) que el dominio no depende de ninguna librería, por una comprobación automática que se ejecuta en cada `./mvnw verify`:
+
+- **`domain` no depende de nada salvo Java puro**: ni Spring, ni PDFBox, ni Bouncy Castle — y, explícitamente, tampoco `java.security.cert` ni `java.awt`, aunque técnicamente formen parte de `java..`: el dominio modela certificados y color con sus propios tipos sin librerías (`CertificateInfo`, cajas numéricas simples) precisamente para no necesitar ninguno de los dos.
+- **`application` depende solo de `domain` y Java puro**: el caso de uso orquesta los puertos, nunca un adaptador de infraestructura concreto directamente.
+- **`infrastructure` nunca depende de `application` ni de `api`**: los adaptadores implementan puertos del dominio; no deben conocer quién los usa.
+- **`api` (aún no existe, T09) solo podrá depender de `application` y `domain`**: la regla usa `allowEmptyShould(true)` para pasar hoy sin ese paquete y empezar a exigirse en cuanto exista.
+- **Sin ciclos de importación entre los cuatro paquetes de primer nivel** (`domain`, `application`, `infrastructure`, `api`).
+
+La importación de clases excluye explícitamente los propios tests (`ImportOption.Predefined.DO_NOT_INCLUDE_TESTS`): los *fixtures* de prueba (`TestPdfFactory`, `TestPki`, etc.) usan PDFBox/Bouncy Castle directamente a propósito y no deben hacer fallar estas reglas, que protegen la arquitectura de producción, no las herramientas de test.
 
 ## 3. Stack tecnológico
 
@@ -240,7 +280,7 @@ src/main/java/com/coam/pdfvalidator/
 │  ├─ model/                      Records inmutables del informe (páginas, firmas, certificados…)
 │  ├─ port/                       Interfaces que implementa la infraestructura
 │  └─ exception/                  InvalidPdfException, EncryptedPdfException
-├─ application/                   Casos de uso (AnalyzePdfUseCase)       ⏳
+├─ application/                   AnalyzePdfUseCase (orquestación), AnalysisOptions, NoOpRevocationChecker  ✅
 ├─ infrastructure/                Adaptadores PDFBox, Bouncy Castle, OCSP/CRL, preflight
 │  ├─ crypto/                     JcaHashCalculator (SHA-256/SHA-512)
 │  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
@@ -258,7 +298,9 @@ src/test/java/com/coam/pdfvalidator/
 ├─ fixtures/                      Generación de PDFs de prueba (CA de test, firma, cifrado…)
 ├─ spike/                         Prueba de concepto inicial de verificación de firma
 ├─ domain/                        Tests del modelo de dominio
-└─ infrastructure/                Tests de los adaptadores (pdfbox, bouncycastle, crypto)
+├─ application/                   AnalyzePdfUseCaseTest (fakes) + AnalyzePdfUseCaseIntegrationTest (adaptadores reales)
+├─ infrastructure/                Tests de los adaptadores (pdfbox, bouncycastle, crypto, pki, preflight)
+└─ architecture/                  ArchitectureTest: reglas ArchUnit de la arquitectura hexagonal
 
 odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 .github/workflows/ci.yml          Integración continua
@@ -284,6 +326,8 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Revocación OCSP / CRL (opcional, timeout 2 s) | ⏳ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ✅ |
+| Orquestación completa del análisis (`AnalyzePdfUseCase`): hashes, estructura, PDF/A combinado, firmas enriquecidas con cadena/revocación, aislamiento de fallos por sección | ✅ |
+| Arquitectura hexagonal comprobada automáticamente (ArchUnit) | ✅ |
 | API REST + Swagger UI | ⏳ |
 | Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
@@ -308,11 +352,14 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `SignatureTimestampVerifierTest` | Verificador de sellos de tiempo aislado (mismo motivo que `SignatureByteRangeTest`: construir el escenario a mano en vez de por fichero): sin atributo de sello → `absent()`, token con bytes ASN.1 corruptos → inválido con nota, sin lanzar excepción, certificado de la TSA sin el uso extendido de clave `timeStamping` → nota informativa, **(T05b)** un certificado de TSA que no se puede mapear conserva el resto del resultado del sello y añade una nota en vez de descartarlo todo |
 | `X509CertificateInfoMapperTest` **(T05b)** | Camino de resiliencia del mapeador de certificados probado directamente (no solo indirectamente vía un PDF real): extensión Authority Information Access o CRL Distribution Points mal formada → sin URLs para esa extensión, sin lanzar excepción |
 | `PkixCertificateChainValidatorTest` **(T06, T06b)** | Cadena hasta una raíz de confianza → `TRUSTED`; raíz autofirmada pero ausente del almacén → `UNTRUSTED_ROOT`; falta el certificado intermedio (usando una identidad de tres niveles: raíz → intermedia → firmante) → `INCOMPLETE_CHAIN`; validación posterior a la caducidad del certificado firmante → `EXPIRED`; lista vacía → `NOT_CHECKED`; **(T06b)** un certificado que no se puede parsear desde su DER → `INCOMPLETE_CHAIN`, sin lanzar excepción |
-| `TrustAnchorProviderTest` **(T06, T06b)** | El almacén de confianza empaquetado carga exactamente las raíces documentadas en `truststore/SOURCES.md` (comparando huellas SHA-256, no por red) y todas están vigentes en una fecha de referencia fija (ya no `Instant.now()`); **(T06b)** directorio externo con certificados PEM y DER válidos más un fichero inválido que se omite sin abortar la carga, fichero PKCS#12 real generado en el propio test |
-| `RevisionCounterTest` **(T06b)** | Además de lo ya cubierto en T03b/T04b: 16 hilos ejecutando `count(...)` concurrentemente sobre distintos documentos obtienen cada uno el conteo correcto (prueba de que no queda estado compartido mutable tras eliminar el contador `static`) |
-| `PreflightPdfaValidatorTest` **(T07)** | Documento sin `OutputIntent` ni XMP → `NON_COMPLIANT` con códigos de error reales de *preflight* (`3.1.3`, `2.4.3`, `7.1`); entrada corrupta (cabecera presente pero estructura rota) → `NOT_VALIDATED`, sin lanzar excepción; entrada cifrada → `NOT_VALIDATED` con incidencia `ENCRYPTED`; entrada que no es un PDF en absoluto → `InvalidPdfException`; documento mínimo con `OutputIntent` sRGB y XMP `pdfaid` → `COMPLIANT` (se salta si el perfil ICC local no está disponible) |
+| `TrustAnchorProviderTest` **(T06, T06b, T07b)** | El almacén de confianza empaquetado carga exactamente las raíces documentadas en `truststore/SOURCES.md` (comparando huellas SHA-256, no por red) y todas están vigentes en una fecha de referencia fija (ya no `Instant.now()`); **(T06b)** directorio externo con certificados PEM y DER válidos más un fichero inválido que se omite sin abortar la carga, fichero PKCS#12 real generado en el propio test; **(T07b)** un directorio externo que ni siquiera existe (no se puede listar) se omite igual, sin lanzar excepción |
+| `RevisionCounterTest` **(T06b, T07b)** | Además de lo ya cubierto en T03b/T04b: 16 hilos ejecutando `count(...)` concurrentemente sobre distintos documentos obtienen cada uno el conteo correcto (prueba de que no queda estado compartido mutable tras eliminar el contador `static`); **(T07b)** una comprobación adicional específicamente pensada para detectar una regresión (un contador de pasos de escaneo compartido reintroducido): precalcula el conteo de pasos de cada documento en serie y comprueba que muchos hilos concurrentes escaneando documentos de tamaños distintos siguen obteniendo exactamente ese valor cada vez — verificado empíricamente reintroduciendo un contador `static` a propósito y confirmando que este test (y solo este, no el de más arriba) lo detecta |
+| `PreflightPdfaValidatorTest` **(T07, T07b)** | Documento sin `OutputIntent` ni XMP → `NON_COMPLIANT` con códigos de error reales de *preflight* (`3.1.3`, `2.4.3`, `7.1`); entrada corrupta (cabecera presente pero estructura rota) → `NOT_VALIDATED`, sin lanzar excepción; entrada cifrada (contraseña de usuario no vacía) → `NOT_VALIDATED` con incidencia `ENCRYPTED`; entrada que no es un PDF en absoluto → `InvalidPdfException`; documento mínimo con `OutputIntent` sRGB (perfil del JDK) y XMP `pdfaid` → `COMPLIANT`, ya sin saltarse en ninguna plataforma; **(T07b)** documento cifrado con contraseña de usuario vacía (rama `probe.isEncrypted()`, distinta de la de excepción) → `NOT_VALIDATED`; más de 200 incidencias sintéticas (con un duplicado exacto) → deduplicadas y truncadas con un marcador `TRUNCATED` |
+| `AnalyzePdfUseCaseTest` **(T08)** | Orquestación completa con *fakes* escritos a mano para cada puerto: ensamblado del informe; las tres combinaciones de `validationTime` (sello de tiempo válido, sello inválido con fecha de firma auto-declarada, ninguna de las dos → reloj); revocación desactivada, activada con emisor, activada sin cadena de certificados; declaración PDF/A-2 → `NOT_VALIDATED` (frente a PDF/A-1, que usa el resultado formal tal cual); aislamiento de fallos (validador PDF/A, verificador de firmas, enriquecimiento de una firma sin afectar a otra ni fusionar mal una anomalía ya existente); `analyzedAt` viene del `Clock` inyectado; `EncryptedPdfException`/`InvalidPdfException` se propagan |
+| `AnalyzePdfUseCaseIntegrationTest` **(T08)** | El único test de integración de la orquestación: adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar — informe completo coherente: integridad `INTACT`, cadena `TRUSTED`, sello de tiempo válido |
+| `ArchitectureTest` **(T08)** | Reglas ArchUnit (§2.10): dominio sin librerías (ni siquiera `java.security.cert`/`java.awt`), `application` solo depende de `domain` y Java puro, `infrastructure` nunca depende de `application`/`api`, `api` (aún no existe) solo podrá depender de `application`/`domain`, sin ciclos entre los cuatro paquetes de primer nivel — verificado también introduciendo a propósito una dependencia prohibida y comprobando que la regla correspondiente la detecta |
 
-**Estado actual:** 149 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 175 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, firmado con sello de tiempo RFC 3161 válido, firmado con sello de tiempo de imprint incorrecto, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF y con declaración PDF/A (XMP `pdfaid`). La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria independiente de la CA de firma, con un certificado que declara el uso extendido de clave `id-kp-timeStamping`.
 
@@ -332,6 +379,8 @@ Enlace público a las slides: ⏳ *(pendiente)*
 - **PDF/A-1b únicamente.** El módulo *preflight* de PDFBox solo valida PDF/A-1b. Para PDF/A-2/3 se informará de la declaración XMP, pero no se validará formalmente.
 - **Revocación opcional y acotada.** Las consultas OCSP/CRL dependen de la red, así que se activan con un parámetro, tienen un timeout de 2 s y, si fallan, el resultado es `UNKNOWN` sin bloquear el resto del análisis.
 - **Sin lista de confianza europea (TSL).** La cadena se valida contra un almacén de raíces configurable con las CA españolas.
+- **Documento cifrado (contraseña no vacía) o corrupto: se propaga, no se degrada a un informe parcial (T08).** `AnalyzePdfUseCase` deja que `EncryptedPdfException`/`InvalidPdfException` salgan de `analyze(...)` sin capturarlas: no hay un informe parcial razonable para un documento que ni siquiera se pudo abrir. La futura capa REST (T09) debe mapear ambas a `422`.
+- **`NoOpRevocationChecker` como implementación provisional (T08, hasta T10).** Cuando se pide comprobar revocación (`checkRevocation=true`) pero el `RevocationChecker` real (OCSP/CRL) todavía no existe, se informa `NOT_CHECKED` con un detalle explícito ("revocation checking not available yet") en vez de fingir que se comprobó — deliberadamente distinto del `notChecked()` que se usa cuando el flag está desactivado.
 
 ## 11. Historial de cambios
 
@@ -346,6 +395,7 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-27 | Repositorio publicado en GitHub (fusión del commit inicial con la licencia GPL-3.0). CI de GitHub Actions en verde con Temurin 25. |
 | 2026-09-27 | (T05b) Un fallo al mapear el certificado de la TSA ya no descarta el resto del resultado del sello de tiempo; camino de resiliencia del mapeador de certificados probado directamente; test de rendimiento del contador de revisiones sustituido por una comprobación determinista (sin reloj de pared). (T06) Validación de cadena de confianza X.509 con la implementación PKIX de la JDK (`PkixCertificateChainValidator`), contra un almacén de confianza configurable (`TrustAnchorProvider`) con seis raíces españolas empaquetadas y verificadas de forma independiente (§2.7). |
 | 2026-09-27 | (T06b) `RevisionCounter` ya no guarda su diagnóstico de escaneo en un campo `static` (condición de carrera bajo concurrencia); `PkixCertificateChainValidator` informa un certificado no parseable como `INCOMPLETE_CHAIN` en vez de lanzar excepción; `TrustAnchorProvider` omite (sin abortar) un fichero inválido en el directorio externo, con tests nuevos para directorio externo y PKCS#12; la comprobación de vigencia de las raíces empaquetadas ya usa una fecha de referencia fija en vez de `Instant.now()` (§2.7). (T07) Validación formal PDF/A-1b con el módulo *preflight* de Apache PDFBox (`PreflightPdfaValidator`): `COMPLIANT`/`NON_COMPLIANT` con incidencias deduplicadas y acotadas, `NOT_VALIDATED` para cifrado o fallos internos sin lanzar excepción, `InvalidPdfException` solo para entradas sin cabecera `%PDF-` reconocible; documenta por qué solo se valida formalmente PDF/A-1b (§2.8). |
+| 2026-09-27 | (T07b) El fixture PDF/A-1b conforme usa ahora el perfil sRGB del propio JDK en vez del fichero de Windows, así que su test ya no se salta en CI; el sondeo previo de cifrado en `PreflightPdfaValidator` también captura una `RuntimeException` inesperada; nuevos tests para la rama de documento cifrado con contraseña vacía y para la truncación/deduplicación de incidencias a 200; `TrustAnchorProvider` ya no propaga una excepción si el directorio externo no se puede ni listar; el test de concurrencia de `RevisionCounter` se reforzó para detectar específicamente un contador de pasos compartido reintroducido (§2.8). (T08) `AnalyzePdfUseCase`: orquesta todos los puertos del dominio en un único análisis, decide `validationTime` para la cadena de confianza (sello de tiempo válido → fecha de firma auto-declarada → reloj), combina la validación PDF/A-1b formal con la declaración XMP real, resuelve el flag de revocación (con `NoOpRevocationChecker` como implementación provisional hasta T10) y aísla el fallo de una sección para no perder el resto del informe; reglas de arquitectura hexagonal comprobadas automáticamente con ArchUnit (§2.9, §2.10). |
 
 ## 12. Repositorio y licencia
 
