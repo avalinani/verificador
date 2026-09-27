@@ -103,22 +103,57 @@ final class SignatureTimestampVerifier {
         if (tsaCertificate == null) {
             note = "TSA certificate not found in the timestamp token";
         } else {
-            tsaCertificateInfo = X509CertificateInfoMapper.toDomain(tsaCertificate);
             tsaName = tsaCertificate.getSubjectX500Principal().getName();
+
+            CertificateMapping mapping = mapTsaCertificate(tsaCertificate);
+            tsaCertificateInfo = mapping.certificateInfo();
+            note = appendNote(note, mapping.failureNote());
+
             try {
                 SignerInformationVerifier verifier =
                         new JcaSimpleSignerInfoVerifierBuilder().setProvider(bcProvider).build(tsaCertificate);
                 token.validate(verifier);
                 signatureValid = true;
             } catch (TSPException | org.bouncycastle.operator.OperatorCreationException e) {
-                note = "TSA signature verification failed: " + e.getMessage();
+                note = appendNote(note, "TSA signature verification failed: " + e.getMessage());
             }
+            // The missing-EKU check runs unconditionally alongside signature
+            // validation above (not only when it succeeds): BC's own
+            // signingCertificate/ESSCertID binding check (RFC 5035) means a
+            // substituted TSA certificate typically fails signature
+            // validation too, so in practice this note is most often seen
+            // together with a signature failure rather than alone -- it is
+            // still reported on its own merits rather than folded into that
+            // failure, since the two are independent facts about the
+            // certificate.
             if (!hasTimeStampingEku(tsaCertificate)) {
                 note = appendNote(note, "TSA certificate is missing the id-kp-timeStamping extended key usage");
             }
         }
 
         return new TimestampInfo(genTime, tsaName, imprintValid, signatureValid, tsaCertificateInfo, note);
+    }
+
+    /**
+     * Maps the TSA certificate to the domain {@link CertificateInfo}. A
+     * mapping failure (e.g. the certificate cannot be DER-re-encoded) must
+     * not discard the rest of the timestamp result -- {@code genTime},
+     * {@code imprintValid} and {@code signatureValid} are each independently
+     * verifiable and stay meaningful even without the TSA's certificate
+     * data -- so the failure is reported only as a note, package-private and
+     * static so it can be unit-tested directly with a certificate double
+     * that fails to map.
+     */
+    static CertificateMapping mapTsaCertificate(X509Certificate certificate) {
+        try {
+            return new CertificateMapping(X509CertificateInfoMapper.toDomain(certificate), null);
+        } catch (RuntimeException e) {
+            return new CertificateMapping(null, "TSA certificate data could not be mapped: " + e.getMessage());
+        }
+    }
+
+    /** Result of {@link #mapTsaCertificate}: the mapped certificate, or a failure note when mapping failed. */
+    record CertificateMapping(CertificateInfo certificateInfo, String failureNote) {
     }
 
     private static boolean imprintMatches(TimeStampTokenInfo info, byte[] signatureValue, Provider bcProvider) {
@@ -152,6 +187,15 @@ final class SignatureTimestampVerifier {
         }
     }
 
+    /**
+     * T05b decision: kept as-is rather than simplified/removed, even though
+     * BC's own signingCertificate/ESSCertID binding check (RFC 5035) means a
+     * substituted certificate usually fails signature validation for the
+     * same reason, making "valid signature + missing EKU" hard to reach in
+     * practice -- an unmodified, genuinely non-compliant TSA certificate
+     * still reaches this check on its own, so the note stays independently
+     * useful.
+     */
     private static boolean hasTimeStampingEku(X509Certificate certificate) {
         try {
             List<String> extendedKeyUsage = certificate.getExtendedKeyUsage();
@@ -162,7 +206,11 @@ final class SignatureTimestampVerifier {
         }
     }
 
+    /** Appends {@code addition} to {@code existing} (joined by {@code "; "}); a {@code null} addition is a no-op. */
     private static String appendNote(String existing, String addition) {
+        if (addition == null) {
+            return existing;
+        }
         return existing == null ? addition : existing + "; " + addition;
     }
 

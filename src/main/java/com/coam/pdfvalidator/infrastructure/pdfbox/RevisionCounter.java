@@ -60,8 +60,24 @@ final class RevisionCounter {
     private RevisionCounter() {
     }
 
+    /**
+     * Test-only diagnostic: total byte-position scan steps ({@link
+     * #indexOf}'s outer-loop iterations) performed by the most recent {@link
+     * #count(byte[])} call. Not thread-safe (a single mutable counter), but
+     * this class and its test run single-threaded. Lets {@code
+     * RevisionCounterTest} assert that scan work grows linearly (not
+     * quadratically) with input size deterministically, without relying on
+     * wall-clock timing, which is flaky on a loaded CI machine.
+     */
+    private static long scanSteps;
+
+    static long lastScanStepCount() {
+        return scanSteps;
+    }
+
     /** Counts revisions (at least 1) for the given raw PDF bytes. */
     static int count(byte[] pdf) {
+        scanSteps = 0;
         MarkerPositions markers = MarkerPositions.scan(pdf);
         List<Long> chain = xrefChainOffsets(pdf, markers);
         int hops = chain.size();
@@ -176,6 +192,7 @@ final class RevisionCounter {
         int last = Math.min(limit, haystack.length) - needle.length;
         outer:
         for (int i = Math.max(fromIndex, 0); i <= last; i++) {
+            scanSteps++;
             for (int j = 0; j < needle.length; j++) {
                 if (haystack[i + j] != needle[j]) {
                     continue outer;
