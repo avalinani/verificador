@@ -35,6 +35,8 @@ import java.util.Set;
  */
 public final class TrustAnchorProvider {
 
+    private static final System.Logger LOGGER = System.getLogger(TrustAnchorProvider.class.getName());
+
     /**
      * Bundled root certificate files under the classpath {@code truststore/}
      * folder. Listed explicitly (rather than scanned) because classpath
@@ -120,6 +122,16 @@ public final class TrustAnchorProvider {
         return certificates;
     }
 
+    /**
+     * Loads every certificate file in {@code directory}. A file that is not
+     * a valid PEM/DER certificate (or otherwise unreadable) is skipped --
+     * logged, never allowed to abort loading the rest of the external
+     * directory or the trust store as a whole -- matching the "a single bad
+     * input never aborts the whole analysis" convention used throughout this
+     * codebase's other adapters (e.g. {@code BcSignatureVerifier} per
+     * signature field, {@code PkixCertificateChainValidator} per
+     * certificate).
+     */
     private static List<X509Certificate> loadDirectory(Path directory) throws IOException, CertificateException {
         CertificateFactory factory = CertificateFactory.getInstance("X.509");
         List<X509Certificate> certificates = new ArrayList<>();
@@ -128,6 +140,9 @@ public final class TrustAnchorProvider {
                 if (Files.isRegularFile(entry)) {
                     try (InputStream in = Files.newInputStream(entry)) {
                         certificates.add((X509Certificate) factory.generateCertificate(in));
+                    } catch (CertificateException e) {
+                        LOGGER.log(System.Logger.Level.WARNING,
+                                () -> "Skipping unreadable trust anchor file " + entry + ": " + e.getMessage());
                     }
                 }
             }

@@ -6,7 +6,13 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,35 +92,76 @@ class RevisionCounterTest {
     /**
      * Deterministic replacement for a wall-clock performance assertion
      * (flaky on a loaded/slow CI machine): {@link RevisionCounter} exposes a
-     * package-private scan-step counter ({@link RevisionCounter#lastScanStepCount()})
-     * incremented once per byte position {@link RevisionCounter}'s internal
-     * {@code indexOf} inspects. The previous, quadratic implementation
+     * package-private {@link RevisionCounter#countScanSteps(byte[])} that
+     * returns, for that single call only, how many byte positions the
+     * internal {@code indexOf} inspected -- computed from a local counter
+     * instance, never a shared/static field (see {@link
+     * #concurrentInvocationsOnDifferentDocumentsProduceCorrectCountsForEach()}
+     * for why that matters). The previous, quadratic implementation
      * rescanned from each hop's offset to the end of the file, so its total
      * scan work grew with {@code hops * fileSize} -- roughly the square of
      * the input size for these synthetic documents, since {@code fileSize}
      * itself scales with {@code hops}. A 4x growth in revision count (and
      * thus file size) would have meant roughly a 16x growth in scan work
      * under that implementation. The current linear/{@code O(n log n)}
-     * implementation scans each keyword once per {@link
-     * RevisionCounter#count} call regardless of hop count, so scan work
-     * should grow close to 4x, not 16x; a generous margin absorbs the
-     * {@code log n} factor from the binary searches and general noise.
+     * implementation scans each keyword once per call regardless of hop
+     * count, so scan work should grow close to 4x, not 16x; a generous
+     * margin absorbs the {@code log n} factor from the binary searches and
+     * general noise.
      */
     @Test
     void scanWorkGrowsLinearlyNotQuadraticallyWithInputSize() {
         int smallRevisionCount = 500;
         int largeRevisionCount = 2000; // 4x the small case
 
-        RevisionCounter.count(manyRevisionsDocument(smallRevisionCount));
-        long smallSteps = RevisionCounter.lastScanStepCount();
-
-        RevisionCounter.count(manyRevisionsDocument(largeRevisionCount));
-        long largeSteps = RevisionCounter.lastScanStepCount();
+        long smallSteps = RevisionCounter.countScanSteps(manyRevisionsDocument(smallRevisionCount));
+        long largeSteps = RevisionCounter.countScanSteps(manyRevisionsDocument(largeRevisionCount));
 
         assertThat(smallSteps).isPositive();
         assertThat(largeSteps)
                 .as("a 4x larger input must not cost ~16x the scan work of a quadratic implementation")
                 .isLessThan(smallSteps * 8);
+    }
+
+    /**
+     * T06b follow-up: the previous implementation kept its scan-step
+     * diagnostic in a {@code static} field reset at the start of every
+     * {@link RevisionCounter#count(byte[])} call -- a race condition once
+     * the service handles concurrent requests (one thread's reset/read could
+     * interleave with another thread's count entirely). Counting itself
+     * never used that field's value, so the bug was invisible to every
+     * single-threaded test above; this drives many different documents
+     * (different, independently-verifiable revision counts) through {@code
+     * count} concurrently and asserts every result is exactly the count that
+     * document alone would produce, proving the counting itself has no
+     * shared mutable state left to race on.
+     */
+    @Test
+    void concurrentInvocationsOnDifferentDocumentsProduceCorrectCountsForEach() throws Exception {
+        int threads = 16;
+        int callsPerThread = 50;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        try {
+            List<Callable<Void>> tasks = new java.util.ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                int revisionCount = 2 + (t % 5); // varies 2..6 per thread, deterministic per task
+                tasks.add(() -> {
+                    byte[] pdf = buildChain(false); // baseline 2-revision document
+                    for (int i = 0; i < callsPerThread; i++) {
+                        assertThat(RevisionCounter.count(pdf)).isEqualTo(2);
+                        byte[] many = manyRevisionsDocument(revisionCount);
+                        assertThat(RevisionCounter.count(many)).isEqualTo(revisionCount);
+                    }
+                    return null;
+                });
+            }
+            List<Future<Void>> futures = executor.invokeAll(tasks);
+            for (Future<Void> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdown();
+        }
     }
 
     /**

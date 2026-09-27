@@ -58,6 +58,8 @@ import java.util.Set;
  */
 public final class PkixCertificateChainValidator implements CertificateChainValidator {
 
+    private static final System.Logger LOGGER = System.getLogger(PkixCertificateChainValidator.class.getName());
+
     private final TrustAnchorProvider trustAnchorProvider;
 
     public PkixCertificateChainValidator(TrustAnchorProvider trustAnchorProvider) {
@@ -70,7 +72,23 @@ public final class PkixCertificateChainValidator implements CertificateChainVali
             return ChainStatus.NOT_CHECKED;
         }
 
-        List<X509Certificate> certificates = toX509Certificates(chain);
+        List<X509Certificate> certificates;
+        try {
+            certificates = toX509Certificates(chain);
+        } catch (CertificateParseException e) {
+            // A certificate that does not even parse back from its DER
+            // encoding (hostile or corrupt CertificateInfo) contributes no
+            // verifiable link: the chain can never be considered
+            // structurally complete, so this is reported the same way a
+            // missing issuer is -- never thrown, since a single bad
+            // certificate must not abort the whole analysis. The specific
+            // parse failure is logged for diagnostics rather than silently
+            // dropped.
+            LOGGER.log(System.Logger.Level.WARNING,
+                    () -> "Certificate chain validation: a certificate could not be parsed from its DER encoding: "
+                            + e.getCause());
+            return ChainStatus.INCOMPLETE_CHAIN;
+        }
 
         if (chain.stream().anyMatch(certificate -> !certificate.isValidAt(validationTime))) {
             return ChainStatus.EXPIRED;
@@ -146,7 +164,18 @@ public final class PkixCertificateChainValidator implements CertificateChainVali
             }
             return certificates;
         } catch (CertificateException e) {
-            throw new IllegalStateException("Failed to parse a certificate from its DER encoding", e);
+            throw new CertificateParseException(e);
+        }
+    }
+
+    /**
+     * Internal-only: a certificate in the presented chain could not be
+     * parsed from its DER encoding. Never escapes {@link #validate}, which
+     * catches it and maps it to {@link ChainStatus#INCOMPLETE_CHAIN}.
+     */
+    private static final class CertificateParseException extends RuntimeException {
+        CertificateParseException(CertificateException cause) {
+            super(cause);
         }
     }
 }

@@ -47,9 +47,9 @@ api ──► application: AnalyzePdfUseCase                           ⏳
             ├─► HashCalculator            SHA-256 / SHA-512       ✅
             ├─► PdfDocumentReader         estructura, páginas, permisos, XMP  ✅
             ├─► SignatureVerifier         /ByteRange + CMS + RFC 3161       ✅
-            ├─► CertificateChainValidator PKIX contra trust store            ⏳
+            ├─► CertificateChainValidator PKIX contra trust store            ✅
             ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳
-            └─► PdfaConformanceValidator  preflight PDF/A-1b                 ⏳
+            └─► PdfaConformanceValidator  preflight PDF/A-1b                 ✅
    ◄── PdfAnalysisReport (JSON)
 ```
 
@@ -158,6 +158,29 @@ Cada raíz se descargó por HTTPS directamente de la web oficial de su propia au
 
 **Cómo añadir raíces propias**: sin tocar el código, pasando un directorio externo (un certificado por fichero, PEM o DER) y/o un fichero PKCS#12 al construir `TrustAnchorProvider` — se combinan con las raíces empaquetadas, nunca las sustituyen.
 
+**Endurecimiento (T06b, revisión posterior a T06)**:
+
+- `RevisionCounter` guardaba su contador de pasos de escaneo (diagnóstico solo para tests) en un campo `static` — inofensivo con un test en un solo hilo, pero una condición de carrera real en cuanto el servicio atienda peticiones concurrentes (un `reset` de una llamada podía pisar el conteo de otra en curso). Se sustituyó por una instancia local (`ScanStats`) creada en cada llamada y pasada como parámetro por todo el recorrido: no queda ningún estado compartido mutable. Probado con 16 hilos ejecutando `count(...)` concurrentemente sobre distintos documentos, comprobando que cada uno obtiene exactamente el conteo que le corresponde.
+- `PkixCertificateChainValidator`: un certificado que no se podía volver a parsear desde su codificación DER (bytes hostiles o corruptos) lanzaba una `IllegalStateException` sin capturar. Ahora se informa como `INCOMPLETE_CHAIN` (un certificado que ni siquiera se puede parsear no aporta ningún enlace verificable a la cadena) en vez de abortar el análisis; el fallo concreto se registra por log para diagnóstico.
+- `TrustAnchorProvider`: el directorio externo y el fichero PKCS#12 ya tienen tests propios (directorio temporal con certificados PEM/DER válidos y un fichero inválido; PKCS#12 real generado en el propio test). Un fichero no válido dentro del directorio externo ya no aborta la carga completa del almacén: se omite (y se registra por log), igual que el resto de adaptadores del proyecto ante una entrada hostil aislada.
+- `TrustAnchorProviderTest`: la comprobación "las raíces no han caducado" comparaba contra `Instant.now()` — una bomba de tiempo, porque la raíz que antes caduca (FNMT-RCM, 2030-01-01) empezaría a fallar el test años antes de que el certificado necesite reemplazarse de verdad. Ahora compara contra una fecha de referencia fija (2026-09-27).
+
+### 2.8 Validación formal PDF/A-1b (*preflight*)
+
+`infrastructure/preflight/PreflightPdfaValidator` implementa el puerto `PdfaConformanceValidator` con el módulo *preflight* de Apache PDFBox (`PreflightParser` + `PreflightDocument`), validando **siempre** contra el nivel PDF/A-1b, sin mirar la declaración XMP del propio documento para decidir si validar o no.
+
+**Por qué solo PDF/A-1b**: *preflight* 3.0.8 no valida formalmente PDF/A-2 ni PDF/A-3 (solo 1a/1b). El puerto documenta este contrato explícitamente: un documento que declare PDF/A-2/3 en su XMP se valida igualmente contra las reglas 1b (que casi seguro no cumplirá, porque 2/3 permiten construcciones que 1b prohíbe) y el resultado se informa como `NON_COMPLIANT` con incidencias específicas de 1b — decidir que eso significa en realidad "solo se valida formalmente PDF/A-1b" en vez de "no es conforme" es responsabilidad del caso de uso (T08), que combina este resultado con `PdfDocumentReader#readPdfaDeclaration`, no de este adaptador.
+
+**Qué comprueba PDF/A-1b** (a grandes rasgos, verificado empíricamente contra los fixtures de este proyecto): fuentes embebidas (un documento con texto en una fuente estándar no embebida, como Helvetica, incumple), un `OutputIntent` con perfil de color declarado para cualquier operador de color, sin flujos de referencias cruzadas comprimidos (`/XRef` de tipo *stream*, introducidos en PDF 1.5 — PDF/A-1 se basa en PDF 1.4), metadatos XMP presentes y coherentes, sin cifrado, entre otras reglas del propio *preflight*.
+
+**Nunca lanza excepción por un documento individual, con una única excepción deliberada**: solo una entrada que ni siquiera declara una cabecera `%PDF-x.y` reconocible lanza la `InvalidPdfException` del dominio — más estrecho que `PdfBoxDocumentReader`, que lanza esa misma excepción para cualquier entrada que PDFBox no pueda parsear, incluida una truncada que sí declara cabecera. Un documento cifrado, uno con cabecera pero por lo demás roto, o un fallo interno del propio *preflight* se informan como `NOT_VALIDATED` con una incidencia explicativa, nunca se lanzan — un veredicto de conformidad ("no se puede validar") sigue siendo útil para el resto del análisis aunque el documento esté más roto de lo que PDFBox puro puede abrir.
+
+**Diseño: una comprobación previa antes del *parseo* real de *preflight***: antes de invocar *preflight*, el documento se carga una vez con PDFBox normal (`Loader#loadPDF`) solo para distinguir cifrado de "cabecera presente pero roto". Esto supone un segundo *parseo* completo además del que hace el propio *preflight* — una preocupación de rendimiento real, aunque modesta, para un módulo ya de por sí pesado; sin medir todavía (perfilado de memoria/rendimiento es tarea de T12), pero queda anotado aquí.
+
+**Incidencias**: cada resultado no conforme trae una lista de `PdfaIssue` (código + mensaje) deduplicada (mismo código y mensaje se cuentan una sola vez) y acotada a 200 elementos (con una incidencia `TRUNCATED` indicando cuántas se omitieron), para que un documento con un problema sistémico no produzca miles de incidencias casi idénticas.
+
+**Fixture conforme** (`TestPdfFactory#pdfA1bCompliant`): el documento más pequeño que este proyecto pudo construir y que *preflight* valida como conforme es una página en blanco (sin texto, así que no hace falta embeber ninguna fuente — evita por completo la cuestión de licencias de fuentes) con un `OutputIntent` sRGB construido a partir del perfil ICC que trae el propio Windows (`C:\Windows\System32\spool\drivers\color\sRGB Color Space Profile.icm`, leído solo en tiempo de test, nunca descargado ni incluido en el repositorio) y XMP `pdfaid` (parte 1, conformidad B). El test que usa este fixture se salta (sin fallar) si ese perfil ICC no está disponible en la máquina — por ejemplo, en el runner de CI, que no es Windows —, documentado como limitación conocida de este fixture concreto. Se probó también con `TestPdfFactory#unsigned()` (sin `OutputIntent` ni XMP) para el caso `NON_COMPLIANT`, con códigos de error reales de *preflight* capturados empíricamente (`3.1.3` fuente no embebida, `2.4.3` operador de color sin perfil, `7.1` sin metadatos PDF/A).
+
 ## 3. Stack tecnológico
 
 | Área | Tecnología | Versión |
@@ -222,7 +245,8 @@ src/main/java/com/coam/pdfvalidator/
 │  ├─ crypto/                     JcaHashCalculator (SHA-256/SHA-512)
 │  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
 │  ├─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados, sellos RFC 3161)
-│  └─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
+│  ├─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
+│  └─ preflight/                  PreflightPdfaValidator (validación formal PDF/A-1b)
 └─ api/                           Controlador REST, DTOs, gestión de errores  ⏳
 
 src/main/resources/
@@ -259,7 +283,7 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Cadena de confianza contra almacén configurable (trust store) | ✅ |
 | Revocación OCSP / CRL (opcional, timeout 2 s) | ⏳ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
-| Validación formal PDF/A-1b (*preflight*) | ⏳ |
+| Validación formal PDF/A-1b (*preflight*) | ✅ |
 | API REST + Swagger UI | ⏳ |
 | Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
@@ -283,10 +307,12 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `BcSignatureVerifierTest` | Documento sin firmar (lista vacía), firma íntegra con su cadena de certificados y URLs OCSP/CRL, actualización incremental posterior a la firma, byte firmado manipulado, doble firma (`MODIFIED_AFTER_SIGNING` + `INTACT`), `/ByteRange` hostil (excede el fichero, longitud negativa) sin lanzar excepción, subfiltro no soportado, sello de tiempo de documento (`ETSI.RFC3161`) como no soportado, entrada corrupta, un campo de firma que lanza una excepción al leerlo (se informa `INVALID_SIGNATURE`, sin abortar el análisis), sello de tiempo de firma ausente/válido/con imprint incorrecto |
 | `SignatureTimestampVerifierTest` | Verificador de sellos de tiempo aislado (mismo motivo que `SignatureByteRangeTest`: construir el escenario a mano en vez de por fichero): sin atributo de sello → `absent()`, token con bytes ASN.1 corruptos → inválido con nota, sin lanzar excepción, certificado de la TSA sin el uso extendido de clave `timeStamping` → nota informativa, **(T05b)** un certificado de TSA que no se puede mapear conserva el resto del resultado del sello y añade una nota en vez de descartarlo todo |
 | `X509CertificateInfoMapperTest` **(T05b)** | Camino de resiliencia del mapeador de certificados probado directamente (no solo indirectamente vía un PDF real): extensión Authority Information Access o CRL Distribution Points mal formada → sin URLs para esa extensión, sin lanzar excepción |
-| `PkixCertificateChainValidatorTest` **(T06)** | Cadena hasta una raíz de confianza → `TRUSTED`; raíz autofirmada pero ausente del almacén → `UNTRUSTED_ROOT`; falta el certificado intermedio (usando una identidad de tres niveles: raíz → intermedia → firmante) → `INCOMPLETE_CHAIN`; validación posterior a la caducidad del certificado firmante → `EXPIRED`; lista vacía → `NOT_CHECKED` |
-| `TrustAnchorProviderTest` **(T06)** | El almacén de confianza empaquetado carga exactamente las raíces documentadas en `truststore/SOURCES.md` (comparando huellas SHA-256, no por red) y todas están vigentes |
+| `PkixCertificateChainValidatorTest` **(T06, T06b)** | Cadena hasta una raíz de confianza → `TRUSTED`; raíz autofirmada pero ausente del almacén → `UNTRUSTED_ROOT`; falta el certificado intermedio (usando una identidad de tres niveles: raíz → intermedia → firmante) → `INCOMPLETE_CHAIN`; validación posterior a la caducidad del certificado firmante → `EXPIRED`; lista vacía → `NOT_CHECKED`; **(T06b)** un certificado que no se puede parsear desde su DER → `INCOMPLETE_CHAIN`, sin lanzar excepción |
+| `TrustAnchorProviderTest` **(T06, T06b)** | El almacén de confianza empaquetado carga exactamente las raíces documentadas en `truststore/SOURCES.md` (comparando huellas SHA-256, no por red) y todas están vigentes en una fecha de referencia fija (ya no `Instant.now()`); **(T06b)** directorio externo con certificados PEM y DER válidos más un fichero inválido que se omite sin abortar la carga, fichero PKCS#12 real generado en el propio test |
+| `RevisionCounterTest` **(T06b)** | Además de lo ya cubierto en T03b/T04b: 16 hilos ejecutando `count(...)` concurrentemente sobre distintos documentos obtienen cada uno el conteo correcto (prueba de que no queda estado compartido mutable tras eliminar el contador `static`) |
+| `PreflightPdfaValidatorTest` **(T07)** | Documento sin `OutputIntent` ni XMP → `NON_COMPLIANT` con códigos de error reales de *preflight* (`3.1.3`, `2.4.3`, `7.1`); entrada corrupta (cabecera presente pero estructura rota) → `NOT_VALIDATED`, sin lanzar excepción; entrada cifrada → `NOT_VALIDATED` con incidencia `ENCRYPTED`; entrada que no es un PDF en absoluto → `InvalidPdfException`; documento mínimo con `OutputIntent` sRGB y XMP `pdfaid` → `COMPLIANT` (se salta si el perfil ICC local no está disponible) |
 
-**Estado actual:** 140 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 149 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, firmado con sello de tiempo RFC 3161 válido, firmado con sello de tiempo de imprint incorrecto, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF y con declaración PDF/A (XMP `pdfaid`). La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria independiente de la CA de firma, con un certificado que declara el uso extendido de clave `id-kp-timeStamping`.
 
@@ -319,6 +345,7 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-27 | Endurecimiento del verificador de firmas (T04b): comprobación del hueco de `/ByteRange` frente a la longitud de `/Contents` analizada de forma independiente (la anterior era una tautología autorreferencial), conteo de revisiones lineal/acotado en vez de cuadrático (con vuelta a `%%EOF` ante un `startxref` fuera de rango), ningún campo de firma hostil puede ya escapar del guardado por-campo, y un fallo al mapear un certificado ya no degrada una firma criptográficamente válida a `INVALID_SIGNATURE` (se informa con una nota de anomalía). Verificación de sellos de tiempo RFC 3161 sobre el valor de la firma: imprint, firma de la TSA y uso extendido de clave `timeStamping` (T05); los sellos de tiempo de *documento* (`ETSI.RFC3161`) siguen `UNSUPPORTED`, por decisión documentada. |
 | 2026-09-27 | Repositorio publicado en GitHub (fusión del commit inicial con la licencia GPL-3.0). CI de GitHub Actions en verde con Temurin 25. |
 | 2026-09-27 | (T05b) Un fallo al mapear el certificado de la TSA ya no descarta el resto del resultado del sello de tiempo; camino de resiliencia del mapeador de certificados probado directamente; test de rendimiento del contador de revisiones sustituido por una comprobación determinista (sin reloj de pared). (T06) Validación de cadena de confianza X.509 con la implementación PKIX de la JDK (`PkixCertificateChainValidator`), contra un almacén de confianza configurable (`TrustAnchorProvider`) con seis raíces españolas empaquetadas y verificadas de forma independiente (§2.7). |
+| 2026-09-27 | (T06b) `RevisionCounter` ya no guarda su diagnóstico de escaneo en un campo `static` (condición de carrera bajo concurrencia); `PkixCertificateChainValidator` informa un certificado no parseable como `INCOMPLETE_CHAIN` en vez de lanzar excepción; `TrustAnchorProvider` omite (sin abortar) un fichero inválido en el directorio externo, con tests nuevos para directorio externo y PKCS#12; la comprobación de vigencia de las raíces empaquetadas ya usa una fecha de referencia fija en vez de `Instant.now()` (§2.7). (T07) Validación formal PDF/A-1b con el módulo *preflight* de Apache PDFBox (`PreflightPdfaValidator`): `COMPLIANT`/`NON_COMPLIANT` con incidencias deduplicadas y acotadas, `NOT_VALIDATED` para cifrado o fallos internos sin lanzar excepción, `InvalidPdfException` solo para entradas sin cabecera `%PDF-` reconocible; documenta por qué solo se valida formalmente PDF/A-1b (§2.8). |
 
 ## 12. Repositorio y licencia
 

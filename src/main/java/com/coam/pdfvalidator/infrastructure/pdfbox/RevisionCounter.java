@@ -61,24 +61,44 @@ final class RevisionCounter {
     }
 
     /**
-     * Test-only diagnostic: total byte-position scan steps ({@link
-     * #indexOf}'s outer-loop iterations) performed by the most recent {@link
-     * #count(byte[])} call. Not thread-safe (a single mutable counter), but
-     * this class and its test run single-threaded. Lets {@code
-     * RevisionCounterTest} assert that scan work grows linearly (not
-     * quadratically) with input size deterministically, without relying on
-     * wall-clock timing, which is flaky on a loaded CI machine.
+     * Per-call scan-step accounting: how many byte positions {@link
+     * #indexOf}'s outer loop inspected. Previously this was a single
+     * {@code static} field reset at the start of {@link #count(byte[])} --
+     * harmless for a single-threaded test, but a genuine race condition once
+     * the service handles concurrent requests (one thread's reset could wipe
+     * out another thread's in-flight count, and one thread's read via the
+     * old {@code lastScanStepCount()} could observe a different call's
+     * total). Replaced with a local, non-static counter instance created
+     * fresh by every {@link #count(byte[])}/{@link #countScanSteps(byte[])}
+     * call and threaded through the scan as a plain parameter: no shared
+     * mutable state remains, so concurrent calls on different (or the same)
+     * input can never interfere with each other.
      */
-    private static long scanSteps;
-
-    static long lastScanStepCount() {
-        return scanSteps;
+    private static final class ScanStats {
+        private long steps;
     }
 
     /** Counts revisions (at least 1) for the given raw PDF bytes. */
     static int count(byte[] pdf) {
-        scanSteps = 0;
-        MarkerPositions markers = MarkerPositions.scan(pdf);
+        return count(pdf, new ScanStats());
+    }
+
+    /**
+     * Test-only diagnostic: total byte-position scan steps performed by
+     * counting revisions for {@code pdf}, in one call, with no shared state
+     * across calls (see {@link ScanStats}). Lets {@code RevisionCounterTest}
+     * assert that scan work grows linearly (not quadratically) with input
+     * size deterministically, without relying on wall-clock timing, which is
+     * flaky on a loaded CI machine.
+     */
+    static long countScanSteps(byte[] pdf) {
+        ScanStats stats = new ScanStats();
+        count(pdf, stats);
+        return stats.steps;
+    }
+
+    private static int count(byte[] pdf, ScanStats stats) {
+        MarkerPositions markers = MarkerPositions.scan(pdf, stats);
         List<Long> chain = xrefChainOffsets(pdf, markers);
         int hops = chain.size();
         if (hops == 0) {
@@ -86,9 +106,9 @@ final class RevisionCounter {
             // out-of-range or otherwise unusable startxref value, which
             // never enters the loop below: fall back to the previous
             // %%EOF-marker heuristic rather than reporting 0.
-            return Math.max(countEofMarkers(pdf), 1);
+            return Math.max(countEofMarkers(pdf, stats), 1);
         }
-        if (hops > 1 && isLinearized(pdf)) {
+        if (hops > 1 && isLinearized(pdf, stats)) {
             // The hint-section xref for the first page is not itself a
             // separate revision: it is part of the same logical revision as
             // the main xref section it is chained to.
@@ -149,9 +169,9 @@ final class RevisionCounter {
         return parseLongAfter(pdf, (int) prevIdx + PREV.length, (int) limit);
     }
 
-    private static boolean isLinearized(byte[] pdf) {
+    private static boolean isLinearized(byte[] pdf, ScanStats stats) {
         int window = Math.min(pdf.length, LINEARIZATION_SEARCH_WINDOW);
-        return indexOf(pdf, LINEARIZED_MARKER, 0, window) >= 0;
+        return indexOf(pdf, LINEARIZED_MARKER, 0, window, stats) >= 0;
     }
 
     private static Long parseLongAfter(byte[] pdf, int from, int limit) {
@@ -177,22 +197,22 @@ final class RevisionCounter {
         return b == ' ' || b == '\r' || b == '\n' || b == '\t' || b == 0;
     }
 
-    private static int countEofMarkers(byte[] pdf) {
+    private static int countEofMarkers(byte[] pdf, ScanStats stats) {
         byte[] eof = "%%EOF".getBytes(StandardCharsets.US_ASCII);
         int count = 0;
         int index = 0;
-        while ((index = indexOf(pdf, eof, index, pdf.length)) >= 0) {
+        while ((index = indexOf(pdf, eof, index, pdf.length, stats)) >= 0) {
             count++;
             index += eof.length;
         }
         return count;
     }
 
-    private static int indexOf(byte[] haystack, byte[] needle, int fromIndex, int limit) {
+    private static int indexOf(byte[] haystack, byte[] needle, int fromIndex, int limit, ScanStats stats) {
         int last = Math.min(limit, haystack.length) - needle.length;
         outer:
         for (int i = Math.max(fromIndex, 0); i <= last; i++) {
-            scanSteps++;
+            stats.steps++;
             for (int j = 0; j < needle.length; j++) {
                 if (haystack[i + j] != needle[j]) {
                     continue outer;
@@ -221,11 +241,11 @@ final class RevisionCounter {
             this.prevOffsets = prevOffsets;
         }
 
-        static MarkerPositions scan(byte[] pdf) {
+        static MarkerPositions scan(byte[] pdf, ScanStats stats) {
             return new MarkerPositions(
-                    allOffsetsOf(pdf, STREAM_KEYWORD),
-                    allOffsetsOf(pdf, STARTXREF),
-                    allOffsetsOf(pdf, PREV));
+                    allOffsetsOf(pdf, STREAM_KEYWORD, stats),
+                    allOffsetsOf(pdf, STARTXREF, stats),
+                    allOffsetsOf(pdf, PREV, stats));
         }
 
         /** The smallest element of {@code sorted} that is {@code >= from}, or {@code -1} if none. */
@@ -244,11 +264,11 @@ final class RevisionCounter {
         }
     }
 
-    private static long[] allOffsetsOf(byte[] pdf, byte[] needle) {
+    private static long[] allOffsetsOf(byte[] pdf, byte[] needle, ScanStats stats) {
         List<Long> offsets = new ArrayList<>();
         int from = 0;
         while (true) {
-            int idx = indexOf(pdf, needle, from, pdf.length);
+            int idx = indexOf(pdf, needle, from, pdf.length, stats);
             if (idx < 0) {
                 break;
             }

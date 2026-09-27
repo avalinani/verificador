@@ -12,13 +12,17 @@ import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.graphics.color.PDOutputIntent;
 import org.apache.xmpbox.XMPMetadata;
 import org.apache.xmpbox.schema.PDFAIdentificationSchema;
 import org.apache.xmpbox.xml.XmpSerializer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Test-only factory for PDF byte arrays exercising the properties later
@@ -389,6 +393,95 @@ public final class TestPdfFactory {
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * The local Windows-shipped sRGB ICC profile, used only at test time to
+     * build {@link #pdfA1bCompliant()}'s {@code OutputIntent} -- never
+     * downloaded, never committed to the repository. Only available on a
+     * Windows machine with this standard system file present (any modern
+     * Windows install); {@link #isPdfA1bCompliantFixtureAvailable()} lets a
+     * test skip gracefully when it is not.
+     */
+    private static final Path SRGB_ICC_PROFILE =
+            Path.of("C:/Windows/System32/spool/drivers/color/sRGB Color Space Profile.icm");
+
+    /** Whether {@link #pdfA1bCompliant()} can actually be built on this machine (see {@link #SRGB_ICC_PROFILE}). */
+    public static boolean isPdfA1bCompliantFixtureAvailable() {
+        return Files.isRegularFile(SRGB_ICC_PROFILE);
+    }
+
+    /**
+     * The smallest document this factory can build that satisfies formal
+     * PDF/A-1b validation: a single blank page -- no text, so no font to
+     * embed, deliberately sidestepping the font-embedding licensing question
+     * entirely (a real PDF/A-1b document with text needs an embedded font,
+     * but building one from a redistribution-safe, locally-available font
+     * was not achievable deterministically; see the T07 progress notes) --
+     * an sRGB {@code OutputIntent} built from the local system's own ICC
+     * profile (see {@link #SRGB_ICC_PROFILE}; never committed), and XMP
+     * {@code pdfaid} identification (part 1, conformance B). No {@code
+     * Info} dictionary entries are set, so there is nothing for the
+     * dc/xmp-vs-Info consistency rules to disagree about.
+     *
+     * @throws IOException also thrown when {@link #SRGB_ICC_PROFILE} is not
+     *                      present on this machine; callers should check
+     *                      {@link #isPdfA1bCompliantFixtureAvailable()} first
+     */
+    public static byte[] pdfA1bCompliant() throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            // An empty content stream: preflight's page-process validation
+            // expects a /Contents entry to be present (even if it draws
+            // nothing), and a page with none reports a generic "mandatory
+            // element is missing" processing error.
+            try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
+                // Intentionally empty.
+            }
+
+            try (InputStream iccStream = Files.newInputStream(SRGB_ICC_PROFILE)) {
+                PDOutputIntent outputIntent = new PDOutputIntent(document, iccStream);
+                outputIntent.setInfo("sRGB IEC61966-2.1");
+                outputIntent.setOutputCondition("sRGB IEC61966-2.1");
+                outputIntent.setOutputConditionIdentifier("sRGB IEC61966-2.1");
+                outputIntent.setRegistryName("http://www.color.org");
+                // PDF/A-1b requires the OutputIntent's /S entry to be
+                // /GTS_PDFA1; PDOutputIntent itself exposes no setter for
+                // it, so it is set directly on the underlying dictionary.
+                outputIntent.getCOSObject().setName(COSName.getPDFName("S"), "GTS_PDFA1");
+                document.getDocumentCatalog().addOutputIntent(outputIntent);
+            }
+
+            XMPMetadata xmp = XMPMetadata.createXMPMetadata();
+            PDFAIdentificationSchema pdfaSchema = xmp.createAndAddPDFAIdentificationSchema();
+            pdfaSchema.setPart(1);
+            try {
+                pdfaSchema.setConformance("B");
+            } catch (org.apache.xmpbox.type.BadFieldValueException e) {
+                throw new IOException("Invalid PDF/A conformance level", e);
+            }
+
+            ByteArrayOutputStream xmpBytes = new ByteArrayOutputStream();
+            try {
+                new XmpSerializer().serialize(xmp, xmpBytes, true);
+            } catch (javax.xml.transform.TransformerException e) {
+                throw new IOException("Failed to serialize XMP metadata", e);
+            }
+
+            PDMetadata metadata = new PDMetadata(document);
+            metadata.importXMPMetadata(xmpBytes.toByteArray());
+            document.getDocumentCatalog().setMetadata(metadata);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            // PDF/A-1 is based on PDF 1.4, which predates cross-reference
+            // streams (PDF 1.5): PDDocument#save(OutputStream)'s default
+            // compression writes one, which preflight's own trailer check
+            // (correctly) rejects for PDF/A-1. NO_COMPRESSION keeps the
+            // classic xref table this conformance level requires.
+            document.save(out, org.apache.pdfbox.pdfwriter.compress.CompressParameters.NO_COMPRESSION);
             return out.toByteArray();
         }
     }
