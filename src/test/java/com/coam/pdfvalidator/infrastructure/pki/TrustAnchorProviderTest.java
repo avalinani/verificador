@@ -1,12 +1,21 @@
 package com.coam.pdfvalidator.infrastructure.pki;
 
+import com.coam.pdfvalidator.fixtures.TestPki;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Set;
 
@@ -46,20 +55,104 @@ class TrustAnchorProviderTest {
         assertThat(actualFingerprints).isEqualTo(EXPECTED_SHA256_FINGERPRINTS);
     }
 
+    /**
+     * T06b follow-up: asserting against {@code Instant.now()} is a time
+     * bomb -- the earliest-expiring bundled root (FNMT-RCM, {@code notAfter}
+     * 2030-01-01 per {@code truststore/SOURCES.md}) would start failing this
+     * test years before the certificate itself needs replacing, for no
+     * reason related to the code under test. A fixed reference date --
+     * comfortably inside every bundled root's validity window, and updated
+     * only when {@code truststore/SOURCES.md} itself changes -- makes the
+     * test deterministic and ties its lifetime to the actual documented
+     * validity data instead of the machine's clock.
+     */
+    private static final Instant REFERENCE_INSTANT =
+            ZonedDateTime.of(2026, 9, 27, 0, 0, 0, 0, ZoneOffset.UTC).toInstant();
+
     @Test
-    void everyBundledRootIsCurrentlyValid() throws Exception {
+    void everyBundledRootIsValidAtAFixedReferenceDate() throws Exception {
         TrustAnchorProvider provider = TrustAnchorProvider.bundled();
-        Instant now = Instant.now();
 
         for (TrustAnchor anchor : provider.trustAnchors()) {
             X509Certificate certificate = anchor.getTrustedCert();
             assertThat(certificate.getNotBefore().toInstant())
                     .as("notBefore for " + certificate.getSubjectX500Principal())
-                    .isBefore(now);
+                    .isBefore(REFERENCE_INSTANT);
             assertThat(certificate.getNotAfter().toInstant())
                     .as("notAfter for " + certificate.getSubjectX500Principal())
-                    .isAfter(now);
+                    .isAfter(REFERENCE_INSTANT);
         }
+    }
+
+    /**
+     * T06b follow-up: {@link TrustAnchorProvider#load} additionally accepts
+     * an external directory of certificate files (PEM or DER, one per file);
+     * previously untested. A malformed file in that directory must not abort
+     * loading the rest of the trust store -- it is skipped (and logged),
+     * matching the "a single bad input never aborts the whole analysis"
+     * convention used throughout this codebase's other adapters.
+     */
+    @Test
+    void loadsPemAndDerCertificatesFromAnExternalDirectorySkippingInvalidFiles(@TempDir Path directory)
+            throws Exception {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        X509Certificate externalRoot = identity.rootCertificate();
+
+        Files.writeString(directory.resolve("root.pem"), toPem(externalRoot), StandardCharsets.US_ASCII);
+        Files.write(directory.resolve("root.der"), externalRoot.getEncoded());
+        Files.writeString(directory.resolve("not-a-certificate.txt"), "this is not a certificate at all");
+
+        TrustAnchorProvider provider = TrustAnchorProvider.load(directory, null, null);
+
+        Set<String> fingerprints = fingerprintsOf(provider);
+        assertThat(fingerprints).contains(sha256Fingerprint(externalRoot));
+        // Bundled roots (6) + the external root loaded twice (once from its
+        // PEM file, once from its DER file -- java.security.cert.TrustAnchor
+        // has no value-based equals/hashCode, so these remain two distinct
+        // TrustAnchor instances even though they wrap the same certificate)
+        // + the garbage file skipped entirely (not counted).
+        assertThat(provider.size()).isEqualTo(EXPECTED_SHA256_FINGERPRINTS.size() + 2);
+    }
+
+    /**
+     * T06b follow-up: {@link TrustAnchorProvider#load} also accepts a
+     * PKCS#12 keystore file as a trust anchor source; previously untested.
+     * Builds a real, throwaway PKCS#12 file in a temp directory (never
+     * committed) holding one {@link TestPki} root as a trusted-certificate
+     * entry.
+     */
+    @Test
+    void loadsCertificatesFromAPkcs12KeystoreFile(@TempDir Path directory) throws Exception {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        X509Certificate pkcs12Root = identity.rootCertificate();
+        char[] password = "test-only-password".toCharArray();
+
+        Path pkcs12File = directory.resolve("trust.p12");
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(null, null);
+        keyStore.setCertificateEntry("root", pkcs12Root);
+        try (var out = Files.newOutputStream(pkcs12File)) {
+            keyStore.store(out, password);
+        }
+
+        TrustAnchorProvider provider = TrustAnchorProvider.load(null, pkcs12File, password);
+
+        assertThat(fingerprintsOf(provider)).contains(sha256Fingerprint(pkcs12Root));
+        assertThat(provider.size()).isEqualTo(EXPECTED_SHA256_FINGERPRINTS.size() + 1);
+    }
+
+    private static Set<String> fingerprintsOf(TrustAnchorProvider provider) throws NoSuchAlgorithmException {
+        Set<String> fingerprints = new java.util.HashSet<>();
+        for (TrustAnchor anchor : provider.trustAnchors()) {
+            fingerprints.add(sha256Fingerprint(anchor.getTrustedCert()));
+        }
+        return fingerprints;
+    }
+
+    private static String toPem(X509Certificate certificate) throws java.security.cert.CertificateEncodingException {
+        String base64 = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
+                .encodeToString(certificate.getEncoded());
+        return "-----BEGIN CERTIFICATE-----\n" + base64 + "\n-----END CERTIFICATE-----\n";
     }
 
     private static String sha256Fingerprint(X509Certificate certificate) throws NoSuchAlgorithmException {

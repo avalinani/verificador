@@ -91,6 +91,32 @@ class PkixCertificateChainValidatorTest {
         assertThat(status).isEqualTo(ChainStatus.NOT_CHECKED);
     }
 
+    /**
+     * T06b follow-up: a {@link CertificateInfo#encoded()} that does not parse
+     * back into an {@code X509Certificate} (garbage DER, or DER for some
+     * other ASN.1 structure entirely) previously escaped as an unchecked
+     * {@code IllegalStateException} from {@code toX509Certificates}. A single
+     * hostile/corrupt certificate must never abort the whole analysis: it is
+     * reported as {@link ChainStatus#INCOMPLETE_CHAIN} instead (an
+     * unparseable certificate contributes no verifiable link, so the chain
+     * can never be considered structurally complete), never thrown.
+     */
+    @Test
+    void aChainContainingAnUnparseableCertificateIsIncompleteNotThrown() {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.rootCertificate()));
+
+        CertificateInfo validEndEntity = toCertificateInfo(identity.chain().get(0));
+        CertificateInfo garbage = new CertificateInfo(
+                "CN=garbage", "CN=garbage", "00", Instant.EPOCH, Instant.EPOCH.plusSeconds(3600),
+                "SHA256withRSA", List.of(), List.of(), new byte[] {1, 2, 3, 4, 5});
+
+        ChainStatus status = validator.validate(List.of(validEndEntity, garbage), Instant.now());
+
+        assertThat(status).isEqualTo(ChainStatus.INCOMPLETE_CHAIN);
+    }
+
     private static List<CertificateInfo> toCertificateInfos(List<X509Certificate> certificates) {
         return certificates.stream().map(PkixCertificateChainValidatorTest::toCertificateInfo).toList();
     }

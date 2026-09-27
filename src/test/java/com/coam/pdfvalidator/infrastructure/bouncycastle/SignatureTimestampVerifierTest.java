@@ -112,6 +112,25 @@ class SignatureTimestampVerifierTest {
      * {@code signatureValid} result the way it did before this fix (those
      * fields are computed independently of this mapping call in {@code
      * verifyToken}, and are unaffected by whatever this method returns).
+     *
+     * <p><b>T06b follow-up</b> ("add an integration-level assertion for the
+     * TSA mapping-failure path through the public {@code verify} flow, if
+     * feasible; otherwise document why"): attempted and confirmed
+     * infeasible. Swapping a real, embedded TSA certificate for a Mockito
+     * double that fails only on {@code getEncoded()} -- the same technique
+     * {@link #aTsaCertificateMissingTheTimestampingEkuIsNoted()} uses to
+     * substitute a certificate into a real token -- does not reach {@code
+     * verify()} at all: rebuilding the token's certificate store with {@code
+     * JcaCertStore} itself calls {@code getEncoded()} on every certificate
+     * to construct the underlying ASN.1 structure, so the double's stub
+     * throws right there, before the substituted token can even be
+     * assembled. A real {@code X509CertificateHolder}-derived certificate
+     * (the only kind {@code findTsaCertificate} ever hands to {@code
+     * mapTsaCertificate} through the public flow) always re-encodes
+     * successfully by construction, since {@code getEncoded()} just returns
+     * the same bytes the holder itself was built from -- so this mapping
+     * failure genuinely cannot occur except through a certificate double,
+     * which is exactly what this seam-level test already exercises directly.
      */
     @Test
     void aTsaCertificateMappingFailureIsReportedAsANoteInsteadOfThrowing() throws Exception {
