@@ -261,7 +261,8 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ⏳ |
 | API REST + Swagger UI | ⏳ |
-| Interfaz web con arrastrar y soltar | ⏳ |
+| Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
+| Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
 | Despliegue Docker en VM de bajo consumo | ⏳ |
 
 ## 7. Tests y calidad
