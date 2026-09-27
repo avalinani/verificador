@@ -141,6 +141,23 @@ class TrustAnchorProviderTest {
         assertThat(provider.size()).isEqualTo(EXPECTED_SHA256_FINGERPRINTS.size() + 1);
     }
 
+    /**
+     * T07b follow-up: an external directory that cannot even be listed (here,
+     * one that does not exist -- {@code Files.newDirectoryStream} throws
+     * {@code NoSuchFileException}, an {@link java.io.IOException}) must not
+     * abort loading the trust store either; it is treated as "no
+     * certificates from this source" (logged), same as a single unreadable
+     * file inside an otherwise-listable directory.
+     */
+    @Test
+    void aNonExistentExternalDirectoryIsSkippedRatherThanThrowing(@TempDir Path parent) throws Exception {
+        Path missingDirectory = parent.resolve("does-not-exist");
+
+        TrustAnchorProvider provider = TrustAnchorProvider.load(missingDirectory, null, null);
+
+        assertThat(provider.size()).isEqualTo(EXPECTED_SHA256_FINGERPRINTS.size());
+    }
+
     private static Set<String> fingerprintsOf(TrustAnchorProvider provider) throws NoSuchAlgorithmException {
         Set<String> fingerprints = new java.util.HashSet<>();
         for (TrustAnchor anchor : provider.trustAnchors()) {

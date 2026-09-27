@@ -6,8 +6,11 @@ import com.coam.pdfvalidator.domain.model.PdfaIssue;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.fixtures.TestPdfFactory;
-import org.junit.jupiter.api.Assumptions;
+import org.apache.pdfbox.preflight.ValidationResult;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,16 +68,13 @@ class PreflightPdfaValidatorTest {
     /**
      * {@link TestPdfFactory#pdfA1bCompliant()}: a blank page (no font to
      * embed), an sRGB {@code OutputIntent}, and XMP {@code pdfaid}
-     * identification. Skipped when the local sRGB ICC profile this fixture
-     * needs is not present on this machine (see {@code TestPdfFactory}'s
-     * Javadoc) -- e.g. a non-Windows CI runner -- rather than failing;
-     * documented as a known limitation of this fixture in the T07 progress
-     * notes.
+     * identification. {@code T07b}: the fixture's ICC profile now comes from
+     * the JDK's own bundled sRGB profile instead of a Windows-only system
+     * file, so this test runs (and asserts, never skips) on every platform,
+     * including the Linux/Temurin CI runner.
      */
     @Test
     void aMinimalDocumentWithOutputIntentAndXmpIdentificationIsCompliant() throws Exception {
-        Assumptions.assumeTrue(TestPdfFactory.isPdfA1bCompliantFixtureAvailable(),
-                "Local sRGB ICC profile not available on this machine; skipping");
         byte[] pdf = TestPdfFactory.pdfA1bCompliant();
 
         PdfaReport report = validator.validate(pdf);
@@ -89,5 +89,51 @@ class PreflightPdfaValidatorTest {
         byte[] notAPdf = TestPdfFactory.notAPdf();
 
         assertThatThrownBy(() -> validator.validate(notAPdf)).isInstanceOf(InvalidPdfException.class);
+    }
+
+    /**
+     * {@code T07b}: exercises the {@code probe.isEncrypted()} branch
+     * directly (a document that opens without a password prompt but is
+     * still encrypted), as opposed to {@link
+     * #encryptedInputIsNotValidatedRatherThanThrowing()} above, which goes
+     * through the {@code InvalidPasswordException} branch (a non-empty user
+     * password).
+     */
+    @Test
+    void encryptedWithEmptyUserPasswordIsNotValidatedRatherThanThrowing() throws Exception {
+        byte[] pdf = TestPdfFactory.encryptedWithEmptyUserPassword();
+
+        PdfaReport report = validator.validate(pdf);
+
+        assertThat(report.status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
+        assertThat(report.issues()).anyMatch(issue -> issue.code().equals("ENCRYPTED"));
+    }
+
+    /**
+     * {@code T07b}: {@link PreflightPdfaValidator#mapErrors} directly, with
+     * a synthetic list of more than {@link PreflightPdfaValidator#MAX_ISSUES}
+     * distinct errors plus one exact duplicate -- constructing a real PDF
+     * that trips 200+ distinct {@code preflight} error codes is impractical,
+     * so this exercises the deduplication/truncation logic in isolation
+     * (package-private on the validator specifically for this test).
+     */
+    @Test
+    void moreThan200IssuesAreDeduplicatedAndTruncatedWithAMarker() {
+        List<ValidationResult.ValidationError> errors = new ArrayList<>();
+        for (int i = 0; i < 250; i++) {
+            errors.add(new ValidationResult.ValidationError("CODE" + i, "detail " + i));
+        }
+        errors.add(new ValidationResult.ValidationError("CODE0", "detail 0")); // exact duplicate
+
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors);
+
+        assertThat(issues).hasSize(PreflightPdfaValidator.MAX_ISSUES + 1);
+        assertThat(issues.subList(0, PreflightPdfaValidator.MAX_ISSUES))
+                .as("the duplicate must not have produced a 251st distinct issue before truncation")
+                .extracting(PdfaIssue::code)
+                .doesNotHaveDuplicates();
+        PdfaIssue last = issues.get(issues.size() - 1);
+        assertThat(last.code()).isEqualTo("TRUNCATED");
+        assertThat(last.message()).contains("50");
     }
 }

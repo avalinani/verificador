@@ -107,6 +107,14 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
             // PdfBoxDocumentReader's own, broader "unreadable" case).
             return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED",
                     "The document declares a PDF header but could not be parsed: " + e.getMessage());
+        } catch (RuntimeException e) {
+            // T07b: plain PDFBox parsing (unlike preflight's own parse below)
+            // is not otherwise guarded here, so a hostile/malformed document
+            // that trips an unchecked exception during this cheap probe
+            // (rather than an IOException) must not escape and abort the
+            // whole analysis either.
+            return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED",
+                    "The document declares a PDF header but could not be probed for encryption: " + e);
         }
 
         try (RandomAccessRead source = new RandomAccessReadBuffer(pdf)) {
@@ -188,7 +196,8 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
                 "PDF/A-1b validation could not parse the document: " + e.getMessage()));
     }
 
-    private static List<PdfaIssue> mapErrors(List<ValidationResult.ValidationError> errors) {
+    /** Package-private (rather than {@code private}) specifically so it can be unit-tested in isolation. */
+    static List<PdfaIssue> mapErrors(List<ValidationResult.ValidationError> errors) {
         Map<String, PdfaIssue> deduplicated = new LinkedHashMap<>();
         for (ValidationResult.ValidationError error : errors) {
             String code = error.getErrorCode();

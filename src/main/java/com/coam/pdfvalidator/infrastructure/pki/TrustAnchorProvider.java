@@ -131,21 +131,40 @@ public final class TrustAnchorProvider {
      * codebase's other adapters (e.g. {@code BcSignatureVerifier} per
      * signature field, {@code PkixCertificateChainValidator} per
      * certificate).
+     *
+     * <p><b>T07b</b>: the directory itself being unreadable (missing,
+     * permission denied, or any other {@link IOException} from opening the
+     * directory stream) is handled the same way: reported/logged and
+     * treated as "no certificates from this source" rather than propagated,
+     * since one misconfigured external directory should not abort loading
+     * the bundled roots that are always available.
      */
-    private static List<X509Certificate> loadDirectory(Path directory) throws IOException, CertificateException {
-        CertificateFactory factory = CertificateFactory.getInstance("X.509");
+    private static List<X509Certificate> loadDirectory(Path directory) {
+        CertificateFactory factory;
+        try {
+            factory = CertificateFactory.getInstance("X.509");
+        } catch (CertificateException e) {
+            // "X.509" is always available on any conformant JVM; this is
+            // unreachable in practice, but never let it escape as anything
+            // other than "no certificates from this source" either.
+            LOGGER.log(System.Logger.Level.WARNING, () -> "X.509 CertificateFactory unavailable: " + e.getMessage());
+            return List.of();
+        }
         List<X509Certificate> certificates = new ArrayList<>();
         try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {
             for (Path entry : entries) {
                 if (Files.isRegularFile(entry)) {
                     try (InputStream in = Files.newInputStream(entry)) {
                         certificates.add((X509Certificate) factory.generateCertificate(in));
-                    } catch (CertificateException e) {
+                    } catch (IOException | CertificateException e) {
                         LOGGER.log(System.Logger.Level.WARNING,
                                 () -> "Skipping unreadable trust anchor file " + entry + ": " + e.getMessage());
                     }
                 }
             }
+        } catch (IOException e) {
+            LOGGER.log(System.Logger.Level.WARNING,
+                    () -> "Skipping unreadable external trust anchor directory " + directory + ": " + e.getMessage());
         }
         return certificates;
     }
