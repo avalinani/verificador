@@ -346,5 +346,16 @@ Living README updated (`README.md`): new §2.8 (PDF/A-1b formal validation — w
 
 Parent spot check: `./mvnw -B verify` re-run → 149/149, `BUILD SUCCESS`; domain library-free; infrastructure boundary respected (both greps re-verified clean).
 
+- Parent spot check: `./mvnw -B verify` → 149/149, BUILD SUCCESS; domain has no library imports.
+- Review (RDD, medium; 13 files, 865 lines, base cf77452): auto-granted, 1 lens (reliability), approved and acknowledged (authority burned). Advisory findings → T07b.
+- Note: `feat/chain-validation` WAS pushed (CI run 36341253815 green on cf77452); `feat/pdfa-validation` pushed after this entry.
+
+- [ ] T07b Follow-ups from T07 review advisories (fold into T08):
+  - COMPLIANT path is skipped in CI because the fixture loads the sRGB ICC profile from `C:/Windows`. Use the JDK built-in profile `ICC_Profile.getInstance(ColorSpace.CS_sRGB).getData()` (always available, no redistribution issue) so the COMPLIANT test runs everywhere; remove the skip.
+  - `PreflightPdfaValidator` probe (lines ~96-110): a runtime exception can escape — catch and map to NOT_VALIDATED.
+  - `PreflightPdfaValidatorTest`: cover remaining branches (issue truncation at 200, encrypted input).
+  - `RevisionCounterTest` concurrency test would not catch a reintroduced static field — strengthen (e.g. interleave documents with different expected counts on a shared executor and assert per-document results, run enough iterations).
+  - `TrustAnchorProvider`: an `IOException` listing the external directory should be reported, not propagated.
+
 ## Next step
-T08 AnalyzePdfUseCase + ArchUnit rules — this is where `PdfaConformanceValidator`'s result and `PdfDocumentReader#readPdfaDeclaration` get combined (per §2.8's documented port contract) and where `PkixCertificateChainValidator`'s `validationTime` gets decided (RFC 3161 timestamp → claimed signing time → now, per §2.7). Decide PR slicing strategy (ask-on-risk) before opening PRs — branch `feat/pdfa-validation` (branched from the already-pushed `feat/timestamps`; `feat/chain-validation` itself is not yet pushed) is not yet pushed.
+T07b + T08 AnalyzePdfUseCase + ArchUnit rules — combine `PdfaConformanceValidator` with `PdfDocumentReader#readPdfaDeclaration` (per §2.8 contract) and decide `validationTime` for the chain validator (RFC 3161 timestamp → claimed signing time → now, per §2.7). Decide PR slicing strategy (ask-on-risk) before opening PRs.
