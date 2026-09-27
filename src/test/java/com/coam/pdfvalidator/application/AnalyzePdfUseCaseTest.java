@@ -1,0 +1,529 @@
+package com.coam.pdfvalidator.application;
+
+import com.coam.pdfvalidator.domain.exception.EncryptedPdfException;
+import com.coam.pdfvalidator.domain.exception.InvalidPdfException;
+import com.coam.pdfvalidator.domain.model.ByteRangeCoverage;
+import com.coam.pdfvalidator.domain.model.CertificateInfo;
+import com.coam.pdfvalidator.domain.model.ChainStatus;
+import com.coam.pdfvalidator.domain.model.DocumentHashes;
+import com.coam.pdfvalidator.domain.model.DocumentStructure;
+import com.coam.pdfvalidator.domain.model.IntegrityStatus;
+import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
+import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
+import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaReport;
+import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
+import com.coam.pdfvalidator.domain.model.Permission;
+import com.coam.pdfvalidator.domain.model.RevocationState;
+import com.coam.pdfvalidator.domain.model.RevocationStatus;
+import com.coam.pdfvalidator.domain.model.SecurityInfo;
+import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
+import com.coam.pdfvalidator.domain.port.HashCalculator;
+import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
+import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
+import com.coam.pdfvalidator.domain.port.RevocationChecker;
+import com.coam.pdfvalidator.domain.port.SignatureVerifier;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * {@link AnalyzePdfUseCase} exercised with hand-written fakes for every
+ * domain port (no Mockito: each fake is a handful of lines and makes the
+ * exact scenario under test -- a thrown exception, a captured argument --
+ * obvious at the call site).
+ */
+class AnalyzePdfUseCaseTest {
+
+    private static final byte[] CONTENT = "irrelevant-test-bytes".getBytes();
+    private static final DocumentHashes HASHES = new DocumentHashes("a".repeat(64), "b".repeat(128));
+    private static final DocumentStructure STRUCTURE = new DocumentStructure("1.7", null, 0, List.of(), 1);
+    private static final SecurityInfo SECURITY = new SecurityInfo(false, EnumSet.allOf(Permission.class));
+    private static final PdfaReport COMPLIANT_PDFA_REPORT =
+            new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.COMPLIANT, List.of());
+    private static final Instant FIXED_NOW = Instant.parse("2026-09-27T10:00:00Z");
+    private static final Clock CLOCK = Clock.fixed(FIXED_NOW, ZoneOffset.UTC);
+
+    // ---- hand-written fakes ----
+
+    private static final class FakeHashCalculator implements HashCalculator {
+        @Override
+        public DocumentHashes hash(byte[] content) {
+            return HASHES;
+        }
+    }
+
+    private static final class FakePdfDocumentReader implements PdfDocumentReader {
+        private final DocumentStructure structure;
+        private final SecurityInfo security;
+        private final PdfaDeclaration declaration;
+        private final RuntimeException throwOnRead;
+
+        FakePdfDocumentReader(DocumentStructure structure, SecurityInfo security, PdfaDeclaration declaration) {
+            this(structure, security, declaration, null);
+        }
+
+        FakePdfDocumentReader(RuntimeException throwOnRead) {
+            this(STRUCTURE, SECURITY, PdfaDeclaration.NONE, throwOnRead);
+        }
+
+        private FakePdfDocumentReader(
+                DocumentStructure structure, SecurityInfo security, PdfaDeclaration declaration,
+                RuntimeException throwOnRead) {
+            this.structure = structure;
+            this.security = security;
+            this.declaration = declaration;
+            this.throwOnRead = throwOnRead;
+        }
+
+        @Override
+        public DocumentStructure readStructure(byte[] pdf) {
+            if (throwOnRead != null) {
+                throw throwOnRead;
+            }
+            return structure;
+        }
+
+        @Override
+        public SecurityInfo readSecurity(byte[] pdf) {
+            return security;
+        }
+
+        @Override
+        public PdfaDeclaration readPdfaDeclaration(byte[] pdf) {
+            return declaration;
+        }
+    }
+
+    private static final class FakeSignatureVerifier implements SignatureVerifier {
+        private final List<SignatureReport> signatures;
+        private final RuntimeException toThrow;
+
+        FakeSignatureVerifier(List<SignatureReport> signatures) {
+            this(signatures, null);
+        }
+
+        FakeSignatureVerifier(RuntimeException toThrow) {
+            this(List.of(), toThrow);
+        }
+
+        private FakeSignatureVerifier(List<SignatureReport> signatures, RuntimeException toThrow) {
+            this.signatures = signatures;
+            this.toThrow = toThrow;
+        }
+
+        @Override
+        public List<SignatureReport> verify(byte[] pdf) {
+            if (toThrow != null) {
+                throw toThrow;
+            }
+            return signatures;
+        }
+    }
+
+    private static final class FakeCertificateChainValidator implements CertificateChainValidator {
+        private final ChainStatus status;
+        private final RuntimeException toThrow;
+        private final List<Instant> capturedValidationTimes = new ArrayList<>();
+
+        FakeCertificateChainValidator(ChainStatus status) {
+            this(status, null);
+        }
+
+        FakeCertificateChainValidator(RuntimeException toThrow) {
+            this(null, toThrow);
+        }
+
+        private FakeCertificateChainValidator(ChainStatus status, RuntimeException toThrow) {
+            this.status = status;
+            this.toThrow = toThrow;
+        }
+
+        @Override
+        public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
+            capturedValidationTimes.add(validationTime);
+            if (toThrow != null) {
+                throw toThrow;
+            }
+            return status;
+        }
+    }
+
+    private static final class FakePdfaConformanceValidator implements PdfaConformanceValidator {
+        private final PdfaReport report;
+        private final RuntimeException toThrow;
+
+        FakePdfaConformanceValidator(PdfaReport report) {
+            this(report, null);
+        }
+
+        FakePdfaConformanceValidator(RuntimeException toThrow) {
+            this(null, toThrow);
+        }
+
+        private FakePdfaConformanceValidator(PdfaReport report, RuntimeException toThrow) {
+            this.report = report;
+            this.toThrow = toThrow;
+        }
+
+        @Override
+        public PdfaReport validate(byte[] pdf) {
+            if (toThrow != null) {
+                throw toThrow;
+            }
+            return report;
+        }
+    }
+
+    private static final class FakeRevocationChecker implements RevocationChecker {
+        private final RevocationStatus status;
+        private int callCount;
+        private CertificateInfo lastCertificate;
+        private CertificateInfo lastIssuer;
+
+        FakeRevocationChecker(RevocationStatus status) {
+            this.status = status;
+        }
+
+        @Override
+        public RevocationStatus check(CertificateInfo certificate, CertificateInfo issuer) {
+            callCount++;
+            lastCertificate = certificate;
+            lastIssuer = issuer;
+            return status;
+        }
+    }
+
+    // ---- test data builders ----
+
+    private static CertificateInfo certificate(String subject) {
+        return new CertificateInfo(subject, "CN=issuer-of-" + subject, "01",
+                Instant.parse("2020-01-01T00:00:00Z"), Instant.parse("2030-01-01T00:00:00Z"),
+                "SHA256withRSA", List.of(), List.of(), new byte[] {1, 2, 3});
+    }
+
+    private static SignatureReport signatureWith(
+            TimestampInfo timestamp, Instant claimedSigningTime, List<CertificateInfo> chain) {
+        return new SignatureReport("Signature1", "adbe.pkcs7.detached",
+                ByteRangeCoverage.of(0, 10, 10, 5, 15), IntegrityStatus.INTACT, claimedSigningTime,
+                timestamp, chain, ChainStatus.NOT_CHECKED, RevocationStatus.notChecked(), null);
+    }
+
+    private static AnalyzePdfUseCase useCase(
+            PdfDocumentReader reader, SignatureVerifier verifier, CertificateChainValidator chainValidator,
+            PdfaConformanceValidator pdfaValidator, RevocationChecker revocationChecker) {
+        return new AnalyzePdfUseCase(
+                new FakeHashCalculator(), reader, verifier, chainValidator, pdfaValidator, revocationChecker, CLOCK);
+    }
+
+    private static AnalyzePdfUseCase happyPathUseCaseWithSignatures(
+            List<SignatureReport> signatures, CertificateChainValidator chainValidator,
+            RevocationChecker revocationChecker) {
+        return useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(signatures),
+                chainValidator,
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                revocationChecker);
+    }
+
+    // ---- orchestration ----
+
+    @Test
+    void assemblesEveryPortsResultIntoOneReport() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("test.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.fileName()).isEqualTo("test.pdf");
+        assertThat(report.sizeBytes()).isEqualTo(CONTENT.length);
+        assertThat(report.hashes()).isEqualTo(HASHES);
+        assertThat(report.structure()).isEqualTo(STRUCTURE);
+        assertThat(report.security()).isEqualTo(SECURITY);
+        assertThat(report.pdfa()).isEqualTo(COMPLIANT_PDFA_REPORT);
+        assertThat(report.signatures()).isEmpty();
+    }
+
+    @Test
+    void analyzedAtComesFromTheInjectedClockRatherThanWallClockTime() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("test.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.analyzedAt()).isEqualTo(FIXED_NOW);
+    }
+
+    // ---- validationTime selection (3 cases) ----
+
+    @Test
+    void validationTimeUsesTheTimestampGenTimeWhenTheTimestampIsFullyValid() {
+        Instant genTime = Instant.parse("2025-01-01T00:00:00Z");
+        TimestampInfo validTimestamp =
+                new TimestampInfo(genTime, "TSA", true, true, null, null);
+        SignatureReport signature = signatureWith(validTimestamp, Instant.parse("2024-01-01T00:00:00Z"), List.of());
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
+
+        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
+                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(genTime);
+    }
+
+    @Test
+    void validationTimeFallsBackToClaimedSigningTimeWhenTheTimestampIsNotValid() {
+        Instant claimedSigningTime = Instant.parse("2024-01-01T00:00:00Z");
+        // imprintValid=false: the timestamp is present but not trustworthy.
+        TimestampInfo invalidTimestamp = new TimestampInfo(
+                Instant.parse("2025-01-01T00:00:00Z"), "TSA", false, true, null, "imprint mismatch");
+        SignatureReport signature = signatureWith(invalidTimestamp, claimedSigningTime, List.of());
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
+
+        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
+                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(claimedSigningTime);
+    }
+
+    @Test
+    void validationTimeFallsBackToClockNowWhenNeitherTimestampNorClaimedSigningTimeIsAvailable() {
+        SignatureReport signature = signatureWith(TimestampInfo.absent(), null, List.of());
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
+
+        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
+                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+    }
+
+    // ---- revocation flag on/off ----
+
+    @Test
+    void revocationIsNotCheckedAtAllWhenTheOptionIsDisabled() {
+        SignatureReport signature =
+                signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(ChainStatus.TRUSTED), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(revocationChecker.callCount).isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(RevocationStatus.notChecked());
+    }
+
+    @Test
+    void revocationIsCheckedForTheSignerAndItsImmediateIssuerWhenTheOptionIsEnabled() {
+        CertificateInfo signer = certificate("signer");
+        CertificateInfo issuer = certificate("ca");
+        SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(signer, issuer));
+        RevocationStatus good = new RevocationStatus(RevocationState.GOOD, "OCSP", null);
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(good);
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(ChainStatus.TRUSTED), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount).isEqualTo(1);
+        assertThat(revocationChecker.lastCertificate).isEqualTo(signer);
+        assertThat(revocationChecker.lastIssuer).isEqualTo(issuer);
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(good);
+    }
+
+    @Test
+    void revocationIsNotCheckedWhenTheSignatureHasNoCertificateChainEvenIfTheOptionIsEnabled() {
+        SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of());
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount).isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(RevocationStatus.notChecked());
+    }
+
+    // ---- PDF/A-2/3 declaration ----
+
+    @Test
+    void aDocumentDeclaringPdfA2IsReportedAsNotValidatedInsteadOfTheFormalOneBResult() {
+        PdfaDeclaration declaresPart2 = new PdfaDeclaration(2, "U");
+        // The formal validator, run unconditionally against 1b rules, would
+        // almost certainly find the document NON_COMPLIANT with 1b-specific
+        // issues that say nothing about its real PDF/A-2 conformance.
+        PdfaReport misleadingFormalResult = new PdfaReport(
+                declaresPart2, PdfaValidationStatus.NON_COMPLIANT, List.of(new PdfaIssue("3.1.3", "not embedded")));
+
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, declaresPart2),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(misleadingFormalResult),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.pdfa().status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
+        assertThat(report.pdfa().declaration()).isEqualTo(declaresPart2);
+        assertThat(report.pdfa().issues()).hasSize(1);
+        assertThat(report.pdfa().issues().get(0).code()).isEqualTo("PDFA_PART_NOT_SUPPORTED");
+    }
+
+    @Test
+    void aDocumentDeclaringPdfA1UsesTheFormalValidatorsOwnResultUnchanged() {
+        PdfaDeclaration declaresPart1 = new PdfaDeclaration(1, "B");
+        PdfaReport formalResult = new PdfaReport(declaresPart1, PdfaValidationStatus.COMPLIANT, List.of());
+
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, declaresPart1),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(formalResult),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.pdfa()).isEqualTo(formalResult);
+    }
+
+    // ---- section failure isolation ----
+
+    @Test
+    void anUnexpectedPdfaValidatorFailureIsReportedAsNotValidatedWithoutLosingTheRestOfTheReport() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(new IllegalStateException("preflight blew up")),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.pdfa().status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
+        assertThat(report.pdfa().issues()).isNotEmpty();
+        // The rest of the report must still be there.
+        assertThat(report.hashes()).isEqualTo(HASHES);
+        assertThat(report.structure()).isEqualTo(STRUCTURE);
+        assertThat(report.security()).isEqualTo(SECURITY);
+    }
+
+    @Test
+    void anUnexpectedSignatureVerifierFailureYieldsNoSignaturesWithoutLosingTheRestOfTheReport() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new FakeSignatureVerifier(new IllegalStateException("BC blew up")),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.signatures()).isEmpty();
+        assertThat(report.hashes()).isEqualTo(HASHES);
+        assertThat(report.pdfa()).isEqualTo(COMPLIANT_PDFA_REPORT);
+    }
+
+    @Test
+    void anUnexpectedChainValidationFailureIsIsolatedToItsOwnSignature() {
+        SignatureReport failing = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer")));
+        SignatureReport unaffected =
+                new SignatureReport("Signature2", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 15),
+                        IntegrityStatus.INTACT, FIXED_NOW, TimestampInfo.absent(), List.of(),
+                        ChainStatus.NOT_CHECKED, RevocationStatus.notChecked(), null);
+
+        CertificateChainValidator chainValidator = new CertificateChainValidator() {
+            @Override
+            public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
+                if (!chain.isEmpty()) {
+                    throw new IllegalStateException("PKIX blew up");
+                }
+                return ChainStatus.NOT_CHECKED;
+            }
+        };
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(failing, unaffected), chainValidator, new FakeRevocationChecker(RevocationStatus.notChecked()));
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.signatures()).hasSize(2);
+        SignatureReport failingResult = report.signatures().get(0);
+        assertThat(failingResult.chainStatus()).isEqualTo(ChainStatus.NOT_CHECKED);
+        assertThat(failingResult.revocation()).isEqualTo(RevocationStatus.notChecked());
+        assertThat(failingResult.anomalyOptional()).isPresent();
+        assertThat(failingResult.anomalyOptional().get()).contains("chain/revocation enrichment failed");
+        // The other signature must be entirely unaffected.
+        assertThat(report.signatures().get(1).chainStatus()).isEqualTo(ChainStatus.NOT_CHECKED);
+        assertThat(report.signatures().get(1).anomalyOptional()).isEmpty();
+    }
+
+    @Test
+    void anEnrichmentFailureAppendsToAnExistingAnomalyRatherThanReplacingIt() {
+        SignatureReport withExistingAnomaly = new SignatureReport("Signature1", "adbe.pkcs7.detached",
+                ByteRangeCoverage.of(0, 10, 10, 5, 15), IntegrityStatus.INTACT, FIXED_NOW, TimestampInfo.absent(),
+                List.of(certificate("signer")), ChainStatus.NOT_CHECKED, RevocationStatus.notChecked(),
+                "1 certificate(s) could not be mapped");
+        CertificateChainValidator chainValidator = new CertificateChainValidator() {
+            @Override
+            public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
+                throw new IllegalStateException("PKIX blew up");
+            }
+        };
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(withExistingAnomaly), chainValidator, new FakeRevocationChecker(RevocationStatus.notChecked()));
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        String anomaly = report.signatures().get(0).anomalyOptional().orElseThrow();
+        assertThat(anomaly).contains("1 certificate(s) could not be mapped");
+        assertThat(anomaly).contains("chain/revocation enrichment failed");
+    }
+
+    // ---- whole-document failures propagate ----
+
+    @Test
+    void encryptedDocumentExceptionPropagatesRatherThanBeingCaught() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(new EncryptedPdfException("needs a password")),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        assertThatThrownBy(() -> useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false)))
+                .isInstanceOf(EncryptedPdfException.class);
+    }
+
+    @Test
+    void invalidPdfExceptionPropagatesRatherThanBeingCaught() {
+        AnalyzePdfUseCase useCase = useCase(
+                new FakePdfDocumentReader(new InvalidPdfException("not a PDF")),
+                new FakeSignatureVerifier(List.of()),
+                new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        assertThatThrownBy(() -> useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false)))
+                .isInstanceOf(InvalidPdfException.class);
+    }
+}

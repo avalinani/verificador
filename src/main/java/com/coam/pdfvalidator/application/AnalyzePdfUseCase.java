@@ -1,0 +1,269 @@
+package com.coam.pdfvalidator.application;
+
+import com.coam.pdfvalidator.domain.model.CertificateInfo;
+import com.coam.pdfvalidator.domain.model.ChainStatus;
+import com.coam.pdfvalidator.domain.model.DocumentHashes;
+import com.coam.pdfvalidator.domain.model.DocumentStructure;
+import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
+import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
+import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaReport;
+import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
+import com.coam.pdfvalidator.domain.model.RevocationStatus;
+import com.coam.pdfvalidator.domain.model.SecurityInfo;
+import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
+import com.coam.pdfvalidator.domain.port.HashCalculator;
+import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
+import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
+import com.coam.pdfvalidator.domain.port.RevocationChecker;
+import com.coam.pdfvalidator.domain.port.SignatureVerifier;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Orchestrates one full, single-pass PDF analysis by calling every domain
+ * port in turn and assembling their results into one {@link
+ * PdfAnalysisReport}. A plain class, constructor-injected with the domain
+ * ports and a {@link Clock} (never {@code Instant.now()} directly, so
+ * {@link #analyze} is deterministically testable); Spring wiring is added in
+ * a later task.
+ *
+ * <h2>Order of operations</h2>
+ * <ol>
+ *   <li>{@link HashCalculator}: SHA-256/SHA-512 of the whole file.</li>
+ *   <li>{@link PdfDocumentReader}: structure, security, and the raw XMP
+ *       {@code pdfaid} declaration.</li>
+ *   <li>{@link PdfaConformanceValidator}, combined with the declaration read
+ *       above per the port's own documented contract (see {@link
+ *       #analyzePdfa}).</li>
+ *   <li>{@link SignatureVerifier}, then each extracted signature is enriched
+ *       with chain trust ({@link CertificateChainValidator}) and, if
+ *       requested, revocation ({@link RevocationChecker}) -- see {@link
+ *       #enrich}.</li>
+ * </ol>
+ *
+ * <h2>Encrypted or unreadable input: propagated, not caught</h2>
+ * {@code readStructure}/{@code readSecurity}/{@code readPdfaDeclaration} can
+ * throw the domain's {@code EncryptedPdfException} (a non-empty user
+ * password) or {@code InvalidPdfException} (corrupt/non-PDF input). Both
+ * propagate out of {@link #analyze} unchanged: there is no meaningful
+ * partial {@link PdfAnalysisReport} to build for a document that could not
+ * even be opened, and a future REST layer (T09) is expected to map both to
+ * an HTTP 422 response. This is a deliberate choice, not an oversight -- see
+ * the "Resilience" section below for the sections that instead degrade
+ * gracefully.
+ *
+ * <h2>Resilience: one section's failure must not lose the rest of the report</h2>
+ * Two sections are computed by adapters whose own contract already says
+ * they should never throw for a single bad document (only the two
+ * exceptions above escape them, and those are the whole-document failures
+ * handled by propagation, above). As defense in depth against a bug in
+ * either adapter, this use case additionally guards each of them
+ * individually, so one adapter misbehaving cannot take down a report that
+ * would otherwise be perfectly fine:
+ * <ul>
+ *   <li>{@link #analyzePdfa}: an unexpected {@link RuntimeException} from
+ *       {@link PdfaConformanceValidator#validate} is reported as {@link
+ *       PdfaValidationStatus#NOT_VALIDATED} with an explanatory issue,
+ *       instead of aborting the whole analysis.</li>
+ *   <li>{@link #verifySignatures}: an unexpected {@link RuntimeException}
+ *       from {@link SignatureVerifier#verify} is reported as no signatures
+ *       found (an empty list), instead of aborting the whole analysis.
+ *       There is no per-signature granularity to fall back to here, since
+ *       the failure happened before any signature could even be
+ *       extracted.</li>
+ *   <li>{@link #enrich}: chain validation and (optional) revocation checking
+ *       for one signature are guarded together. A failure there leaves that
+ *       one signature with its already-computed integrity/coverage/
+ *       timestamp fields intact and its chain/revocation status at their
+ *       {@code NOT_CHECKED}/{@code notChecked()} placeholders, with a note
+ *       appended to {@link SignatureReport#anomaly()} -- every other
+ *       signature, and the rest of the report, are unaffected.</li>
+ * </ul>
+ * {@link HashCalculator} is deliberately <b>not</b> guarded this way: hashing
+ * a byte array cannot meaningfully fail for any of this project's own
+ * implementations, and {@link PdfAnalysisReport} requires non-null hashes,
+ * so there is no sensible placeholder to substitute if it somehow did.
+ */
+public final class AnalyzePdfUseCase {
+
+    private final HashCalculator hashCalculator;
+    private final PdfDocumentReader pdfDocumentReader;
+    private final SignatureVerifier signatureVerifier;
+    private final CertificateChainValidator certificateChainValidator;
+    private final PdfaConformanceValidator pdfaConformanceValidator;
+    private final RevocationChecker revocationChecker;
+    private final Clock clock;
+
+    public AnalyzePdfUseCase(
+            HashCalculator hashCalculator,
+            PdfDocumentReader pdfDocumentReader,
+            SignatureVerifier signatureVerifier,
+            CertificateChainValidator certificateChainValidator,
+            PdfaConformanceValidator pdfaConformanceValidator,
+            RevocationChecker revocationChecker,
+            Clock clock) {
+        this.hashCalculator = Objects.requireNonNull(hashCalculator, "hashCalculator");
+        this.pdfDocumentReader = Objects.requireNonNull(pdfDocumentReader, "pdfDocumentReader");
+        this.signatureVerifier = Objects.requireNonNull(signatureVerifier, "signatureVerifier");
+        this.certificateChainValidator = Objects.requireNonNull(certificateChainValidator, "certificateChainValidator");
+        this.pdfaConformanceValidator = Objects.requireNonNull(pdfaConformanceValidator, "pdfaConformanceValidator");
+        this.revocationChecker = Objects.requireNonNull(revocationChecker, "revocationChecker");
+        this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /**
+     * Runs the full analysis pipeline described in the class Javadoc.
+     *
+     * @param fileName the original file name, carried through unchanged for reporting
+     * @param content  the whole PDF file's bytes
+     * @param options  per-analysis options (currently just {@link AnalysisOptions#checkRevocation()})
+     * @throws com.coam.pdfvalidator.domain.exception.EncryptedPdfException if the document requires a
+     *                                                                      non-empty user password
+     * @throws com.coam.pdfvalidator.domain.exception.InvalidPdfException   if the document is corrupt or not a PDF
+     */
+    public PdfAnalysisReport analyze(String fileName, byte[] content, AnalysisOptions options) {
+        Objects.requireNonNull(fileName, "fileName");
+        Objects.requireNonNull(content, "content");
+        Objects.requireNonNull(options, "options");
+
+        Instant analyzedAt = clock.instant();
+
+        DocumentHashes hashes = hashCalculator.hash(content);
+
+        // Propagates EncryptedPdfException/InvalidPdfException -- see class Javadoc.
+        DocumentStructure structure = pdfDocumentReader.readStructure(content);
+        SecurityInfo security = pdfDocumentReader.readSecurity(content);
+        PdfaDeclaration declaration = pdfDocumentReader.readPdfaDeclaration(content);
+
+        PdfaReport pdfa = analyzePdfa(content, declaration);
+        List<SignatureReport> signatures = verifySignatures(content, options);
+
+        return new PdfAnalysisReport(fileName, content.length, hashes, structure, security, pdfa, signatures, analyzedAt);
+    }
+
+    /**
+     * Combines {@link PdfaConformanceValidator#validate} (always a formal
+     * PDF/A-1b check, per its own contract) with the canonical XMP {@code
+     * pdfaid} declaration read separately via {@link
+     * PdfDocumentReader#readPdfaDeclaration}: a document declaring PDF/A-2
+     * or PDF/A-3 is reported {@link PdfaValidationStatus#NOT_VALIDATED} with
+     * an explanatory issue instead of the formal validator's own (almost
+     * certainly {@code NON_COMPLIANT}, and misleading) 1b-specific result --
+     * see {@code PdfaConformanceValidator}'s Javadoc and README section 2.8.
+     * A document declaring PDF/A-1 (or no PDF/A part at all) uses the formal
+     * validator's own status/issues unchanged.
+     */
+    private PdfaReport analyzePdfa(byte[] content, PdfaDeclaration declaration) {
+        PdfaReport formal;
+        try {
+            formal = pdfaConformanceValidator.validate(content);
+        } catch (RuntimeException e) {
+            return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED, List.of(new PdfaIssue(
+                    "NOT_VALIDATED", "PDF/A-1b validation failed unexpectedly: " + e)));
+        }
+
+        if (declaration.isDeclared() && declaration.declaredPart().orElseThrow() != 1) {
+            int declaredPart = declaration.declaredPart().orElseThrow();
+            return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED, List.of(new PdfaIssue(
+                    "PDFA_PART_NOT_SUPPORTED",
+                    "Document declares PDF/A-" + declaredPart
+                            + "; only PDF/A-1b formal validation is supported, so this could not be validated")));
+        }
+
+        return new PdfaReport(declaration, formal.status(), formal.issues());
+    }
+
+    private List<SignatureReport> verifySignatures(byte[] content, AnalysisOptions options) {
+        List<SignatureReport> extracted;
+        try {
+            extracted = signatureVerifier.verify(content);
+        } catch (RuntimeException e) {
+            return List.of();
+        }
+
+        List<SignatureReport> enriched = new ArrayList<>(extracted.size());
+        for (SignatureReport signature : extracted) {
+            enriched.add(enrich(signature, options));
+        }
+        return enriched;
+    }
+
+    /**
+     * Validates {@code signature}'s certificate chain at {@link
+     * #resolveValidationTime}, and (if requested) checks revocation, then
+     * returns the enriched report via {@link
+     * SignatureReport#withChainAndRevocation}. Both steps are guarded
+     * together: a failure leaves the signature's chain/revocation at their
+     * {@code NOT_CHECKED}/{@code notChecked()} placeholders, with a note
+     * appended to {@link SignatureReport#anomaly()} (merged with any
+     * anomaly the {@code SignatureVerifier} itself already reported, e.g. an
+     * unmappable certificate) -- see the class Javadoc's "Resilience"
+     * section.
+     */
+    private SignatureReport enrich(SignatureReport signature, AnalysisOptions options) {
+        try {
+            Instant validationTime = resolveValidationTime(signature);
+            ChainStatus chainStatus = certificateChainValidator.validate(signature.chain(), validationTime);
+            RevocationStatus revocation = resolveRevocation(signature, options);
+            return signature.withChainAndRevocation(chainStatus, revocation);
+        } catch (RuntimeException e) {
+            return withAppendedAnomaly(signature, "chain/revocation enrichment failed: " + e);
+        }
+    }
+
+    /**
+     * The instant chain validation (and expiry) is checked against: a valid
+     * RFC 3161 signature timestamp's {@code genTime} when present and both
+     * its imprint and TSA signature verify (an independently-verifiable
+     * claim), otherwise the signature's own self-declared {@code
+     * claimedSigningTime}, otherwise "now" ({@link Clock#instant()}) --
+     * exactly the precedence documented on {@code
+     * PkixCertificateChainValidator}'s Javadoc and README section 2.7.
+     */
+    private Instant resolveValidationTime(SignatureReport signature) {
+        TimestampInfo timestamp = signature.timestamp();
+        if (timestamp.isPresent() && timestamp.imprintValid() && timestamp.signatureValid()) {
+            return timestamp.genTime();
+        }
+        return signature.claimedSigningTimeOptional().orElseGet(clock::instant);
+    }
+
+    /**
+     * {@link RevocationStatus#notChecked()} when {@link
+     * AnalysisOptions#checkRevocation()} is {@code false}, or when the
+     * signature carries no certificate chain to check at all (nothing to
+     * ask a revocation checker about). Otherwise delegates to the injected
+     * {@link RevocationChecker} for the signer certificate (chain's first
+     * entry) and its immediate issuer (chain's second entry, or {@code
+     * null} when the chain has only the signer certificate itself).
+     */
+    private RevocationStatus resolveRevocation(SignatureReport signature, AnalysisOptions options) {
+        if (!options.checkRevocation()) {
+            return RevocationStatus.notChecked();
+        }
+        List<CertificateInfo> chain = signature.chain();
+        if (chain.isEmpty()) {
+            return RevocationStatus.notChecked();
+        }
+        CertificateInfo certificate = chain.get(0);
+        CertificateInfo issuer = chain.size() > 1 ? chain.get(1) : null;
+        return revocationChecker.check(certificate, issuer);
+    }
+
+    private static SignatureReport withAppendedAnomaly(SignatureReport signature, String note) {
+        String anomaly = signature.anomalyOptional()
+                .map(existing -> existing + "; " + note)
+                .orElse(note);
+        return new SignatureReport(
+                signature.fieldName(), signature.subFilter(), signature.coverage(), signature.integrity(),
+                signature.claimedSigningTime(), signature.timestamp(), signature.chain(),
+                signature.chainStatus(), signature.revocation(), anomaly);
+    }
+}
