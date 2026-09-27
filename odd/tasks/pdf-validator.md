@@ -448,5 +448,13 @@ Living README updated (`README.md`): §2.1 flow diagram marks the endpoint and S
 
 Parent spot check: `./mvnw -B verify` re-run → 202/202, `BUILD SUCCESS`.
 
+- Parent spot check: `./mvnw -B verify` → 202/202, BUILD SUCCESS. Manual run of the jar with `-Xmx384m`: started in 1.7 s; `/actuator/health` UP; `/swagger-ui.html` 200; `/v3/api-docs` lists `/api/v1/pdf/analyze`; non-PDF upload → 400 `urn:pdfvalidator:error:not-a-pdf`; 26 MB upload → HTTP 413 **with empty body** (not ProblemDetail).
+- Review (RDD, medium; 41 files, 1833 lines, base b2abba6): auto-granted, 1 lens (reliability), approved and acknowledged. Advisory findings → T09b.
+
+- [ ] T09b Follow-ups from T09 review + manual run (fold into T10):
+  - 413 ProblemDetail: `MaxUploadSizeExceededException` is raised before the controller, so the controller-scoped `@RestControllerAdvice` never handles it (observed: 413 with empty body). Handle it globally without re-breaking actuator 404s (e.g. a separate unscoped advice for this exception only, or an `ErrorController`/filter).
+  - Section error leak: `SectionError` copies raw exception messages into the report returned to clients — replace with stable, non-sensitive messages (log the detail server-side).
+  - `PdfAnalysisController` (~95-96): an `IOException` reading the upload is misclassified — map to 400/500 appropriately.
+
 ## Next step
-T10 RevocationChecker OCSP/CRL (WireMock). After that, tell the user how to run a local manual test again if they want to re-verify (they previously asked once, already demonstrated above for T09).
+T09b + T10 RevocationChecker (OCSP/CRL, optional flag, 2 s timeout, WireMock). User asked to be told when a local manual test is possible → now (see README §4).
