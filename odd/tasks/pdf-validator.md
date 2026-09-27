@@ -401,5 +401,14 @@ Living README updated (`README.md`): §2.1 flow diagram marks `AnalyzePdfUseCase
 
 Parent spot check: `./mvnw -B verify` re-run → 175/175, `BUILD SUCCESS`.
 
+- Parent spot check: `./mvnw -B verify` → 175/175, BUILD SUCCESS (PDF/A COMPLIANT test no longer skipped).
+- Rebased onto `origin/master` after PRs #1–#3 merged (tree identical before/after). Review (RDD, medium; 14 files, 1360 lines, base origin/master): auto-granted, 1 lens (reliability), approved and acknowledged. Advisory findings → T08b.
+- Delivery: stacked PRs to master (user choice). PR #1 feat/timestamps (T01–T05), #2 feat/chain-validation (T05b–T06), #3 feat/pdfa-validation (T06b–T07) merged 2026-09-27 (merge commits d381573, b0b0311, 5872b2e); CI on master green (run 36344388281). The GitHub stack rebased #2/#3 on merge, so commits recorded above for T05b–T07 have new hashes in master (e.g. 22ec5ae → cba1025, 2dc4ce5 → 0ecd8db); same trees. Likewise T07b/T08 commits were rebased: b8d1760→3b585e5, 33ae626→4342268, ebb14e3→1706f63, 821d174→19fa700, 5262732→41555b6. Merged branches deleted locally and on GitHub (user decision).
+
+- [ ] T08b Follow-ups from T08 review advisories (fold into T09):
+  - **Silent signature failure**: if `SignatureVerifier` throws, the report shows an empty signature list — indistinguishable from an unsigned PDF. Add explicit per-section analysis errors to `PdfAnalysisReport` (e.g. `List<SectionError>` or section status) and surface them in the API/UI.
+  - PDF/A ordering: document/adjust the order of declaration vs formal validation in the use case (lines ~164-177).
+  - `RevisionCounterTest` timeout is ineffective (lines ~217-219) — use `assertTimeoutPreemptively` or executor `awaitTermination` checks.
+
 ## Next step
-T09 REST controller, DTOs, ProblemDetail, springdoc, MockMvc + real-PDF integration tests — wire `AnalyzePdfUseCase` behind `com.coam.pdfvalidator.api`, map `EncryptedPdfException`/`InvalidPdfException` to HTTP 422, add Spring `@Configuration` wiring for all the ports (including `TrustAnchorProvider`'s external directory/PKCS#12 as configuration properties, per its own Javadoc note). Decide PR slicing strategy (ask-on-risk) before opening PRs.
+T08b + T09 REST API: `POST /api/v1/pdf/analyze` (multipart, `checkRevocation` flag), DTOs, ProblemDetail (400 not PDF, 413 too large, 422 encrypted/corrupt), springdoc Swagger UI, Spring wiring of adapters + trust store properties, MockMvc tests. After T09, tell the user how to run a local manual test (they asked).
