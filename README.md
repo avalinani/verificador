@@ -84,7 +84,7 @@ Un sello de tiempo de **firma** (distinto del sello de tiempo de *documento* de 
 1. **Imprint del mensaje**: el sello declara un algoritmo de resumen y un valor (`messageImprint`). Se recalcula ese resumen —con el algoritmo que el propio sello declara, no uno fijo— sobre los bytes de la firma (`SignerInformation#getSignature()`) y se compara con el valor declarado. Si no coincide, el sello es inválido (`imprintValid=false`), pero **la integridad de la firma que lo contiene no se ve afectada**: son dos verificaciones independientes.
 2. **Firma de la TSA**: el CMS del propio sello se verifica contra el certificado de la TSA embebido en él (`TimeStampToken#validate(...)`, construido con `JcaSimpleSignerInfoVerifierBuilder`), y se comprueba que ese certificado declara el uso extendido de clave `id-kp-timeStamping`; si no lo declara, no se rechaza la firma por eso, pero se añade una nota (`TimestampInfo#note`) — igual que con el atributo `signingCertificate`/`ESSCertID` del propio RFC 3161, que enlaza el sello a un certificado concreto y por tanto impide sustituirlo por otro sin invalidar la verificación.
 
-**Casos límite, ninguno lanza una excepción**: sin sello → `TimestampInfo.absent()` (`genTime=null`). Sello con imprint incorrecto → `imprintValid=false`, pero la firma que lo contiene sigue `INTACT` si su propio CMS es válido. Sello con bytes ASN.1 corruptos o que no se puede parsear como `TimeStampToken` → se informa igualmente inválido (`genTime=null`, con una nota explicando el motivo), sin afectar a la integridad de la firma.
+**Casos límite, ninguno lanza una excepción**: sin sello → `TimestampInfo.absent()` (`genTime=null`). Sello con imprint incorrecto → `imprintValid=false`, pero la firma que lo contiene sigue `INTACT` si su propio CMS es válido. Sello con bytes ASN.1 corruptos o que no se puede parsear como `TimeStampToken` → se informa igualmente inválido (`genTime=null`, con una nota explicando el motivo), sin afectar a la integridad de la firma. **(T05b)** Si el sello se valida correctamente pero el certificado de la TSA no se puede volver a mapear a `CertificateInfo` (un fallo de codificación DER, no criptográfico — el mismo tipo de fallo ya tolerado para la cadena del firmante en §2.5), ya **no** se descarta todo el resultado del sello: `genTime`, `imprintValid` y `signatureValid` se conservan (son verificaciones independientes de si se pudo extraer el certificado) y solo se añade una nota indicando que los datos del certificado de la TSA no se pudieron mapear.
 
 **Extensión mínima del dominio**: `TimestampInfo` ganó `signatureValid`, `tsaCertificate` (un `CertificateInfo`, reutilizando el tipo ya existente — el dominio sigue sin depender de ninguna librería de certificados) y `note`; `SignatureReport` ganó `anomaly` (ver más arriba) con el mismo propósito: informar una anomalía sin forzar al informe entero a un estado binario válido/inválido.
 
@@ -103,7 +103,7 @@ El núcleo del sistema (`domain/`) es Java puro: no importa Spring, PDFBox ni Bo
 | Estado de integridad | `IntegrityStatus` | `INTACT`, `MODIFIED_AFTER_SIGNING`, `INVALID_SIGNATURE`, `UNSUPPORTED` |
 | Certificado | `CertificateInfo` | Sujeto, emisor, fechas, algoritmo, URLs OCSP/CRL y el certificado codificado (DER) |
 | Sello de tiempo | `TimestampInfo` | `genTime`, `tsaName`, `imprintValid`, `signatureValid`, certificado de la TSA y una nota opcional; `absent()` cuando no hay sello |
-| Cadena y revocación | `ChainStatus`, `RevocationStatus` | Empiezan como `NOT_CHECKED` y se completan más tarde |
+| Cadena y revocación | `ChainStatus`, `RevocationStatus` | Empiezan como `NOT_CHECKED` y se completan más tarde; `ChainStatus` ya lo calcula `PkixCertificateChainValidator` (§2.7) |
 
 Los **puertos** son interfaces pequeñas que la infraestructura implementará con las librerías: `HashCalculator`, `PdfDocumentReader`, `SignatureVerifier`, `CertificateChainValidator`, `RevocationChecker` y `PdfaConformanceValidator`.
 
@@ -130,7 +130,33 @@ El verificador de firmas devuelve cada `SignatureReport` con la cadena y la revo
 
 Para cada firma con una verificación CMS válida, `BcSignatureVerifier` extrae del propio CMS el certificado del firmante y todos los certificados incluidos (normalmente firmante + emisor), y los mapea a `CertificateInfo` (sujeto y emisor en formato X.500, número de serie en hexadecimal, fechas de validez, algoritmo de firma, certificado codificado en DER). La cadena se ordena **firmante primero**, siguiendo el emisor de cada certificado hasta llegar a uno autofirmado (la raíz) o hasta que no se encuentre el siguiente emisor dentro del propio CMS.
 
-De cada certificado se leen además las URLs de sus extensiones **Authority Information Access** (OCSP) y **CRL Distribution Points**, si las declara. Una extensión ausente o mal formada no invalida el certificado: simplemente se informa sin URLs para esa extensión. La validación de la cadena contra un almacén de confianza (`chainStatus`) y la comprobación de revocación (`revocation`) quedan, por ahora, como `NOT_CHECKED`/`notChecked()` — las completará el caso de uso en tareas posteriores (T06/T10).
+De cada certificado se leen además las URLs de sus extensiones **Authority Information Access** (OCSP) y **CRL Distribution Points**, si las declara. Una extensión ausente o mal formada no invalida el certificado: simplemente se informa sin URLs para esa extensión (**T05b**: probado también directamente para el propio mapeador, no solo de forma indirecta a través de un PDF real). La comprobación de revocación (`revocation`) queda, por ahora, como `notChecked()` — la completará el caso de uso en una tarea posterior (T10). La validación de la cadena contra un almacén de confianza (`chainStatus`) ya está implementada (§2.7); su integración en el caso de uso llega en T08.
+
+### 2.7 Cadena de confianza X.509 (PKIX)
+
+`infrastructure/pki/PkixCertificateChainValidator` implementa el puerto `CertificateChainValidator` con la implementación PKIX de la propia JDK (`java.security.cert.CertPathBuilder` + `PKIXBuilderParameters`), sin depender de Bouncy Castle para esta parte — el dominio (`CertificateChainValidator`, `ChainStatus`) sigue sin conocer ningún tipo de certificados.
+
+- **Momento de validación**: `validate(chain, validationTime)` recibe el `Instant` contra el que se comprueban vigencia y confianza; **quién decide ese instante es el caso de uso** (T08), no este adaptador — será el sello de tiempo RFC 3161 si es válido, si no la fecha de firma auto-declarada, y si no hay ninguna, el instante actual.
+- **Revocación deliberadamente desactivada aquí** (`setRevocationEnabled(false)`): comprobar OCSP/CRL es responsabilidad de T10, aplicada por separado una vez la cadena ya es de confianza.
+- **Estados** (`ChainStatus`): `TRUSTED` (la ruta se construye y todos los certificados son de confianza), `UNTRUSTED_ROOT` (la cadena llega a un certificado autofirmado, pero no está en el almacén configurado), `INCOMPLETE_CHAIN` (falta un emisor: la cadena no llega a ningún certificado autofirmado), `EXPIRED` (algún certificado de la cadena presentada está fuera de su periodo de validez en `validationTime` — esta comprobación es previa e independiente de PKIX), `NOT_CHECKED` (lista vacía).
+- **Cómo se distingue `UNTRUSTED_ROOT` de `INCOMPLETE_CHAIN`**: el `CertPathBuilder` de la JDK no siempre distingue estos dos motivos de fallo de forma estable entre versiones, así que ante un fallo de construcción de ruta se aplica una comprobación propia, independiente: ¿la cadena presentada es *estructuralmente completa* (cada certificado verifica criptográficamente contra la clave pública del siguiente, hasta llegar a uno autofirmado)? Si lo es, el problema es que esa raíz no es de confianza (`UNTRUSTED_ROOT`); si no llega a ninguna raíz autofirmada, falta un eslabón (`INCOMPLETE_CHAIN`).
+- **Almacén de confianza** (`TrustAnchorProvider`): combina, de forma aditiva, (a) las raíces españolas empaquetadas en `src/main/resources/truststore/` (classpath), y (b) opcionalmente un directorio externo de certificados y/o un fichero PKCS#12, ambos como parámetros del constructor por ahora (la configuración por propiedades de Spring llega en T09).
+- **Sin lista de confianza europea (TSL/EU LOTL)**: la cadena se valida contra el almacén propio de raíces españolas descrito abajo, no contra la lista de confianza de la UE — decisión ya reflejada en [§10](#10-decisiones-técnicas).
+
+**Raíces españolas empaquetadas** (`src/main/resources/truststore/`, con procedencia completa y huellas SHA-256 en `truststore/SOURCES.md`):
+
+| Fichero | Autoridad | Válida hasta |
+|---|---|---|
+| `ac-raiz-fnmt-rcm.pem` | AC RAIZ FNMT-RCM | 2030-01-01 |
+| `ac-raiz-fnmt-rcm-servidores-seguros.pem` | AC RAIZ FNMT-RCM SERVIDORES SEGUROS | 2043-12-20 |
+| `accvraiz1.pem` | ACCVRAIZ1 (Agencia de Tecnología y Certificación Electrónica, GVA) | 2030-12-31 |
+| `firmaprofesional-ac-raiz.pem` | Autoridad de Certificacion Firmaprofesional CIF A62634068 | 2036-05-05 |
+| `izenpe-com.pem` | Izenpe.com | 2037-12-13 |
+| `ac-raiz-dnie-2.pem` | AC RAIZ DNIE 2 (Dirección General de la Policía) | 2043-09-27 |
+
+Cada raíz se descargó por HTTPS directamente de la web oficial de su propia autoridad y se incluye **solo** porque su huella SHA-256 se verificó de forma independiente (contra el informe oficial de CCADB y/o la Lista de Confianza española), nunca por la sola descarga; `truststore/SOURCES.md` documenta cada fuente de descarga y de verificación. Ninguna raíz se incluye sin esa verificación independiente.
+
+**Cómo añadir raíces propias**: sin tocar el código, pasando un directorio externo (un certificado por fichero, PEM o DER) y/o un fichero PKCS#12 al construir `TrustAnchorProvider` — se combinan con las raíces empaquetadas, nunca las sustituyen.
 
 ## 3. Stack tecnológico
 
@@ -195,11 +221,13 @@ src/main/java/com/coam/pdfvalidator/
 ├─ infrastructure/                Adaptadores PDFBox, Bouncy Castle, OCSP/CRL, preflight
 │  ├─ crypto/                     JcaHashCalculator (SHA-256/SHA-512)
 │  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
-│  └─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados)
+│  ├─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados, sellos RFC 3161)
+│  └─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
 └─ api/                           Controlador REST, DTOs, gestión de errores  ⏳
 
 src/main/resources/
 ├─ application.yml                Configuración (límite de subida 20 MB)
+├─ truststore/                    Raíces españolas empaquetadas (PEM) + SOURCES.md (procedencia y huellas)
 └─ static/                        Interfaz web                           ⏳
 
 src/test/java/com/coam/pdfvalidator/
@@ -228,12 +256,13 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Cifrado y permisos efectivos | ✅ |
 | Datos del certificado firmante y su cadena (sujeto, emisor, fechas, URLs OCSP/CRL) | ✅ |
 | Sello de tiempo RFC 3161 (sello de firma; imprint y firma de la TSA) | ✅ |
-| Cadena de confianza contra almacén configurable (trust store) | ⏳ |
+| Cadena de confianza contra almacén configurable (trust store) | ✅ |
 | Revocación OCSP / CRL (opcional, timeout 2 s) | ⏳ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ⏳ |
 | API REST + Swagger UI | ⏳ |
-| Interfaz web con arrastrar y soltar | ⏳ |
+| Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
+| Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
 | Despliegue Docker en VM de bajo consumo | ⏳ |
 
 ## 7. Tests y calidad
@@ -249,12 +278,15 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `domain/model/*Test` | Reglas del modelo: normalización de rotación (estricta y tolerante), orientación, validación de `/ByteRange` (incluidos valores negativos y desbordamiento aritmético), de hashes y de declaración PDF/A, vigencia y comparación por contenido de certificados, consistencia `pageCount`/`pages`, consistencia `rawRotation`/`rotationValid`/`rotation` en `PageInfo`, copias defensivas |
 | `JcaHashCalculatorTest` | SHA-256/SHA-512 contra los vectores de prueba conocidos (entrada vacía y `"abc"`) |
 | `PdfBoxDocumentReaderTest` | Versión (cabecera/catálogo, incluida cabecera ausente pero fichero cargable), número de páginas, las seis combinaciones de rotación (incluida una inválida y una heredada del nodo `/Pages`) más rotaciones no enteras y no numéricas, orientación (incluida una página en vertical rotada informada como apaisada), MediaBox/CropBox, cifrado (con y sin contraseña de usuario), documento sin cifrar, entrada corrupta o no-PDF, número de revisiones, declaración PDF/A presente/ausente/con XMP corrupto |
-| `RevisionCounterTest` | Conteo de revisiones sobre bytes crudos: una sola revisión, dos revisiones encadenadas por `/Prev`, una estructura linealizada construida a mano (una sola revisión lógica), fichero sin cadena de xref reconocible, `/Prev` cíclico (dos secciones que se referencian mutuamente: el recorrido se detiene en vez de bucle infinito), `startxref` fuera de rango (vuelta al conteo por `%%EOF` sin lanzar excepción), y un fichero sintético de ~5 MB con 2000 revisiones contado en menos de 3 s (prueba de que el recorrido es lineal, no cuadrático) |
+| `RevisionCounterTest` | Conteo de revisiones sobre bytes crudos: una sola revisión, dos revisiones encadenadas por `/Prev`, una estructura linealizada construida a mano (una sola revisión lógica), fichero sin cadena de xref reconocible, `/Prev` cíclico (dos secciones que se referencian mutuamente: el recorrido se detiene en vez de bucle infinito), `startxref` fuera de rango (vuelta al conteo por `%%EOF` sin lanzar excepción), un fichero sintético de ~5 MB con 2000 revisiones contado correctamente, y **(T05b)** una comprobación determinista de que el trabajo de escaneo crece linealmente y no cuadráticamente con el tamaño de entrada (contando pasos de escaneo reales mediante un contador expuesto solo para tests, en vez de medir tiempo de reloj — inestable en una CI cargada) |
 | `SignatureByteRangeTest` | La comprobación del hueco de `/ByteRange` frente a la longitud de `/Contents` analizada de forma independiente (construida a mano: firma y bytes de PDF fabricados directamente, sin pasar por un fichero real, para poder hacer que ambos discrepen) |
 | `BcSignatureVerifierTest` | Documento sin firmar (lista vacía), firma íntegra con su cadena de certificados y URLs OCSP/CRL, actualización incremental posterior a la firma, byte firmado manipulado, doble firma (`MODIFIED_AFTER_SIGNING` + `INTACT`), `/ByteRange` hostil (excede el fichero, longitud negativa) sin lanzar excepción, subfiltro no soportado, sello de tiempo de documento (`ETSI.RFC3161`) como no soportado, entrada corrupta, un campo de firma que lanza una excepción al leerlo (se informa `INVALID_SIGNATURE`, sin abortar el análisis), sello de tiempo de firma ausente/válido/con imprint incorrecto |
-| `SignatureTimestampVerifierTest` | Verificador de sellos de tiempo aislado (mismo motivo que `SignatureByteRangeTest`: construir el escenario a mano en vez de por fichero): sin atributo de sello → `absent()`, token con bytes ASN.1 corruptos → inválido con nota, sin lanzar excepción, certificado de la TSA sin el uso extendido de clave `timeStamping` → nota informativa |
+| `SignatureTimestampVerifierTest` | Verificador de sellos de tiempo aislado (mismo motivo que `SignatureByteRangeTest`: construir el escenario a mano en vez de por fichero): sin atributo de sello → `absent()`, token con bytes ASN.1 corruptos → inválido con nota, sin lanzar excepción, certificado de la TSA sin el uso extendido de clave `timeStamping` → nota informativa, **(T05b)** un certificado de TSA que no se puede mapear conserva el resto del resultado del sello y añade una nota en vez de descartarlo todo |
+| `X509CertificateInfoMapperTest` **(T05b)** | Camino de resiliencia del mapeador de certificados probado directamente (no solo indirectamente vía un PDF real): extensión Authority Information Access o CRL Distribution Points mal formada → sin URLs para esa extensión, sin lanzar excepción |
+| `PkixCertificateChainValidatorTest` **(T06)** | Cadena hasta una raíz de confianza → `TRUSTED`; raíz autofirmada pero ausente del almacén → `UNTRUSTED_ROOT`; falta el certificado intermedio (usando una identidad de tres niveles: raíz → intermedia → firmante) → `INCOMPLETE_CHAIN`; validación posterior a la caducidad del certificado firmante → `EXPIRED`; lista vacía → `NOT_CHECKED` |
+| `TrustAnchorProviderTest` **(T06)** | El almacén de confianza empaquetado carga exactamente las raíces documentadas en `truststore/SOURCES.md` (comparando huellas SHA-256, no por red) y todas están vigentes |
 
-**Estado actual:** 128 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 140 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, firmado con sello de tiempo RFC 3161 válido, firmado con sello de tiempo de imprint incorrecto, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF y con declaración PDF/A (XMP `pdfaid`). La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria independiente de la CA de firma, con un certificado que declara el uso extendido de clave `id-kp-timeStamping`.
 
@@ -286,6 +318,7 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-27 | Conteo de revisiones por cadena de xref (tolerante a PDF linealizados), rotaciones no enteras/no numéricas correctamente marcadas inválidas, cabecera `%PDF-` ausente ya no aborta el análisis (T03b). Verificador de firmas Bouncy Castle: `/ByteRange` + CMS, firmas múltiples independientes, subfiltros soportados/no soportados, extracción de la cadena de certificados con URLs OCSP/CRL (T04). |
 | 2026-09-27 | Endurecimiento del verificador de firmas (T04b): comprobación del hueco de `/ByteRange` frente a la longitud de `/Contents` analizada de forma independiente (la anterior era una tautología autorreferencial), conteo de revisiones lineal/acotado en vez de cuadrático (con vuelta a `%%EOF` ante un `startxref` fuera de rango), ningún campo de firma hostil puede ya escapar del guardado por-campo, y un fallo al mapear un certificado ya no degrada una firma criptográficamente válida a `INVALID_SIGNATURE` (se informa con una nota de anomalía). Verificación de sellos de tiempo RFC 3161 sobre el valor de la firma: imprint, firma de la TSA y uso extendido de clave `timeStamping` (T05); los sellos de tiempo de *documento* (`ETSI.RFC3161`) siguen `UNSUPPORTED`, por decisión documentada. |
 | 2026-09-27 | Repositorio publicado en GitHub (fusión del commit inicial con la licencia GPL-3.0). CI de GitHub Actions en verde con Temurin 25. |
+| 2026-09-27 | (T05b) Un fallo al mapear el certificado de la TSA ya no descarta el resto del resultado del sello de tiempo; camino de resiliencia del mapeador de certificados probado directamente; test de rendimiento del contador de revisiones sustituido por una comprobación determinista (sin reloj de pared). (T06) Validación de cadena de confianza X.509 con la implementación PKIX de la JDK (`PkixCertificateChainValidator`), contra un almacén de confianza configurable (`TrustAnchorProvider`) con seis raíces españolas empaquetadas y verificadas de forma independiente (§2.7). |
 
 ## 12. Repositorio y licencia
 

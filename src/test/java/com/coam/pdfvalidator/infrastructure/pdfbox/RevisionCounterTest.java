@@ -73,21 +73,48 @@ class RevisionCounterTest {
     }
 
     @Test
-    void aLargeHeavilyRevisedFileIsCountedQuickly() {
+    void aLargeHeavilyRevisedFileIsCountedCorrectly() {
         int revisionCount = 2000;
         byte[] pdf = manyRevisionsDocument(revisionCount);
         assertThat(pdf.length)
                 .as("sanity check: this is genuinely a large (multi-megabyte) synthetic input")
                 .isGreaterThan(4_000_000);
 
-        long startNanos = System.nanoTime();
-        int counted = RevisionCounter.count(pdf);
-        long elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
+        assertThat(RevisionCounter.count(pdf)).isEqualTo(revisionCount);
+    }
 
-        assertThat(counted).isEqualTo(revisionCount);
-        assertThat(elapsedMillis)
-                .as("a linear-time xref walk must stay fast even on a large, heavily revised file")
-                .isLessThan(3000);
+    /**
+     * Deterministic replacement for a wall-clock performance assertion
+     * (flaky on a loaded/slow CI machine): {@link RevisionCounter} exposes a
+     * package-private scan-step counter ({@link RevisionCounter#lastScanStepCount()})
+     * incremented once per byte position {@link RevisionCounter}'s internal
+     * {@code indexOf} inspects. The previous, quadratic implementation
+     * rescanned from each hop's offset to the end of the file, so its total
+     * scan work grew with {@code hops * fileSize} -- roughly the square of
+     * the input size for these synthetic documents, since {@code fileSize}
+     * itself scales with {@code hops}. A 4x growth in revision count (and
+     * thus file size) would have meant roughly a 16x growth in scan work
+     * under that implementation. The current linear/{@code O(n log n)}
+     * implementation scans each keyword once per {@link
+     * RevisionCounter#count} call regardless of hop count, so scan work
+     * should grow close to 4x, not 16x; a generous margin absorbs the
+     * {@code log n} factor from the binary searches and general noise.
+     */
+    @Test
+    void scanWorkGrowsLinearlyNotQuadraticallyWithInputSize() {
+        int smallRevisionCount = 500;
+        int largeRevisionCount = 2000; // 4x the small case
+
+        RevisionCounter.count(manyRevisionsDocument(smallRevisionCount));
+        long smallSteps = RevisionCounter.lastScanStepCount();
+
+        RevisionCounter.count(manyRevisionsDocument(largeRevisionCount));
+        long largeSteps = RevisionCounter.lastScanStepCount();
+
+        assertThat(smallSteps).isPositive();
+        assertThat(largeSteps)
+                .as("a 4x larger input must not cost ~16x the scan work of a quadratic implementation")
+                .isLessThan(smallSteps * 8);
     }
 
     /**

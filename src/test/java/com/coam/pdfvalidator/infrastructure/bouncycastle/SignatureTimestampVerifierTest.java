@@ -23,11 +23,17 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.tsp.TimeStampToken;
 import org.junit.jupiter.api.Test;
 
+import javax.security.auth.x500.X500Principal;
+import java.math.BigInteger;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
+import java.util.Date;
 import java.util.Hashtable;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Exercises {@link SignatureTimestampVerifier} directly for the malformed-
@@ -92,6 +98,37 @@ class SignatureTimestampVerifierTest {
         assertThat(result.isPresent()).isTrue();
         assertThat(result.noteOptional()).isPresent();
         assertThat(result.note()).contains("timeStamping");
+    }
+
+    /**
+     * Exercises {@link SignatureTimestampVerifier#mapTsaCertificate} directly
+     * with a certificate double that fails to DER-re-encode -- the same
+     * failure mode {@code X509CertificateInfoMapper.toDomain} already
+     * documents as "not practically constructible" through a real, honestly
+     * signed certificate (see {@code X509CertificateInfoMapperTest} and the
+     * T04 progress notes). This proves the resilience fix directly: mapping
+     * failure must be reported as a note, never thrown, so it cannot
+     * silently discard the surrounding {@code genTime}/{@code imprintValid}/
+     * {@code signatureValid} result the way it did before this fix (those
+     * fields are computed independently of this mapping call in {@code
+     * verifyToken}, and are unaffected by whatever this method returns).
+     */
+    @Test
+    void aTsaCertificateMappingFailureIsReportedAsANoteInsteadOfThrowing() throws Exception {
+        X509Certificate certificate = mock(X509Certificate.class);
+        when(certificate.getSubjectX500Principal()).thenReturn(new X500Principal("CN=Unmappable TSA"));
+        when(certificate.getIssuerX500Principal()).thenReturn(new X500Principal("CN=Unmappable TSA"));
+        when(certificate.getSerialNumber()).thenReturn(BigInteger.ONE);
+        when(certificate.getNotBefore()).thenReturn(Date.from(java.time.Instant.EPOCH));
+        when(certificate.getNotAfter()).thenReturn(Date.from(java.time.Instant.EPOCH.plusSeconds(3600)));
+        when(certificate.getSigAlgName()).thenReturn("SHA256withRSA");
+        when(certificate.getEncoded()).thenThrow(new CertificateEncodingException("boom"));
+
+        SignatureTimestampVerifier.CertificateMapping mapping =
+                SignatureTimestampVerifier.mapTsaCertificate(certificate);
+
+        assertThat(mapping.certificateInfo()).isNull();
+        assertThat(mapping.failureNote()).contains("DER-encode");
     }
 
     @Test
