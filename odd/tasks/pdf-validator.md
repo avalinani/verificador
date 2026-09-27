@@ -29,7 +29,8 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - [ ] T08 AnalyzePdfUseCase + ArchUnit rules
 - [ ] T09 REST controller, DTOs, ProblemDetail, springdoc, MockMvc + real-PDF integration tests
 - [ ] T10 RevocationChecker OCSP/CRL (WireMock)
-- [ ] T11 Static UI (index.html, app.js, styles.css)
+- [ ] T11 Static UI — "Validar" screen (index.html, app.js, styles.css)
+- [ ] T11b "Firmar" screen with AutoFirma (user decision 2026-09-27): upload PDF → AutoScript.js invokes the user's local AutoFirma via WebSocket (desktop only, no intermediate storage/retrieve server) → PAdES signature with the user's own certificate (private key never leaves the client) → download signed PDF → one-click "Validar este PDF" through our API. Clear message + official download link when AutoFirma is not installed/reachable. Before bundling AutoScript.js (ctt-gob-es/clienteafirma) verify its license is compatible with GPL-3.0.
 - [ ] T12 Dockerfile, docker-compose, memory check, VM deploy, Actuator
 - [ ] T13 README (all TFM sections + slides URL), slides, JaCoCo
 
@@ -290,5 +291,15 @@ Living README updated (`README.md`): new §2.7 (PKIX chain validation — valida
 
 Parent spot check: `./mvnw -B verify` re-run → 140/140, `BUILD SUCCESS`; domain library-free; infrastructure boundary respected.
 
+- Parent spot check: `./mvnw -B verify` → 140/140, BUILD SUCCESS; domain has no library imports (only a Javadoc mention of `java.security.cert`). Bundled root SHA-256 values re-checked by the orchestrator: all 6 match CCADB (5) / Spanish TSL (DNIe 2).
+- Review (RDD, medium; 19 files, 1224 lines): auto-granted, 1 lens (reliability), approved and acknowledged (lineage from base add27a5, authority burned). Advisory findings → T06b.
+
+- [ ] T06b Follow-ups from T06 review advisories (fold into T07):
+  - `RevisionCounter` has static mutable state (the deterministic scan-step counter added for the test) — race condition once the service handles concurrent requests; make it instance-scoped or inject a counter only in tests.
+  - `PkixCertificateChainValidator`: certificate parse failure throws instead of mapping to a status (e.g. INCOMPLETE_CHAIN/NOT_CHECKED with detail).
+  - `TrustAnchorProvider`: external directory / PKCS#12 sources are untested — add tests (temp dir, temp PKCS#12).
+  - `TrustAnchorProviderTest`: "roots not expired" assertion is a time bomb (FNMT root expires 2030) — assert against a fixed reference date.
+  - `SignatureTimestampVerifierTest`: TSA mapping-failure path proven only via the seam — add an integration-level assertion.
+
 ## Next step
-T07 PreflightPdfaValidator (PDF/A-1b) + XMP pdfaid detection. Decide PR slicing strategy (ask-on-risk) before opening PRs — the accumulated branch (`feat/chain-validation`, branched from the already-pushed `feat/timestamps`) is not yet pushed.
+T06b + T07 PreflightPdfaValidator (PDF/A-1b) + XMP pdfaid detection. Decide PR slicing strategy (ask-on-risk) before opening PRs — the accumulated branch (`feat/chain-validation`, branched from the already-pushed `feat/timestamps`) is not yet pushed.
