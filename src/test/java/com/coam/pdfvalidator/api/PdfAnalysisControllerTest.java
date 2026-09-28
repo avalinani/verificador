@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -219,6 +220,12 @@ class PdfAnalysisControllerTest {
         assertThat(result.getResponse().getContentAsString())
                 .doesNotContain("temp storage unreadable")
                 .doesNotContain("/var/tmp");
+        // T10 follow-up (T09d review advisory): proves this 500 is actually
+        // caused by the upload-read IOException path itself -- not, say, a
+        // coincidental failure elsewhere that happens to also return 500 --
+        // by asserting the use case (which would only ever be reached once
+        // the upload was successfully read) was never invoked at all.
+        verify(analyzePdfUseCase, never()).analyze(anyString(), any(byte[].class), any(AnalysisOptions.class));
     }
 
     @Test

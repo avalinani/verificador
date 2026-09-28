@@ -343,6 +343,49 @@ class BcSignatureVerifierTest {
                         .contains("non-standard digestAlgorithm encoding"));
     }
 
+    /**
+     * T10 follow-up (T09d review advisory): {@code
+     * BcSignatureVerifier#byteRangeFailureReason} is a package-private seam
+     * specifically so this fallback -- taken only when an {@code
+     * IllegalArgumentException} from {@code SignatureByteRange}/{@code
+     * ByteRangeCoverage} carries no message at all -- can be unit-tested
+     * directly. It is currently unreachable through any real PDF (every
+     * throw site in those two classes always supplies a message), so this
+     * test constructs the exception by hand rather than trying to drive a
+     * real file through it.
+     */
+    @Test
+    void theByteRangeFailureFallbackReasonIsUsedWhenTheExceptionCarriesNoMessage() {
+        assertThat(BcSignatureVerifier.byteRangeFailureReason(new IllegalArgumentException()))
+                .isEqualTo("invalid /ByteRange");
+    }
+
+    @Test
+    void theByteRangeFailureReasonIsTheExceptionsOwnMessageWhenPresent() {
+        assertThat(BcSignatureVerifier.byteRangeFailureReason(new IllegalArgumentException("ByteRange gap is out of bounds")))
+                .isEqualTo("ByteRange gap is out of bounds");
+    }
+
+    /**
+     * T09d review advisory: the mislabeled-digest bypass's signed-attributes
+     * branch ({@code
+     * CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}, the
+     * path that checks {@code messageDigest} first before verifying over
+     * the signed attributes) had a tampered-content negative only for the
+     * no-signed-attributes variant ({@code
+     * aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmIsInvalid} above).
+     * This covers the same tamper for the signed-attributes variant.
+     */
+    @Test
+    void aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmWithSignedAttributesIsInvalid() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributesThenTampered();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+    }
+
     // A TSA certificate missing the timeStamping EKU is covered by
     // SignatureTimestampVerifierTest instead: Bouncy Castle's own
     // TimeStampTokenGenerator refuses to issue such a token at all, so that

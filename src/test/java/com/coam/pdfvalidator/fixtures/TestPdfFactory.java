@@ -163,6 +163,29 @@ public final class TestPdfFactory {
     }
 
     /**
+     * T10 follow-up (T09d review advisory): the tampered-content negative
+     * {@link #signedWithSignatureAlgorithmOidAsDigestOidThenTampered()}
+     * only covers the no-signed-attributes variant of the mislabeled-digest
+     * bypass. This is the same tamper (a byte flipped
+     * inside the first signed range, after signing) applied to the
+     * signed-attributes variant instead, exercising {@code
+     * CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}'s other
+     * branch (checks {@code messageDigest} first, then verifies over the
+     * signed attributes): tampering the actual content must still be
+     * caught via the {@code messageDigest} mismatch, even though the
+     * signature itself covers the signed attributes, not the raw content
+     * directly.
+     */
+    public static byte[] signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributesThenTampered() throws IOException {
+        byte[] pdf = signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes();
+        int[] byteRange = firstByteRange(pdf);
+        byte[] tampered = pdf.clone();
+        int tamperOffset = byteRange[0] + 10;
+        tampered[tamperOffset] = (byte) (tampered[tamperOffset] ^ 0xFF);
+        return tampered;
+    }
+
+    /**
      * A signed PDF whose raw {@code /ByteRange} array text has been
      * byte-patched in place (keeping the file's total length, and every
      * other byte offset, unchanged) so its last number ({@code len2})

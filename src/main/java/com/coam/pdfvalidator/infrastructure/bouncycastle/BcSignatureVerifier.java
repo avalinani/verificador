@@ -131,11 +131,8 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             // The exception's own message already names the structural
             // problem (e.g. "ByteRange gap is out of bounds: ..."), and is
             // safe to surface: it describes the file's own structure, not
-            // any sensitive data. Falls back to a fixed, still-non-sensitive
-            // reason on the (currently unreachable, but not guaranteed to
-            // stay that way) chance that the exception itself carries no
-            // message: an anomaly must always be a stable, non-null reason.
-            String reason = e.getMessage() != null ? e.getMessage() : "invalid /ByteRange";
+            // any sensitive data.
+            String reason = byteRangeFailureReason(e);
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
                     claimedSigningTime, TimestampInfo.absent(), List.of(), reason);
         }
@@ -179,6 +176,22 @@ public final class BcSignatureVerifier implements SignatureVerifier {
 
         return report(fieldName, subFilter, byteRange.coverage(), integrity, claimedSigningTime,
                 cms.timestamp(), mapped.certificates(), anomaly);
+    }
+
+    /**
+     * The anomaly reason for a structurally broken {@code /ByteRange}:
+     * {@code e}'s own message when present, or a fixed, still-non-sensitive
+     * fallback on the (currently unreachable through any real PDF -- every
+     * throw site in {@code SignatureByteRange}/{@code ByteRangeCoverage}
+     * carries an explicit message -- but not guaranteed to stay that way)
+     * chance that the exception itself carries no message: an anomaly must
+     * always be a stable, non-null reason. Package-private (T09d follow-up)
+     * specifically so this otherwise-unreachable branch can be unit-tested
+     * directly, without needing to construct a PDF that can actually drive
+     * it.
+     */
+    static String byteRangeFailureReason(IllegalArgumentException e) {
+        return e.getMessage() != null ? e.getMessage() : "invalid /ByteRange";
     }
 
     private static String combineNotes(String a, String b) {
