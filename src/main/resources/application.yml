@@ -25,3 +25,12 @@ management:
 #    external-dir: /path/to/a/directory/with/one-certificate-per-file
 #    pkcs12-path: /path/to/truststore.p12
 #    pkcs12-password: change-me
+
+# Optional revocation checking (OCSP/CRL, CompositeRevocationChecker), only
+# used when a request sets checkRevocation=true. Both defaults already match
+# the task's requirements; uncomment only to change them -- see README
+# section on revocation checking/4.
+#pdfvalidator:
+#  revocation:
+#    timeout: 2s
+#    max-response-bytes: 10MB

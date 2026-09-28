@@ -94,6 +94,47 @@ public final class TestPki {
     }
 
     /**
+     * A signer certificate plus its issuer's certificate AND private key --
+     * unlike {@link IssuedIdentity} (which only exposes the end-entity's
+     * private key, since production code never needs to sign as a CA),
+     * T10's revocation-checking tests need the issuer's private key too, to
+     * play the role of a real OCSP responder/CRL issuer ({@code
+     * TestRevocationResponder}).
+     */
+    public record RevocationTestIdentity(
+            X509Certificate signerCertificate, X509Certificate issuerCertificate, PrivateKey issuerPrivateKey) {
+    }
+
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but with the end-entity
+     * certificate's AIA (OCSP)/CRL Distribution Point URLs set explicitly
+     * (either may be {@code null} to omit that extension entirely), and
+     * exposing the issuing root's own private key so a test can sign real
+     * OCSP responses/CRLs as that issuer -- used by T10's revocation-
+     * checking tests to point the certificate at a local test HTTP server
+     * instead of the hardcoded {@code ocsp.example.org}/{@code
+     * crl.example.org} placeholders {@link #issueSigningIdentity()} uses.
+     */
+    public static RevocationTestIdentity issueRevocationTestIdentity(String ocspUrl, String crlUrl) {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), notBefore, notAfter,
+                    ocspUrl, crlUrl);
+
+            return new RevocationTestIdentity(eeCertificate, rootCertificate, rootKeyPair.getPrivate());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with custom revocation URLs", e);
+        }
+    }
+
+    /**
      * Same shape as {@link #issueSigningIdentity()}, but the end-entity
      * certificate's own validity window ends well before "now" (and
      * therefore before the signing time a fixture built with this identity
@@ -397,6 +438,19 @@ public final class TestPki {
             java.security.PublicKey eePublicKey,
             Date notBefore,
             Date notAfter) throws Exception {
+        return buildEndEntityCertificate(rootCertificate, rootPrivateKey, eePublicKey, notBefore, notAfter,
+                "http://ocsp.example.org/ee", "http://crl.example.org/ee.crl");
+    }
+
+    /** Same as the 5-argument overload, but with explicit (possibly {@code null}, to omit the extension) AIA/CDP URLs. */
+    private static X509Certificate buildEndEntityCertificate(
+            X509Certificate rootCertificate,
+            PrivateKey rootPrivateKey,
+            java.security.PublicKey eePublicKey,
+            Date notBefore,
+            Date notAfter,
+            String ocspUrl,
+            String crlUrl) throws Exception {
 
         org.bouncycastle.asn1.x500.X500Name issuer = subjectName(rootCertificate);
         org.bouncycastle.asn1.x500.X500Name subject =
@@ -413,18 +467,21 @@ public final class TestPki {
         certBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
         certBuilder.addExtension(Extension.keyUsage, true,
                 new KeyUsage(KeyUsage.digitalSignature | KeyUsage.nonRepudiation));
-        certBuilder.addExtension(Extension.authorityInfoAccess, false,
-                new AuthorityInformationAccess(
-                        AccessDescription.id_ad_ocsp,
-                        new GeneralName(GeneralName.uniformResourceIdentifier, "http://ocsp.example.org/ee")));
-        certBuilder.addExtension(Extension.cRLDistributionPoints, false,
-                new CRLDistPoint(new DistributionPoint[] {
-                        new DistributionPoint(
-                                new DistributionPointName(new GeneralNames(
-                                        new GeneralName(GeneralName.uniformResourceIdentifier,
-                                                "http://crl.example.org/ee.crl"))),
-                                null, null)
-                }));
+        if (ocspUrl != null) {
+            certBuilder.addExtension(Extension.authorityInfoAccess, false,
+                    new AuthorityInformationAccess(
+                            AccessDescription.id_ad_ocsp,
+                            new GeneralName(GeneralName.uniformResourceIdentifier, ocspUrl)));
+        }
+        if (crlUrl != null) {
+            certBuilder.addExtension(Extension.cRLDistributionPoints, false,
+                    new CRLDistPoint(new DistributionPoint[] {
+                            new DistributionPoint(
+                                    new DistributionPointName(new GeneralNames(
+                                            new GeneralName(GeneralName.uniformResourceIdentifier, crlUrl))),
+                                    null, null)
+                    }));
+        }
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
