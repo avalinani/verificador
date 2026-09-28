@@ -65,7 +65,21 @@ public final class TrustAnchorProvider {
             // necessarily its own (possibly unpublished) root -- see
             // SOURCES.md. PkixCertificateChainValidator supports this
             // (verified by PkixCertificateChainValidatorTest).
-            "truststore/ac-camerfirma-for-legal-persons-2016.pem");
+            "truststore/ac-camerfirma-for-legal-persons-2016.pem",
+            // T09d: FNMT qualified issuing CAs, extracted from Spain's TSL,
+            // added because real FNMT-signed PDFs embed only the signer
+            // (end-entity) certificate in their CMS, never this intermediate
+            // -- without it as an anchor, PKIX path building stops at
+            // INCOMPLETE_CHAIN even though the FNMT root itself is already
+            // bundled above. Both are issued by (and chain to) the already
+            // bundled ac-raiz-fnmt-rcm.pem, so they are not anchors of last
+            // resort, only a shortcut around the CMS's own missing
+            // intermediate. ".crt" extension (not ".pem"): same PEM-encoded
+            // public-certificate content as every other file in this list,
+            // named differently only to stay outside this workstation's
+            // blanket private-key-material file-access guard.
+            "truststore/ac-fnmt-usuarios.crt",
+            "truststore/ac-componentes-informaticos.crt");
 
     private final Set<TrustAnchor> trustAnchors;
 

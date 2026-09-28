@@ -44,7 +44,12 @@ class TrustAnchorProviderTest {
             // AC CAMERFIRMA FOR LEGAL PERSONS - 2016: a non-self-signed
             // anchor (its own issuer, CHAMBERS OF COMMERCE ROOT - 2016, is
             // not itself published in the Spanish TSL) -- see SOURCES.md.
-            "3A8066266D28BD28CCD0F564C8FBC1219B4FFAE403E01E5039D30F2400F0EB09");
+            "3A8066266D28BD28CCD0F564C8FBC1219B4FFAE403E01E5039D30F2400F0EB09",
+            // T09d: FNMT qualified issuing CAs (also non-self-signed
+            // anchors, both issued by the already-bundled AC RAIZ FNMT-RCM
+            // root) -- see SOURCES.md.
+            "601293CA20B09A03295D196256C6953FF9EBA811DB8E3CE140413C1BFFE9A869",
+            "F038421F07F20D63A20D3691E5A178AB8459EBE570C1647B7690554EF23876AB");
 
     @Test
     void theBundledTrustStoreLoadsExactlyTheDocumentedRoots() throws Exception {

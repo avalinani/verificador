@@ -110,6 +110,34 @@ class PkixCertificateChainValidatorTest {
         assertThat(status).isEqualTo(ChainStatus.TRUSTED);
     }
 
+    /**
+     * T09d: the real-world case that motivated bundling FNMT's qualified
+     * issuing CAs as trust anchors. Unlike {@link
+     * #aChainAnchoredAtANonSelfSignedIntermediateIsTrusted}, which presents
+     * {@code [ee, intermediate]} (the intermediate embedded in the CMS,
+     * just not the root), a real FNMT-signed PDF's CMS embeds <em>only</em>
+     * the end-entity certificate -- the issuing CA is never embedded at
+     * all. The presented chain here is {@code [ee]} alone; the JDK's PKIX
+     * {@link java.security.cert.CertPathBuilder} must still resolve it to
+     * {@code TRUSTED} once the (non-self-signed) intermediate itself is a
+     * configured anchor, since it needs no certificate for the anchor in
+     * its {@code CertStore} -- the anchor is supplied separately from the
+     * presented chain.
+     */
+    @Test
+    void aChainOmittingAnIntermediateNotEmbeddedInTheCmsIsTrustedWhenThatIntermediateIsTheAnchor() {
+        TestPki.ThreeTierIdentity identity = TestPki.issueThreeTierIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.intermediateCertificate()));
+
+        List<CertificateInfo> chainWithOnlyTheEndEntity =
+                toCertificateInfos(List.of(identity.endEntityCertificate()));
+
+        ChainStatus status = validator.validate(chainWithOnlyTheEndEntity, Instant.now());
+
+        assertThat(status).isEqualTo(ChainStatus.TRUSTED);
+    }
+
     @Test
     void anEmptyChainIsNotChecked() {
         PkixCertificateChainValidator validator = new PkixCertificateChainValidator(TrustAnchorProvider.of());

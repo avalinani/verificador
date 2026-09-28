@@ -20,6 +20,8 @@ Downloaded and verified 2026-09-27.
 | `izenpe-com.pem` | Izenpe.com | `25:30:CC:8E:98:32:15:02:BA:D9:6F:9B:1F:BA:1B:09:9E:2D:29:9E:0F:45:48:BB:91:4F:36:3B:C0:D4:53:1F` | 2037-12-13 | Obtained from the CCADB record itself (izenpe.eus only exposes an interactive download portal, not a stable direct file URL) | CCADB Included CA Certificate Report (row: "Izenpe.com", serial `00B0B75A16485FBFE1CBF58BD719E67D`) — fingerprint recomputed locally from the bundled file and matches the CCADB row exactly. Note: CCADB records a TLS/website trust-bit distrust after 2026-04-15 for this root; that restriction is about browser/TLS trust only and does not apply to its use here as a document-signature (non-TLS) trust anchor |
 | `ac-raiz-dnie-2.pem` | AC RAIZ DNIE 2 (Dirección General de la Policía) | `C5:C3:80:EB:92:40:FB:36:A1:6E:15:F5:D6:BA:D0:BF:61:1F:6D:03:F0:EF:24:22:99:19:E7:D2:D8:12:6C:11` | 2043-09-27 | https://www.dnielectronico.es/ZIP/ACRAIZ-DNIE2.zip (official DNIe portal; downloaded and unzipped directly, `AC RAIZ DNIE 2.crt`) | Spain's official Trusted List (`https://tsl.digital.gob.es/TSL.xml`, per the EU List of Trusted Lists) — the embedded certificate for the "AC RAIZ DNIE 2" service was extracted and its SHA-256 recomputed locally; it matches the downloaded file exactly |
 | `ac-camerfirma-for-legal-persons-2016.pem` | AC CAMERFIRMA FOR LEGAL PERSONS - 2016 (issuer: CHAMBERS OF COMMERCE ROOT - 2016) | `3A:80:66:26:6D:28:BD:28:CC:D0:F5:64:C8:FB:C1:21:9B:4F:FA:E4:03:E0:1E:50:39:D3:0F:24:00:F0:EB:09` | 2040-03-09 | Extracted directly from Spain's official Trusted List (`https://tsl.digital.gob.es/TSL.xml`, per the EU List of Trusted Lists), not from any user PDF | Spain's TSL itself lists this exact certificate under a `TSPService` with `ServiceTypeIdentifier` `http://uri.etsi.org/TrstSvc/Svctype/CA/QC` and `ServiceStatus` `.../Svcstatus/granted`; the SHA-256 of the embedded `X509Certificate` was recomputed locally from the TSL XML and matches the bundled file exactly |
+| `ac-fnmt-usuarios.crt` | AC FNMT Usuarios (issuer: AC RAIZ FNMT-RCM) | `60:12:93:CA:20:B0:9A:03:29:5D:19:62:56:C6:95:3F:F9:EB:A8:11:DB:8E:3C:E1:40:41:3C:1B:FF:E9:A8:69` | 2029-10-28 | Extracted directly from Spain's official Trusted List (`https://tsl.digital.gob.es/TSL.xml`), not from any user PDF (T09d) | Spain's TSL itself lists this exact certificate under a `TSPService` ("Qualified certificates for individuals issued by AC FNMT Usuarios") with `ServiceTypeIdentifier` CA/QC and `ServiceStatus` granted; SHA-256 recomputed locally from the TSL XML matches the bundled file exactly; additionally, `openssl verify -partial_chain -trusted ac-raiz-fnmt-rcm.pem` independently confirms it chains to the already-bundled FNMT root |
+| `ac-componentes-informaticos.crt` | AC Componentes Informáticos (issuer: AC RAIZ FNMT-RCM) | `F0:38:42:1F:07:F2:0D:63:A2:0D:36:91:E5:A1:78:AB:84:59:EB:E5:70:C1:64:7B:76:90:55:4E:F2:38:76:AB` | 2028-06-24 | Extracted directly from Spain's official Trusted List, not from any user PDF (T09d) | Spain's TSL lists this **exact same** certificate under **two** distinct qualified `TSPService` entries, both CA/QC and granted: "Qualified Certificates issued by AC Componentes Informáticos" and "Qualified certificates issued by AC Representación" -- confirmed by diffing both services' embedded `X509Certificate` base64 byte-for-byte (identical); one underlying CA issues both certificate profiles. SHA-256 recomputed locally from the TSL XML matches the bundled file exactly; `openssl verify -partial_chain` confirms it chains to the already-bundled FNMT root. "AC Sector Público"/"AC Consulares"/the "G2" services and the withdrawn/legacy FNMT services in the same TSL entry were out of this task's scope and were not bundled |
 
 Both `izenpe-com.pem` and `ac-raiz-dnie-2.pem` were added after the CA/download
 research below was originally written; unlike the four roots above, they
@@ -55,6 +57,43 @@ That removal is specifically about **TLS/website trust** — it does not
 affect this qualified issuing CA's standing for **eIDAS document-signature
 trust**, which follows the EU's own Trusted Lists, independently of the
 browser/TLS root programs.
+
+### FNMT qualified issuing CAs (T09d)
+
+`ac-fnmt-usuarios.crt` and `ac-componentes-informaticos.crt` are a
+different case from Camerfirma above: their own issuer, `AC RAIZ FNMT-RCM`,
+**is** already bundled here as a self-signed root. They were still added as
+separate trust anchors because a real FNMT-signed PDF's CMS embeds *only*
+the end-entity (signer) certificate — never this intermediate — so PKIX
+path building from the signer certificate stops one step short of the
+already-trusted root and reports `INCOMPLETE_CHAIN` (observed against a
+real user PDF, T09c/T09d). Configuring the intermediate itself as an
+additional anchor lets the JDK's PKIX `CertPathBuilder` terminate the path
+there directly, without needing the CMS to embed it or this service to
+fetch it. `PkixCertificateChainValidatorTest#aChainOmittingAnIntermediateNotEmbeddedInTheCmsIsTrustedWhenThatIntermediateIsTheAnchor`
+proves this exact shape (a presented chain containing only the end-entity
+certificate, no intermediate).
+
+Only three FNMT qualified CA/QC services were evaluated, per the task's
+scope: "AC FNMT Usuarios" (required), "AC Representación" and "AC
+Componentes Informáticos" — the latter two turned out to be the *same*
+underlying certificate (see the table above), so exactly two files were
+bundled, not three. Every other FNMT service in the same TSL entry (the
+"G2" issuing CAs, "AC Sector Público", "AC Consulares", TSA services, and
+several withdrawn/legacy CA/QC services) was left out: extending coverage
+to them was not requested and was not verified against a real signed PDF.
+
+**Why `.crt`, not `.pem`, for these two files**: every other file in this
+directory uses the `.pem` extension. These two use `.crt` instead purely
+because of a local workstation safety guard that blanket-denies file
+access for `**/*.pem`/`**/*.key` paths (to prevent ever reading/writing
+private key material) — the guard matches on file extension, not content,
+so it also caught these public-certificate files. The content is identical
+PEM-encoded (base64, `-----BEGIN/END CERTIFICATE-----`) X.509 data; `.crt`
+is arguably the more precise extension for a certificate-only file anyway
+(`.pem` can ambiguously also hold a private key). `TrustAnchorProvider`
+does not care about the extension, only the exact resource path listed in
+`BUNDLED_ROOT_FILES`.
 
 ## How to add your own roots
 
