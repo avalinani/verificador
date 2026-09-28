@@ -131,9 +131,13 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             // The exception's own message already names the structural
             // problem (e.g. "ByteRange gap is out of bounds: ..."), and is
             // safe to surface: it describes the file's own structure, not
-            // any sensitive data.
+            // any sensitive data. Falls back to a fixed, still-non-sensitive
+            // reason on the (currently unreachable, but not guaranteed to
+            // stay that way) chance that the exception itself carries no
+            // message: an anomaly must always be a stable, non-null reason.
+            String reason = e.getMessage() != null ? e.getMessage() : "invalid /ByteRange";
             return report(fieldName, subFilter, ByteRangeCoverage.unknown(pdf.length), IntegrityStatus.INVALID_SIGNATURE,
-                    claimedSigningTime, TimestampInfo.absent(), List.of(), e.getMessage());
+                    claimedSigningTime, TimestampInfo.absent(), List.of(), reason);
         }
 
         if (!isSupported(subFilter)) {
