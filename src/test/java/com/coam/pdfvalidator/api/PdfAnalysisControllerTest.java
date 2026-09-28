@@ -88,7 +88,9 @@ class PdfAnalysisControllerTest {
                 .andExpect(jsonPath("$.fileName").value("test.pdf"))
                 .andExpect(jsonPath("$.hashes.sha256").value("a".repeat(64)))
                 .andExpect(jsonPath("$.pdfa.status").value("NOT_VALIDATED"))
-                .andExpect(jsonPath("$.sectionErrors").isEmpty());
+                .andExpect(jsonPath("$.sectionErrors").isEmpty())
+                .andExpect(jsonPath("$.overallVerdict").value("NO_SIGNATURES"))
+                .andExpect(jsonPath("$.modifiedAfterLastSignature").value(false));
 
         verify(analyzePdfUseCase).analyze(eq("test.pdf"), eq(PDF_BYTES), eq(new AnalysisOptions(true)));
     }

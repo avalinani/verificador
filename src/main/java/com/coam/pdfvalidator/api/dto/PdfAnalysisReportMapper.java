@@ -46,7 +46,9 @@ public class PdfAnalysisReportMapper {
                 toDto(report.pdfa()),
                 report.signatures().stream().map(this::toDto).collect(Collectors.toList()),
                 report.analyzedAt(),
-                report.sectionErrors().stream().map(PdfAnalysisReportMapper::toDto).collect(Collectors.toList()));
+                report.sectionErrors().stream().map(PdfAnalysisReportMapper::toDto).collect(Collectors.toList()),
+                report.overallVerdict().name(),
+                report.modifiedAfterLastSignature());
     }
 
     private static DocumentHashesDto toDto(DocumentHashes hashes) {
@@ -112,7 +114,9 @@ public class PdfAnalysisReportMapper {
                 chain,
                 signature.chainStatus().name(),
                 toDto(signature.revocation()),
-                signature.anomaly());
+                signature.anomaly(),
+                signature.verdict().name(),
+                signature.verdictReasons());
     }
 
     private static ByteRangeCoverageDto toDto(ByteRangeCoverage coverage) {

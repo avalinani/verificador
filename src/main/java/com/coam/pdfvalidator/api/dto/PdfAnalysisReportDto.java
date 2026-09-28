@@ -9,6 +9,18 @@ import java.util.List;
  * exposes only stable, documented, JSON-friendly field names and never a
  * domain or third-party library type directly (see {@code
  * PdfAnalysisReportMapper}).
+ *
+ * @param overallVerdict            the document-level summary verdict (T11):
+ *                                  the worst of every signature's own {@code
+ *                                  verdict}, or {@code "NO_SIGNATURES"} for
+ *                                  an unsigned document
+ * @param modifiedAfterLastSignature true when the document has at least one
+ *                                  signature and none of them cover the file
+ *                                  all the way to its true end -- see {@code
+ *                                  SignatureVerdictPolicy#documentModifiedAfterLastSignature}
+ *                                  for exactly what this does and does not
+ *                                  prove (a structural, not content-diffing,
+ *                                  check)
  */
 public record PdfAnalysisReportDto(
         String fileName,
@@ -19,5 +31,7 @@ public record PdfAnalysisReportDto(
         PdfaReportDto pdfa,
         List<SignatureReportDto> signatures,
         Instant analyzedAt,
-        List<SectionErrorDto> sectionErrors) {
+        List<SectionErrorDto> sectionErrors,
+        String overallVerdict,
+        boolean modifiedAfterLastSignature) {
 }

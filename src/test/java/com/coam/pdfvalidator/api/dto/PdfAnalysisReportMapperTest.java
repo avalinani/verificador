@@ -22,6 +22,7 @@ import com.coam.pdfvalidator.domain.model.Rotation;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import org.junit.jupiter.api.Test;
 
@@ -61,7 +62,7 @@ class PdfAnalysisReportMapperTest {
                 "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 15),
                 IntegrityStatus.INTACT, claimedSigningTime, timestamp, List.of(certificate),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "http://ocsp.example.org", null),
-                "an anomaly");
+                "an anomaly").withVerdict(SignatureVerdict.VALID, List.of());
 
         Instant analyzedAt = Instant.parse("2026-09-27T10:00:00Z");
         PdfAnalysisReport report = new PdfAnalysisReport(
@@ -131,6 +132,27 @@ class PdfAnalysisReportMapperTest {
         assertThat(dto.sectionErrors()).hasSize(1);
         assertThat(dto.sectionErrors().get(0).section()).isEqualTo("PDFA");
         assertThat(dto.sectionErrors().get(0).message()).isEqualTo("boom");
+
+        assertThat(signatureDto.verdict()).isEqualTo("VALID");
+        assertThat(signatureDto.verdictReasons()).isEmpty();
+        assertThat(dto.overallVerdict()).isEqualTo("VALID");
+        assertThat(dto.modifiedAfterLastSignature()).isFalse();
+    }
+
+    @Test
+    void anUnsignedDocumentMapsToTheNoSignaturesOverallVerdict() {
+        DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
+        SecurityInfo security = new SecurityInfo(false, EnumSet.noneOf(Permission.class));
+        PdfaReport pdfa = new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of());
+        PdfAnalysisReport report = new PdfAnalysisReport(
+                "unsigned.pdf", 10, new DocumentHashes("a".repeat(64), "b".repeat(128)), structure, security, pdfa,
+                List.of(), Instant.EPOCH, List.of());
+
+        PdfAnalysisReportDto dto = mapper.toDto(report);
+
+        assertThat(dto.overallVerdict()).isEqualTo("NO_SIGNATURES");
+        assertThat(dto.modifiedAfterLastSignature()).isFalse();
+        assertThat(dto.signatures()).isEmpty();
     }
 
     @Test
@@ -165,6 +187,10 @@ class PdfAnalysisReportMapperTest {
         assertThat(dto.pdfa().declaration().declared()).isFalse();
         assertThat(dto.pdfa().issues()).hasSize(1);
         assertThat(dto.sectionErrors()).isEmpty();
+        // Built with the pre-T11 10-arg SignatureReport constructor: verdict
+        // defaults to its safe NOT_ADMITTED placeholder (never computed here).
+        assertThat(dto.signatures().get(0).verdict()).isEqualTo("NOT_ADMITTED");
+        assertThat(dto.signatures().get(0).verdictReasons()).isEmpty();
     }
 
     private static String sha256Hex(byte[] bytes) throws Exception {
