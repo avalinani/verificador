@@ -694,5 +694,7 @@ Living README updated (`README.md`): §2.13 (three-way `MODIFIED_AFTER_SIGNING` 
 
 Parent spot check: `./mvnw -B verify` re-run → 307/307, `BUILD SUCCESS`; both grep gates clean.
 
+- Parent verification (T11c): `./mvnw -B verify` → 307/307; no short-circuits. Review of the pending range (base ed5e2e2 = T11 block C + T11c, 833 lines): auto-granted, **approved** and acknowledged. Minor advisories → T11d: test the UTF-8 charset header explicitly; make the API negative CSP test assert the exact header absence per path; CSP path matching by exact match instead of substring; align the `SignatureVerdictPolicy` Javadoc structural claim (~141-158) with the implementation. Also pending user decision: optional visual polish for the impeccable "monotonous spacing" hint in index.html.
+
 ## Next step
 T11b "Firmar" (AutoFirma), T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
