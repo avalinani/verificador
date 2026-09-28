@@ -29,7 +29,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INVALID_SIGNATURE, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.INVALID);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_SIGNATURE_INVALID);
@@ -40,32 +41,56 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.UNSUPPORTED, wholeDocumentCoverage(),
                 ChainStatus.NOT_CHECKED, RevocationStatus.notChecked());
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, false, false);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, false, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_SIGNATURE_FORMAT_UNSUPPORTED);
     }
 
     @Test
-    void modifiedAfterSigningWithNoLaterIntactSignatureIsInvalid() {
+    void modifiedAfterSigningWithNoLaterSignatureAtAllIsInvalid() {
         SignatureReport signature = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING, partialCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, false);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.INVALID);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_MODIFIED_AFTER_LAST_SIGNATURE);
     }
 
     @Test
-    void modifiedAfterSigningCoveredByALaterIntactSignatureFallsThroughToChainAndRevocation() {
+    void modifiedAfterSigningCoveredByAnAdmittedLaterSignatureFallsThroughToChainAndRevocation() {
         SignatureReport signature = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING, partialCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.ADMITTED);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.VALID);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_COVERED_BY_LATER_SIGNATURE);
+    }
+
+    /**
+     * SECURITY (T11c): the covering later signature itself must be
+     * <em>admitted</em> (a full {@code VALID} verdict -- trusted chain, not
+     * revoked), not merely {@code INTACT}. Otherwise an attacker could
+     * modify a trusted-signed document and re-sign it with a self-made
+     * certificate, and the original signature would still show up as
+     * covered/valid -- see the class Javadoc and README §2.13.
+     */
+    @Test
+    void modifiedAfterSigningWithAnUnadmittedLaterSignatureIsInvalid() {
+        SignatureReport signature = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING, partialCoverage(),
+                ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.UNADMITTED);
+
+        assertThat(result.verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(result.verdictReasons())
+                .containsExactly(SignatureVerdictPolicy.REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY);
     }
 
     @Test
@@ -92,7 +117,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 chainStatus, RevocationStatus.notChecked());
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, false, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, false, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
         assertThat(result.verdictReasons()).containsExactly(expectedReason);
@@ -103,7 +129,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, RevocationStatus.notChecked());
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, false, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, false, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.VALID);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_REVOCATION_NOT_REQUESTED);
@@ -114,7 +141,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.VALID);
         assertThat(result.verdictReasons()).isEmpty();
@@ -125,7 +153,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.REVOKED, "OCSP", null));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.INVALID);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_REVOCATION_REVOKED);
@@ -136,7 +165,8 @@ class SignatureVerdictPolicyTest {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.UNKNOWN, null, "no OCSP/CRL URL available"));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_REVOCATION_UNKNOWN);
@@ -149,7 +179,8 @@ class SignatureVerdictPolicyTest {
                 ChainStatus.TRUSTED, new RevocationStatus(
                         RevocationState.NOT_CHECKED, null, "validated certification path unavailable"));
 
-        SignatureReport result = SignatureVerdictPolicy.evaluate(signature, true, true);
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
 
         assertThat(result.verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
         assertThat(result.verdictReasons()).containsExactly(SignatureVerdictPolicy.REASON_REVOCATION_UNAVAILABLE);
@@ -216,6 +247,82 @@ class SignatureVerdictPolicyTest {
         assertThat(evaluated.get(1).verdict()).isEqualTo(SignatureVerdict.VALID);
         assertThat(SignatureVerdictPolicy.overallVerdict(evaluated)).isEqualTo(OverallVerdict.VALID);
         assertThat(SignatureVerdictPolicy.documentModifiedAfterLastSignature(evaluated)).isFalse();
+    }
+
+    /**
+     * SECURITY (T11c): the exact attack the fix closes. An attacker modifies
+     * a trusted-signed document and re-signs it with a self-made
+     * (untrusted-root) certificate. Before the fix, the first signature
+     * showed up as "covered" by ANY later {@code INTACT} signature,
+     * regardless of that later signature's own trust -- i.e. VALID. The
+     * later, untrusted signature does not admit the appended revision, so
+     * the first signature must be INVALID.
+     */
+    @Test
+    void trustedFirstSignatureFollowedByAnUntrustedSecondSignatureIsInvalid() {
+        SignatureReport first = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING,
+                ByteRangeCoverage.of(0, 10, 20, 5, 100), ChainStatus.TRUSTED,
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+        SignatureReport second = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                ChainStatus.UNTRUSTED_ROOT, RevocationStatus.notChecked());
+
+        List<SignatureReport> evaluated = SignatureVerdictPolicy.evaluateAll(List.of(first, second), true);
+
+        assertThat(evaluated.get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(evaluated.get(0).verdictReasons())
+                .containsExactly(SignatureVerdictPolicy.REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY);
+        assertThat(evaluated.get(1).verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
+    }
+
+    /**
+     * Both signatures trusted: the first is covered (falls through), but
+     * still follows its own chain/revocation merits rather than blindly
+     * inheriting the second signature's verdict -- here its own certificate
+     * is revoked, so it ends up INVALID for that reason, not VALID.
+     */
+    @Test
+    void trustedFirstSignatureFollowedByATrustedSecondSignatureStillFollowsItsOwnRevocation() {
+        SignatureReport first = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING,
+                ByteRangeCoverage.of(0, 10, 20, 5, 100), ChainStatus.TRUSTED,
+                new RevocationStatus(RevocationState.REVOKED, "OCSP", null));
+        SignatureReport second = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        List<SignatureReport> evaluated = SignatureVerdictPolicy.evaluateAll(List.of(first, second), true);
+
+        assertThat(evaluated.get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(evaluated.get(0).verdictReasons())
+                .contains(SignatureVerdictPolicy.REASON_COVERED_BY_LATER_SIGNATURE)
+                .contains(SignatureVerdictPolicy.REASON_REVOCATION_REVOKED);
+        assertThat(evaluated.get(1).verdict()).isEqualTo(SignatureVerdict.VALID);
+    }
+
+    /**
+     * Three signatures, mixed: the first is followed by two later
+     * signatures, the nearer of which (second) is itself untrusted
+     * (attacker-controlled) even though the last one (third) is legitimate
+     * and covers the whole file. The rule requires <em>every</em> later
+     * signature to be admitted, so an untrusted intermediate revision still
+     * invalidates the first signature even though a further, legitimate
+     * signature eventually re-covers the document.
+     */
+    @Test
+    void threeSignatureDocumentWithAnUntrustedIntermediateSignatureInvalidatesTheFirst() {
+        SignatureReport first = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING,
+                ByteRangeCoverage.of(0, 10, 20, 5, 100), ChainStatus.TRUSTED,
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+        SignatureReport second = signature(IntegrityStatus.MODIFIED_AFTER_SIGNING,
+                ByteRangeCoverage.of(0, 30, 40, 5, 100), ChainStatus.UNTRUSTED_ROOT, RevocationStatus.notChecked());
+        SignatureReport third = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        List<SignatureReport> evaluated = SignatureVerdictPolicy.evaluateAll(List.of(first, second, third), true);
+
+        assertThat(evaluated.get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(evaluated.get(0).verdictReasons())
+                .containsExactly(SignatureVerdictPolicy.REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY);
+        assertThat(evaluated.get(1).verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
+        assertThat(evaluated.get(2).verdict()).isEqualTo(SignatureVerdict.VALID);
     }
 
     // ---- fixtures ----

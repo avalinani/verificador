@@ -24,13 +24,19 @@ import java.util.Objects;
  * <tr><th>Condition</th><th>Verdict</th><th>Reason code</th></tr>
  * <tr><td>{@code integrity == INVALID_SIGNATURE}</td><td>INVALID</td><td>{@code SIGNATURE_INVALID}</td></tr>
  * <tr><td>{@code integrity == UNSUPPORTED}</td><td>NOT_ADMITTED</td><td>{@code SIGNATURE_FORMAT_UNSUPPORTED}</td></tr>
- * <tr><td>{@code integrity == MODIFIED_AFTER_SIGNING}, no later signature in
- *     the document is {@code INTACT} and covers the whole file</td>
+ * <tr><td>{@code integrity == MODIFIED_AFTER_SIGNING}, no later signature at
+ *     all exists in the document</td>
  *     <td>INVALID</td><td>{@code MODIFIED_AFTER_LAST_SIGNATURE}</td></tr>
- * <tr><td>{@code integrity == MODIFIED_AFTER_SIGNING}, a later signature
- *     <em>is</em> {@code INTACT} and covers the whole file (expected PDF
- *     multi-signature workflow: this signature's own revision was itself
- *     untouched, only a subsequent signature was appended)</td>
+ * <tr><td>{@code integrity == MODIFIED_AFTER_SIGNING}, at least one later
+ *     signature exists but not <em>every</em> later signature is itself
+ *     admitted (a full {@code VALID} verdict -- see the SECURITY note
+ *     below)</td>
+ *     <td>INVALID</td><td>{@code MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY}</td></tr>
+ * <tr><td>{@code integrity == MODIFIED_AFTER_SIGNING}, at least one later
+ *     signature exists and <em>every</em> later signature is itself
+ *     admitted (expected PDF multi-signature workflow: this signature's own
+ *     revision was itself untouched, only a subsequent, admitted signature
+ *     was appended)</td>
  *     <td>falls through to chain/revocation below, with an informational
  *     {@code COVERED_BY_LATER_SIGNATURE} reason added</td><td>--</td></tr>
  * <tr><td>{@code chainStatus != TRUSTED}</td><td>NOT_ADMITTED</td>
@@ -63,13 +69,27 @@ import java.util.Objects;
  *       <em>current</em> revocation status, not a point-in-time check as of
  *       the claimed signing time -- a certificate revoked after it validly
  *       signed a document will still be reported {@code REVOKED} here.</li>
- *   <li><b>Multi-signature coverage</b>: this is a structural check only
- *       (does <em>any</em> signature's {@code ByteRangeCoverage} reach the
- *       true end of file, and is that signature itself {@code INTACT}) --
- *       it does not diff the bytes an incremental update actually appended,
- *       so it cannot distinguish "a legitimate second signature" from "an
- *       incremental update that happens to be followed by one". See {@link
- *       #documentModifiedAfterLastSignature}.</li>
+ *   <li><b>Multi-signature coverage (SECURITY, T11c)</b>: an earlier {@code
+ *       MODIFIED_AFTER_SIGNING} signature is only exempted from the
+ *       modification penalty when <em>every</em> later signature in the
+ *       document is itself admitted -- a full {@code VALID} verdict (trusted
+ *       chain, not revoked), not merely {@code INTACT}. Before this fix, any
+ *       later {@code INTACT} signature covering the whole file was enough,
+ *       regardless of its own trust: an attacker could modify a
+ *       trusted-signed document and re-sign it with a self-made,
+ *       untrusted-root certificate, and the original (untouched) signature
+ *       would still be reported {@code VALID}, because <em>a</em> signature
+ *       (the attacker's) covered the file end-to-end. Requiring every later
+ *       signature to be admitted closes this: only an admitted signer --
+ *       one this service actually trusts -- can vouch for the appended
+ *       revision. This is still a structural check only (does each later
+ *       signature's {@code ByteRangeCoverage} reach the true end of file,
+ *       and is it itself {@code INTACT}) plus a trust check on that later
+ *       signature -- it does not diff the bytes an incremental update
+ *       actually appended, so it cannot distinguish "a legitimate second
+ *       signature" from "an admitted party's incremental update that
+ *       happens to be followed by one". See {@link
+ *       #documentModifiedAfterLastSignature} and README §2.13.</li>
  * </ul>
  */
 public final class SignatureVerdictPolicy {
@@ -77,6 +97,8 @@ public final class SignatureVerdictPolicy {
     public static final String REASON_SIGNATURE_INVALID = "SIGNATURE_INVALID";
     public static final String REASON_SIGNATURE_FORMAT_UNSUPPORTED = "SIGNATURE_FORMAT_UNSUPPORTED";
     public static final String REASON_MODIFIED_AFTER_LAST_SIGNATURE = "MODIFIED_AFTER_LAST_SIGNATURE";
+    public static final String REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY =
+            "MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY";
     public static final String REASON_COVERED_BY_LATER_SIGNATURE = "COVERED_BY_LATER_SIGNATURE";
     public static final String REASON_CHAIN_UNTRUSTED_ROOT = "CHAIN_UNTRUSTED_ROOT";
     public static final String REASON_CHAIN_INCOMPLETE = "CHAIN_INCOMPLETE";
@@ -108,18 +130,52 @@ public final class SignatureVerdictPolicy {
      */
     public static List<SignatureReport> evaluateAll(List<SignatureReport> signatures, boolean revocationRequested) {
         Objects.requireNonNull(signatures, "signatures");
-        boolean coveredByLaterIntactSignature = anySignatureIsIntact(signatures);
-        List<SignatureReport> result = new ArrayList<>(signatures.size());
-        for (SignatureReport signature : signatures) {
-            result.add(evaluate(signature, revocationRequested, coveredByLaterIntactSignature));
+        int total = signatures.size();
+        SignatureReport[] evaluated = new SignatureReport[total];
+        // Evaluated from the LAST signature backwards: whether an earlier
+        // signature is "covered" depends on whether every later signature is
+        // itself admitted (VALID) -- see LaterSignatureCoverage and the class
+        // Javadoc's SECURITY note -- so every later signature must already
+        // be evaluated before an earlier one can be.
+        for (int index = total - 1; index >= 0; index--) {
+            LaterSignatureCoverage coverage = laterSignatureCoverage(evaluated, index, total);
+            evaluated[index] = evaluate(signatures.get(index), revocationRequested, coverage);
         }
-        return List.copyOf(result);
+        return List.of(evaluated);
+    }
+
+    private static LaterSignatureCoverage laterSignatureCoverage(
+            SignatureReport[] evaluatedFromTheEnd, int index, int total) {
+        if (index == total - 1) {
+            return LaterSignatureCoverage.NO_LATER_SIGNATURE;
+        }
+        for (int later = index + 1; later < total; later++) {
+            if (evaluatedFromTheEnd[later].verdict() != SignatureVerdict.VALID) {
+                return LaterSignatureCoverage.UNADMITTED;
+            }
+        }
+        return LaterSignatureCoverage.ADMITTED;
+    }
+
+    /**
+     * Whether an earlier {@code MODIFIED_AFTER_SIGNING} signature is exempt
+     * from the modification penalty (T11c SECURITY fix -- see the class
+     * Javadoc's "Multi-signature coverage" note).
+     */
+    public enum LaterSignatureCoverage {
+        /** No later signature exists in the document at all. */
+        NO_LATER_SIGNATURE,
+        /** At least one later signature exists, and every one of them is itself admitted ({@code VALID}). */
+        ADMITTED,
+        /** At least one later signature exists, but at least one of them is not admitted. */
+        UNADMITTED
     }
 
     /** Evaluates one already-enriched signature; see the class Javadoc's decision table. */
     public static SignatureReport evaluate(
-            SignatureReport signature, boolean revocationRequested, boolean anySignatureIsIntactInTheDocument) {
+            SignatureReport signature, boolean revocationRequested, LaterSignatureCoverage laterSignatureCoverage) {
         Objects.requireNonNull(signature, "signature");
+        Objects.requireNonNull(laterSignatureCoverage, "laterSignatureCoverage");
         List<String> reasons = new ArrayList<>();
 
         if (signature.integrity() == IntegrityStatus.INVALID_SIGNATURE) {
@@ -131,13 +187,22 @@ public final class SignatureVerdictPolicy {
             return signature.withVerdict(SignatureVerdict.NOT_ADMITTED, reasons);
         }
         if (signature.integrity() == IntegrityStatus.MODIFIED_AFTER_SIGNING) {
-            if (!anySignatureIsIntactInTheDocument) {
-                reasons.add(REASON_MODIFIED_AFTER_LAST_SIGNATURE);
-                return signature.withVerdict(SignatureVerdict.INVALID, reasons);
+            switch (laterSignatureCoverage) {
+                case NO_LATER_SIGNATURE -> {
+                    reasons.add(REASON_MODIFIED_AFTER_LAST_SIGNATURE);
+                    return signature.withVerdict(SignatureVerdict.INVALID, reasons);
+                }
+                case UNADMITTED -> {
+                    reasons.add(REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY);
+                    return signature.withVerdict(SignatureVerdict.INVALID, reasons);
+                }
+                case ADMITTED -> {
+                    reasons.add(REASON_COVERED_BY_LATER_SIGNATURE);
+                    // Falls through: this signature's own (untouched)
+                    // revision is still evaluated on its own chain/
+                    // revocation merits below.
+                }
             }
-            reasons.add(REASON_COVERED_BY_LATER_SIGNATURE);
-            // Falls through: this signature's own (untouched) revision is
-            // still evaluated on its own chain/revocation merits below.
         }
 
         SignatureVerdict chainVerdict = switch (signature.chainStatus()) {
@@ -220,24 +285,5 @@ public final class SignatureVerdictPolicy {
             return false;
         }
         return signatures.stream().noneMatch(s -> s.coverage().coversWholeDocument());
-    }
-
-    /**
-     * Whether any signature in the document is {@link IntegrityStatus#INTACT}
-     * -- which, by {@code BcSignatureVerifier}'s own contract, is only ever
-     * assigned when that signature's CMS verified <em>and</em> its {@code
-     * ByteRangeCoverage} reaches the true end of file. Used both to decide
-     * whether an earlier {@code MODIFIED_AFTER_SIGNING} signature is
-     * "covered", and (indirectly, via {@code chainStatus == TRUSTED} on that
-     * same signature) that the later signature's own trust was positively
-     * confirmed -- an {@code INTACT} signature can still end up {@code
-     * NOT_ADMITTED}/{@code INVALID} on its own chain/revocation merits, in
-     * which case earlier signatures are still exempted from the
-     * modification penalty (the document's <em>final</em> content is
-     * genuinely covered by a signature that has not been tampered with),
-     * even though that final signature is not itself admissible.
-     */
-    private static boolean anySignatureIsIntact(List<SignatureReport> signatures) {
-        return signatures.stream().anyMatch(s -> s.integrity() == IntegrityStatus.INTACT);
     }
 }
