@@ -19,8 +19,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.mock.web.MockMultipartHttpServletRequest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -160,10 +162,13 @@ class PdfAnalysisControllerTest {
      * storage back) -- it must be reported as an unexpected failure (500),
      * not misclassified as {@code missing-file} (400), and must never leak
      * the underlying exception's own message. {@link #readContent} is
-     * exercised directly (a genuine {@code IOException} from a servlet
+     * exercised directly here (a genuine {@code IOException} from a servlet
      * container's real multipart handling is impractical to trigger through
      * {@code MockMvc}, which always resolves a normal in-memory {@code
-     * MockMultipartFile} instead).
+     * MockMultipartFile} instead); {@link
+     * #anUploadReadIoExceptionDuringARealRequestReturns500WithoutLeakingItsMessage}
+     * below proves the same {@code IOException} actually reaches HTTP 500
+     * through the full controller + exception-handler stack (T09d follow-up).
      */
     @Test
     void anUploadReadIoExceptionIsReportedAsAnUnexpectedFailureNotAMissingFile() throws IOException {
@@ -176,6 +181,44 @@ class PdfAnalysisControllerTest {
                 .satisfies(exception -> assertThat(exception.getMessage())
                         .doesNotContain("temp storage unreadable")
                         .doesNotContain("/var/tmp"));
+    }
+
+    /**
+     * T09d follow-up (review advisory): the unit-level proof above only
+     * shows what {@link #readContent} itself does with the {@code
+     * IOException} -- it never proves the exception actually reaches the
+     * client as an HTTP 500 through the real controller method and {@code
+     * PdfAnalysisExceptionHandler}. A hostile {@link MultipartFile} mock
+     * (whose {@code getBytes()} throws) is injected directly into a real
+     * {@link MockMultipartHttpServletRequest} via a {@code
+     * RequestPostProcessor} -- {@code MockMvc}'s own {@code .file(...)}
+     * builder only accepts a concrete {@code MockMultipartFile}, which
+     * cannot be made to throw, so the request is built normally and then
+     * this one part is added to it directly, exactly as a real servlet
+     * container's {@code MultipartHttpServletRequest} would expose an
+     * unreadable part to {@code @RequestParam MultipartFile} resolution.
+     */
+    @Test
+    void anUploadReadIoExceptionDuringARealRequestReturns500WithoutLeakingItsMessage() throws Exception {
+        MultipartFile hostileFile = mock(MultipartFile.class);
+        when(hostileFile.getName()).thenReturn("file");
+        when(hostileFile.isEmpty()).thenReturn(false);
+        when(hostileFile.getBytes()).thenThrow(new IOException("temp storage unreadable: /var/tmp/upload-9f2"));
+
+        MvcResult result = mockMvc.perform(multipart("/api/v1/pdf/analyze")
+                        .with(request -> {
+                            if (request instanceof MockMultipartHttpServletRequest multipartRequest) {
+                                multipartRequest.addFile(hostileFile);
+                            }
+                            return request;
+                        }))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.type").value("urn:pdfvalidator:error:internal-error"))
+                .andReturn();
+
+        assertThat(result.getResponse().getContentAsString())
+                .doesNotContain("temp storage unreadable")
+                .doesNotContain("/var/tmp");
     }
 
     @Test

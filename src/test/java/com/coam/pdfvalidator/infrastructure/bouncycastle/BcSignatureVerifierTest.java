@@ -128,6 +128,10 @@ class BcSignatureVerifierTest {
 
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        // T09d follow-up (review advisory): a structural /ByteRange failure
+        // must always carry a stable, non-null reason, never leave anomaly
+        // unset.
+        assertThat(reports.get(0).anomalyOptional()).isPresent();
     }
 
     @Test
@@ -138,6 +142,7 @@ class BcSignatureVerifierTest {
 
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        assertThat(reports.get(0).anomalyOptional()).isPresent();
     }
 
     @Test
@@ -285,6 +290,48 @@ class BcSignatureVerifierTest {
     @Test
     void aSignatureAlgorithmOidUsedAsDigestAlgorithmIsToleratedWithAnAnomalyNote() throws Exception {
         byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOid();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("non-standard digestAlgorithm encoding"));
+    }
+
+    /**
+     * T09d follow-up (review advisory): the mislabeled-digest bypass in
+     * {@code CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}
+     * must not become a way to skip tamper detection -- a byte flipped
+     * after signing (same technique as {@link #aTamperedSignedByteIsAnInvalidSignature}
+     * above) must still be reported {@code INVALID_SIGNATURE}, exactly as
+     * it would be for a standard CMS.
+     */
+    @Test
+    void aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmIsInvalid() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidThenTampered();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+    }
+
+    /**
+     * T09d follow-up (review advisory): the same mislabeled-{@code
+     * digestAlgorithm} case as {@link
+     * #aSignatureAlgorithmOidUsedAsDigestAlgorithmIsToleratedWithAnAnomalyNote},
+     * but with signed attributes present -- exercising {@code
+     * verifyWithMislabeledDigestAlgorithm}'s other branch (checking the
+     * signed {@code messageDigest} attribute first, then verifying over the
+     * signed attributes' DER encoding rather than the raw content).
+     */
+    @Test
+    void aSignatureAlgorithmOidUsedAsDigestAlgorithmWithSignedAttributesIsToleratedWithAnAnomalyNote()
+            throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes();
 
         List<SignatureReport> reports = verifier.verify(pdf);
 

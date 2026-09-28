@@ -193,6 +193,27 @@ public final class TestPdfSigner {
                 content -> createDetachedCmsWithSignatureAlgorithmOidAsDigestOid(content, identity), 2);
     }
 
+    /**
+     * T09d follow-up: same mislabeled-{@code digestAlgorithm} bug as {@link
+     * #signWithSignatureAlgorithmOidAsDigestOid}, but with signed attributes
+     * present ({@code contentType} + {@code messageDigest}) -- exercising
+     * {@code CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}'s
+     * other branch (checking the {@code messageDigest} attribute, then
+     * verifying over the signed attributes' DER encoding, rather than over
+     * the raw content directly). Per RFC 5652 5.4, the signature is computed
+     * over the DER encoding of the signed-attributes {@code SET OF}
+     * structure (re-tagged from the {@code [0] IMPLICIT} form used inside
+     * {@code SignerInfo} itself back to its universal {@code SET} tag) --
+     * exactly what {@link AttributeTable#toASN1Structure()} reproduces on
+     * the verifying side.
+     */
+    public static byte[] signWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes(
+            byte[] unsignedPdf, TestPki.IssuedIdentity identity) throws IOException {
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
+                content -> createDetachedCmsWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes(content, identity),
+                2);
+    }
+
     private static byte[] createDetachedCmsWithSignatureAlgorithmOidAsDigestOid(
             InputStream content, TestPki.IssuedIdentity identity) throws IOException {
         try {
@@ -266,6 +287,98 @@ public final class TestPdfSigner {
             return contentInfo.getEncoded(org.bouncycastle.asn1.ASN1Encoding.DER);
         } catch (java.security.GeneralSecurityException | IOException e) {
             throw new IOException("Failed to build a CMS signature with a non-standard digestAlgorithm OID", e);
+        }
+    }
+
+    /**
+     * Same idea as {@link #createDetachedCmsWithSignatureAlgorithmOidAsDigestOid},
+     * but with a real signed-attributes set ({@code contentType} +
+     * {@code messageDigest}, computed with the actual SHA-256 digest -- a
+     * genuine signer always hashes correctly even when it mislabels the
+     * algorithm identifier field): the signature is computed over the
+     * signed attributes' DER encoding, not the raw content directly.
+     */
+    private static byte[] createDetachedCmsWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes(
+            InputStream content, TestPki.IssuedIdentity identity) throws IOException {
+        try {
+            byte[] contentBytes = content.readAllBytes();
+            byte[] contentDigest = MessageDigest.getInstance("SHA-256").digest(contentBytes);
+
+            org.bouncycastle.asn1.cms.Attribute contentTypeAttribute = new org.bouncycastle.asn1.cms.Attribute(
+                    org.bouncycastle.asn1.cms.CMSAttributes.contentType,
+                    new org.bouncycastle.asn1.DERSet(org.bouncycastle.asn1.cms.CMSObjectIdentifiers.data));
+            org.bouncycastle.asn1.cms.Attribute messageDigestAttribute = new org.bouncycastle.asn1.cms.Attribute(
+                    org.bouncycastle.asn1.cms.CMSAttributes.messageDigest,
+                    new org.bouncycastle.asn1.DERSet(new org.bouncycastle.asn1.DEROctetString(contentDigest)));
+            org.bouncycastle.asn1.ASN1EncodableVector signedAttrsVector = new org.bouncycastle.asn1.ASN1EncodableVector();
+            signedAttrsVector.add(contentTypeAttribute);
+            signedAttrsVector.add(messageDigestAttribute);
+            org.bouncycastle.asn1.ASN1Set signedAttributes = new org.bouncycastle.asn1.DERSet(signedAttrsVector);
+
+            // RFC 5652 5.4: the signature covers the DER encoding of the
+            // signed attributes as a plain SET OF (universal tag), not the
+            // [0] IMPLICIT form SignerInfo itself uses to carry it.
+            byte[] signedAttributesDer = signedAttributes.getEncoded(org.bouncycastle.asn1.ASN1Encoding.DER);
+            java.security.Signature rsaSignature =
+                    java.security.Signature.getInstance("SHA256withRSA", BouncyCastleProvider.PROVIDER_NAME);
+            rsaSignature.initSign(identity.endEntityPrivateKey());
+            rsaSignature.update(signedAttributesDer);
+            byte[] encryptedDigest = rsaSignature.sign();
+
+            AlgorithmIdentifier signatureOidAsDigestAlgorithm = new AlgorithmIdentifier(
+                    PKCSObjectIdentifiers.sha256WithRSAEncryption, org.bouncycastle.asn1.DERNull.INSTANCE);
+            AlgorithmIdentifier bareRsaEncryption =
+                    new AlgorithmIdentifier(PKCSObjectIdentifiers.rsaEncryption, org.bouncycastle.asn1.DERNull.INSTANCE);
+
+            org.bouncycastle.cert.X509CertificateHolder signerHolder =
+                    new org.bouncycastle.cert.X509CertificateHolder(identity.endEntityCertificate().getEncoded());
+            org.bouncycastle.asn1.cms.SignerIdentifier sid = new org.bouncycastle.asn1.cms.SignerIdentifier(
+                    new org.bouncycastle.asn1.cms.IssuerAndSerialNumber(
+                            signerHolder.getIssuer(), signerHolder.getSerialNumber()));
+
+            org.bouncycastle.asn1.cms.SignerInfo signerInfo = new org.bouncycastle.asn1.cms.SignerInfo(
+                    sid,
+                    signatureOidAsDigestAlgorithm,
+                    signedAttributes,
+                    bareRsaEncryption,
+                    new org.bouncycastle.asn1.DEROctetString(encryptedDigest),
+                    (org.bouncycastle.asn1.ASN1Set) null);
+
+            org.bouncycastle.asn1.ASN1EncodableVector signerInfosVector = new org.bouncycastle.asn1.ASN1EncodableVector();
+            signerInfosVector.add(signerInfo);
+
+            org.bouncycastle.asn1.ASN1EncodableVector digestAlgorithmsVector = new org.bouncycastle.asn1.ASN1EncodableVector();
+            digestAlgorithmsVector.add(signatureOidAsDigestAlgorithm);
+
+            org.bouncycastle.asn1.cms.ContentInfo encapContentInfo =
+                    new org.bouncycastle.asn1.cms.ContentInfo(org.bouncycastle.asn1.cms.CMSObjectIdentifiers.data, null);
+
+            org.bouncycastle.asn1.ASN1Set certificates = new org.bouncycastle.asn1.DERSet(
+                    identity.chain().stream()
+                            .map(cert -> {
+                                try {
+                                    return new org.bouncycastle.cert.X509CertificateHolder(cert.getEncoded())
+                                            .toASN1Structure();
+                                } catch (java.security.cert.CertificateEncodingException | IOException e) {
+                                    throw new IllegalStateException(e);
+                                }
+                            })
+                            .toArray(org.bouncycastle.asn1.ASN1Encodable[]::new));
+
+            org.bouncycastle.asn1.cms.SignedData signedData = new org.bouncycastle.asn1.cms.SignedData(
+                    new org.bouncycastle.asn1.DERSet(digestAlgorithmsVector),
+                    encapContentInfo,
+                    certificates,
+                    null,
+                    new org.bouncycastle.asn1.DERSet(signerInfosVector));
+
+            org.bouncycastle.asn1.cms.ContentInfo contentInfo =
+                    new org.bouncycastle.asn1.cms.ContentInfo(org.bouncycastle.asn1.cms.CMSObjectIdentifiers.signedData, signedData);
+            return contentInfo.getEncoded(org.bouncycastle.asn1.ASN1Encoding.DER);
+        } catch (java.security.GeneralSecurityException | IOException e) {
+            throw new IOException(
+                    "Failed to build a CMS signature with a non-standard digestAlgorithm OID and signed attributes",
+                    e);
         }
     }
 
