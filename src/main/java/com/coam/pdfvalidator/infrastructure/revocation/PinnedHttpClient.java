@@ -216,7 +216,9 @@ final class PinnedHttpClient {
                 }
                 break;
             }
-            if (buffer.size() + chunkSize > maxResponseBytes) {
+            // long arithmetic: int addition could overflow to a negative total
+            // and let a huge chunk through the cap.
+            if ((long) buffer.size() + chunkSize > maxResponseBytes) {
                 throw new ResponseTooLargeException();
             }
             byte[] chunk = new byte[chunkSize];

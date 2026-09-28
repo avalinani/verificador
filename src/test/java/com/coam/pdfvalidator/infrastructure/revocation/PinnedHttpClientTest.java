@@ -129,4 +129,16 @@ class PinnedHttpClientTest {
     void aNegativeChunkSizeIsAMalformedResponse() {
         assertMalformed("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\n");
     }
+
+    @Test
+    void aChunkSizeThatOverflowsTheRunningTotalIsRejectedAsTooLargeInsteadOfAllocating() {
+        // 1 + 0x7FFFFFFF overflows int: the size cap must be checked in long
+        // arithmetic, otherwise a ~2 GiB array is allocated (OutOfMemoryError).
+        server.respondWithChunks(List.of(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nA\r\n7FFFFFFF\r\n"
+                        .getBytes(StandardCharsets.US_ASCII)), 0);
+        assertThatThrownBy(() -> PinnedHttpClient.send(
+                target(), "GET", null, Map.of(), Duration.ofSeconds(2), 1024))
+                .isInstanceOf(PinnedHttpClient.ResponseTooLargeException.class);
+    }
 }
