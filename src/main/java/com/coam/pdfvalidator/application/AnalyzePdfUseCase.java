@@ -10,6 +10,7 @@ import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
+import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
@@ -251,7 +252,7 @@ public final class AnalyzePdfUseCase {
         try {
             Instant validationTime = resolveValidationTime(signature);
             ChainStatus chainStatus = certificateChainValidator.validate(signature.chain(), validationTime);
-            RevocationStatus revocation = resolveRevocation(signature, options);
+            RevocationStatus revocation = resolveRevocation(signature, chainStatus, validationTime, options);
             return signature.withChainAndRevocation(chainStatus, revocation);
         } catch (RuntimeException e) {
             // T09b: never surface the raw exception to the client -- log it
@@ -280,23 +281,51 @@ public final class AnalyzePdfUseCase {
 
     /**
      * {@link RevocationStatus#notChecked()} when {@link
-     * AnalysisOptions#checkRevocation()} is {@code false}, or when the
-     * signature carries no certificate chain to check at all (nothing to
-     * ask a revocation checker about). Otherwise delegates to the injected
-     * {@link RevocationChecker} for the signer certificate (chain's first
-     * entry) and its immediate issuer (chain's second entry, or {@code
-     * null} when the chain has only the signer certificate itself).
+     * AnalysisOptions#checkRevocation()} is {@code false}.
+     *
+     * <h2>Trust gate (security decision, see the class Javadoc's "Resilience"
+     * section for the general enrichment guard this sits inside)</h2>
+     * Otherwise, revocation is checked <em>only when {@code chainStatus} is
+     * already {@link ChainStatus#TRUSTED}</em> -- reported as {@code
+     * NOT_CHECKED} with an explanatory detail for {@code UNTRUSTED_ROOT},
+     * {@code INCOMPLETE_CHAIN}, {@code EXPIRED} or {@code NOT_CHECKED}
+     * itself, even when the flag is on. This is not just an optimization:
+     * the AIA/CDP URLs a revocation check would contact live inside
+     * certificates a hostile CMS {@code SignedData} controls. For a
+     * {@code TRUSTED} chain those certificates were written by a real,
+     * trusted CA (the whole point of the chain being trusted), which closes
+     * the main SSRF vector -- an uploader-crafted, self-signed "certificate"
+     * declaring an internal OCSP URL never reaches a {@code TRUSTED}
+     * verdict in the first place. The network-level SSRF guard ({@code
+     * infrastructure.revocation.RevocationUrlGuard}/{@code
+     * PinnedHttpClient}) is kept as defense in depth on top of this, not
+     * instead of it.
+     *
+     * <p>When the gate passes, the signer certificate and its immediate
+     * issuer are taken from {@link CertificateChainValidator#validatedPath}
+     * -- the certificates PKIX itself used to reach that {@code TRUSTED}
+     * verdict -- rather than from {@code signature.chain()} directly:
+     * {@code chain()} is exactly what {@code SignatureVerifier} extracted
+     * from the (attacker-controlled) CMS, which can carry extra or
+     * unrelated certificates alongside a genuine path; {@code
+     * validatedPath} narrows that down to only the certificates a trust
+     * decision was actually made about.
      */
-    private RevocationStatus resolveRevocation(SignatureReport signature, AnalysisOptions options) {
+    private RevocationStatus resolveRevocation(
+            SignatureReport signature, ChainStatus chainStatus, Instant validationTime, AnalysisOptions options) {
         if (!options.checkRevocation()) {
             return RevocationStatus.notChecked();
         }
-        List<CertificateInfo> chain = signature.chain();
-        if (chain.isEmpty()) {
+        if (chainStatus != ChainStatus.TRUSTED) {
+            return new RevocationStatus(
+                    RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted");
+        }
+        List<CertificateInfo> validatedPath = certificateChainValidator.validatedPath(signature.chain(), validationTime);
+        if (validatedPath.isEmpty()) {
             return RevocationStatus.notChecked();
         }
-        CertificateInfo certificate = chain.get(0);
-        CertificateInfo issuer = chain.size() > 1 ? chain.get(1) : null;
+        CertificateInfo certificate = validatedPath.get(0);
+        CertificateInfo issuer = validatedPath.size() > 1 ? validatedPath.get(1) : null;
         return revocationChecker.check(certificate, issuer);
     }
 

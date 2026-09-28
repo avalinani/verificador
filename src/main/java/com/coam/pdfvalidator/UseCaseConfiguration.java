@@ -1,7 +1,6 @@
 package com.coam.pdfvalidator;
 
 import com.coam.pdfvalidator.application.AnalyzePdfUseCase;
-import com.coam.pdfvalidator.application.NoOpRevocationChecker;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
@@ -29,19 +28,16 @@ import java.time.Clock;
  * reason. This is the conventional "composition root" of a hexagonal
  * application: the wiring glue is not itself part of any of the four layers
  * it wires together.
+ *
+ * <p>The {@link RevocationChecker} bean itself (T10: {@code
+ * CompositeRevocationChecker}, OCSP/CRL) is wired in {@code
+ * infrastructure.config.AdapterConfiguration} like every other adapter --
+ * unlike the earlier temporary {@code NoOpRevocationChecker}, it is a real
+ * adapter with no dependency on {@code application}, so it belongs there,
+ * not here.
  */
 @Configuration
 public class UseCaseConfiguration {
-
-    /**
-     * Temporary stand-in for a real {@link RevocationChecker} until T10
-     * implements OCSP/CRL checking -- see {@link NoOpRevocationChecker}'s
-     * own Javadoc.
-     */
-    @Bean
-    public RevocationChecker revocationChecker() {
-        return new NoOpRevocationChecker();
-    }
 
     @Bean
     public AnalyzePdfUseCase analyzePdfUseCase(

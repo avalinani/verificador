@@ -137,6 +137,7 @@ class AnalyzePdfUseCaseTest {
         private final ChainStatus status;
         private final RuntimeException toThrow;
         private final List<Instant> capturedValidationTimes = new ArrayList<>();
+        private List<CertificateInfo> validatedPathOverride;
 
         FakeCertificateChainValidator(ChainStatus status) {
             this(status, null);
@@ -151,6 +152,11 @@ class AnalyzePdfUseCaseTest {
             this.toThrow = toThrow;
         }
 
+        /** Simulates a real {@code PkixCertificateChainValidator} narrowing the presented chain (T10 security decision). */
+        void overrideValidatedPath(List<CertificateInfo> validatedPath) {
+            this.validatedPathOverride = validatedPath;
+        }
+
         @Override
         public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
             capturedValidationTimes.add(validationTime);
@@ -158,6 +164,11 @@ class AnalyzePdfUseCaseTest {
                 throw toThrow;
             }
             return status;
+        }
+
+        @Override
+        public List<CertificateInfo> validatedPath(List<CertificateInfo> chain, Instant validationTime) {
+            return validatedPathOverride != null ? validatedPathOverride : chain;
         }
     }
 
@@ -354,18 +365,91 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.signatures().get(0).revocation()).isEqualTo(good);
     }
 
+    /**
+     * Security decision (T10): the signer/issuer passed to the revocation
+     * checker come from {@link CertificateChainValidator#validatedPath},
+     * not from {@code signature.chain()} directly -- a real {@code
+     * PkixCertificateChainValidator} narrows the presented (attacker-
+     * controlled) CMS chain down to only the certificates PKIX actually
+     * used, so an extra/unrelated certificate the chain also carries
+     * (which {@code chain()} would still include) is never consulted.
+     */
+    @Test
+    void revocationUsesTheValidatedPathRatherThanTheRawPresentedChain() {
+        CertificateInfo signer = certificate("signer");
+        CertificateInfo impostorExtraCertificate = certificate("impostor-embedded-in-cms");
+        CertificateInfo realIssuer = certificate("ca");
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(signer, impostorExtraCertificate, realIssuer));
+        RevocationStatus good = new RevocationStatus(RevocationState.GOOD, "OCSP", null);
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(good);
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.overrideValidatedPath(List.of(signer, realIssuer));
+
+        AnalyzePdfUseCase useCase =
+                happyPathUseCaseWithSignatures(List.of(signature), chainValidator, revocationChecker);
+        useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.lastCertificate).isEqualTo(signer);
+        assertThat(revocationChecker.lastIssuer).isEqualTo(realIssuer);
+    }
+
     @Test
     void revocationIsNotCheckedWhenTheSignatureHasNoCertificateChainEvenIfTheOptionIsEnabled() {
         SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of());
         FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
                 new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
+        // An empty chain can never validate as TRUSTED (PkixCertificateChainValidator
+        // itself returns NOT_CHECKED for it), so this exercises the same
+        // trust gate as the dedicated untrusted/incomplete/expired tests below.
         AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
                 List.of(signature), new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED), revocationChecker);
         PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
 
         assertThat(revocationChecker.callCount).isZero();
-        assertThat(report.signatures().get(0).revocation()).isEqualTo(RevocationStatus.notChecked());
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted"));
+    }
+
+    /**
+     * Security decision (T10): revocation is only ever attempted for a
+     * {@code TRUSTED} chain -- see {@code AnalyzePdfUseCase#resolveRevocation}'s
+     * Javadoc for why (an untrusted chain's AIA/CDP URLs are not
+     * necessarily written by a real CA). Covers the three other {@link
+     * ChainStatus} values a real {@code PkixCertificateChainValidator} can
+     * report; {@code NOT_CHECKED} itself is covered by the test above.
+     */
+    @Test
+    void revocationIsNotCheckedForAnUntrustedRootEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.UNTRUSTED_ROOT);
+    }
+
+    @Test
+    void revocationIsNotCheckedForAnIncompleteChainEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.INCOMPLETE_CHAIN);
+    }
+
+    @Test
+    void revocationIsNotCheckedForAnExpiredChainEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.EXPIRED);
+    }
+
+    private void assertRevocationSkippedForChainStatus(ChainStatus status) {
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(status), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount)
+                .as("chainStatus=%s must never invoke the revocation checker", status)
+                .isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted"));
     }
 
     // ---- PDF/A-2/3 declaration ----

@@ -173,6 +173,90 @@ class PkixCertificateChainValidatorTest {
         assertThat(status).isEqualTo(ChainStatus.INCOMPLETE_CHAIN);
     }
 
+    // ---- validatedPath (T10 security decision: revocation only ever
+    // sources its issuer from the certificates PKIX itself trusted) ----
+
+    @Test
+    void validatedPathReturnsTheOriginalCertificateInfosWhenTheWholeChainWasPresented() {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.rootCertificate()));
+        List<CertificateInfo> chain = toCertificateInfos(identity.chain());
+
+        List<CertificateInfo> validatedPath = validator.validatedPath(chain, Instant.now());
+
+        assertThat(validatedPath).isEqualTo(chain);
+    }
+
+    /**
+     * The T09d FNMT scenario: only the end-entity certificate is presented,
+     * trusted because its issuer is directly configured as the anchor. The
+     * anchor certificate itself is not part of {@code chain}, so it must be
+     * mapped fresh -- {@code validatedPath} must still surface it (by its
+     * real subject/encoded bytes), because {@code AnalyzePdfUseCase} needs
+     * an actual issuer certificate to check revocation against.
+     */
+    @Test
+    void validatedPathAppendsTheAnchorCertificateWhenOnlyTheEndEntityWasPresented() throws CertificateEncodingException {
+        TestPki.ThreeTierIdentity identity = TestPki.issueThreeTierIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.intermediateCertificate()));
+        List<CertificateInfo> chain = toCertificateInfos(List.of(identity.endEntityCertificate()));
+
+        List<CertificateInfo> validatedPath = validator.validatedPath(chain, Instant.now());
+
+        assertThat(validatedPath).hasSize(2);
+        assertThat(validatedPath.get(0)).isEqualTo(chain.get(0));
+        assertThat(validatedPath.get(1).encoded()).isEqualTo(identity.intermediateCertificate().getEncoded());
+    }
+
+    /**
+     * The core SSRF-relevant guarantee: an extra certificate the presented
+     * chain also carries (as a hostile CMS {@code SignedData} could embed
+     * alongside a genuine path) must never appear in {@code validatedPath},
+     * even though it was part of the {@code CertStore} handed to PKIX --
+     * only the certificates on the actually-built path do.
+     */
+    @Test
+    void validatedPathExcludesAnUnrelatedExtraCertificatePresentedAlongsideAGenuinePath()
+            throws CertificateEncodingException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        TestPki.IssuedIdentity unrelated = TestPki.issueSigningIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(identity.rootCertificate()));
+
+        CertificateInfo unrelatedExtra = toCertificateInfo(unrelated.endEntityCertificate());
+        List<CertificateInfo> chainWithExtraCertificate = List.of(
+                toCertificateInfo(identity.endEntityCertificate()), unrelatedExtra,
+                toCertificateInfo(identity.rootCertificate()));
+
+        List<CertificateInfo> validatedPath = validator.validatedPath(chainWithExtraCertificate, Instant.now());
+
+        assertThat(validatedPath).hasSize(2).doesNotContain(unrelatedExtra);
+        assertThat(validatedPath.get(0).encoded()).isEqualTo(identity.endEntityCertificate().getEncoded());
+        assertThat(validatedPath.get(1).encoded()).isEqualTo(identity.rootCertificate().getEncoded());
+    }
+
+    @Test
+    void validatedPathIsEmptyForAnEmptyChain() {
+        PkixCertificateChainValidator validator = new PkixCertificateChainValidator(TrustAnchorProvider.of());
+
+        assertThat(validator.validatedPath(List.of(), Instant.now())).isEmpty();
+    }
+
+    @Test
+    void validatedPathIsEmptyWhenTheChainDoesNotBuildATrustedPath() {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        TestPki.IssuedIdentity unrelated = TestPki.issueSigningIdentity();
+        PkixCertificateChainValidator validator =
+                new PkixCertificateChainValidator(TrustAnchorProvider.of(unrelated.rootCertificate()));
+
+        List<CertificateInfo> validatedPath =
+                validator.validatedPath(toCertificateInfos(identity.chain()), Instant.now());
+
+        assertThat(validatedPath).isEmpty();
+    }
+
     private static List<CertificateInfo> toCertificateInfos(List<X509Certificate> certificates) {
         return certificates.stream().map(PkixCertificateChainValidatorTest::toCertificateInfo).toList();
     }

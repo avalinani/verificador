@@ -3,22 +3,28 @@ package com.coam.pdfvalidator.infrastructure.pki;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.X509CertificateInfoMapper;
 
 import java.io.ByteArrayInputStream;
 import java.security.GeneralSecurityException;
+import java.security.cert.Certificate;
 import java.security.cert.CertPathBuilder;
 import java.security.cert.CertStore;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CollectionCertStoreParameters;
 import java.security.cert.PKIXBuilderParameters;
+import java.security.cert.PKIXCertPathBuilderResult;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CertSelector;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -102,7 +108,89 @@ public final class PkixCertificateChainValidator implements CertificateChainVali
         }
     }
 
-    private void buildPath(List<X509Certificate> certificates, Instant validationTime) throws GeneralSecurityException {
+    /**
+     * The certificates PKIX actually used to reach {@link ChainStatus#TRUSTED}
+     * (see the interface Javadoc on why this matters for revocation
+     * checking): the built {@link java.security.cert.CertPath} (target
+     * first, but never including the trust anchor certificate itself) plus
+     * that trust anchor. Each one is matched back to its original {@code
+     * CertificateInfo} from {@code presentedChain} by content when present
+     * there (preserving its already-extracted OCSP/CRL URLs exactly); the
+     * trust anchor -- almost never part of the presented CMS chain -- is
+     * mapped fresh via {@link X509CertificateInfoMapper}. Returns an empty
+     * list for anything other than a successful build (an empty/unparsable/
+     * expired-at-{@code validationTime} chain, or one that does not build a
+     * trusted path at all): there is no validated path to report then, and
+     * {@code AnalyzePdfUseCase} is only supposed to call this after {@link
+     * #validate} itself already returned {@code TRUSTED} for the same
+     * arguments anyway.
+     */
+    @Override
+    public List<CertificateInfo> validatedPath(List<CertificateInfo> chain, Instant validationTime) {
+        if (chain.isEmpty()) {
+            return List.of();
+        }
+
+        List<X509Certificate> certificates;
+        try {
+            certificates = toX509Certificates(chain);
+        } catch (CertificateParseException e) {
+            return List.of();
+        }
+
+        if (chain.stream().anyMatch(certificate -> !certificate.isValidAt(validationTime))) {
+            return List.of();
+        }
+
+        try {
+            PKIXCertPathBuilderResult result = buildPath(certificates, validationTime);
+            return toValidatedPath(chain, result);
+        } catch (GeneralSecurityException e) {
+            return List.of();
+        }
+    }
+
+    private static List<CertificateInfo> toValidatedPath(
+            List<CertificateInfo> presentedChain, PKIXCertPathBuilderResult result) {
+        List<X509Certificate> usedCertificates = new ArrayList<>();
+        for (Certificate certificate : result.getCertPath().getCertificates()) {
+            usedCertificates.add((X509Certificate) certificate);
+        }
+
+        X509Certificate anchorCertificate = result.getTrustAnchor().getTrustedCert();
+        if (anchorCertificate != null
+                && (usedCertificates.isEmpty()
+                        || !certificatesEqual(usedCertificates.get(usedCertificates.size() - 1), anchorCertificate))) {
+            usedCertificates.add(anchorCertificate);
+        }
+
+        List<CertificateInfo> validatedPath = new ArrayList<>(usedCertificates.size());
+        for (X509Certificate certificate : usedCertificates) {
+            validatedPath.add(findMatching(presentedChain, certificate)
+                    .orElseGet(() -> X509CertificateInfoMapper.toDomain(certificate)));
+        }
+        return List.copyOf(validatedPath);
+    }
+
+    private static Optional<CertificateInfo> findMatching(List<CertificateInfo> presentedChain, X509Certificate certificate) {
+        try {
+            byte[] encoded = certificate.getEncoded();
+            return presentedChain.stream().filter(info -> Arrays.equals(info.encoded(), encoded)).findFirst();
+        } catch (CertificateEncodingException e) {
+            return Optional.empty();
+        }
+    }
+
+    private static boolean certificatesEqual(X509Certificate a, X509Certificate b) {
+        try {
+            return Arrays.equals(a.getEncoded(), b.getEncoded());
+        } catch (CertificateEncodingException e) {
+            return false;
+        }
+    }
+
+    private PKIXCertPathBuilderResult buildPath(List<X509Certificate> certificates, Instant validationTime)
+            throws GeneralSecurityException {
         X509Certificate target = certificates.get(0);
         X509CertSelector targetSelector = new X509CertSelector();
         targetSelector.setCertificate(target);
@@ -121,7 +209,7 @@ public final class PkixCertificateChainValidator implements CertificateChainVali
                 CertStore.getInstance("Collection", new CollectionCertStoreParameters(certificates));
         params.addCertStore(certStore);
 
-        CertPathBuilder.getInstance("PKIX").build(params);
+        return (PKIXCertPathBuilderResult) CertPathBuilder.getInstance("PKIX").build(params);
     }
 
     /**

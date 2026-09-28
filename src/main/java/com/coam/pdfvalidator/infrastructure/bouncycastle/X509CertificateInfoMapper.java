@@ -28,12 +28,23 @@ import java.util.Optional;
  * certificate's Authority Information Access and CRL Distribution Points
  * extensions.
  */
-final class X509CertificateInfoMapper {
+public final class X509CertificateInfoMapper {
 
     private X509CertificateInfoMapper() {
     }
 
-    static CertificateInfo toDomain(X509Certificate certificate) {
+    /**
+     * Public (unlike the rest of this package-private class): reused
+     * directly by {@code infrastructure.pki.PkixCertificateChainValidator}
+     * to map the trust anchor certificate PKIX actually validated against
+     * back into a domain {@link CertificateInfo} -- see {@link
+     * com.coam.pdfvalidator.domain.port.CertificateChainValidator#validatedPath}.
+     * Both are {@code infrastructure} sub-packages, so this stays an
+     * infra-internal reuse; {@code ArchitectureTest} only forbids {@code
+     * infrastructure} from depending "upward" on {@code application}/{@code
+     * api}.
+     */
+    public static CertificateInfo toDomain(X509Certificate certificate) {
         try {
             return new CertificateInfo(
                     certificate.getSubjectX500Principal().getName(),
