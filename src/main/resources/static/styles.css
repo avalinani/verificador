@@ -136,6 +136,14 @@
    ------------------------------------------------------------------- */
 *, *::before, *::after { box-sizing: border-box; }
 
+/* Must outrank every later class-based `display` rule in this file (e.g.
+   `.file-chip`, `.error-banner`, the `svg` block-display rule below) -- a
+   class selector and an attribute selector have equal specificity, so
+   without `!important` the later author rule would win over the browser's
+   own `[hidden] { display: none }` default and the element would stay
+   visible despite the `hidden` attribute. */
+[hidden] { display: none !important; }
+
 html { color-scheme: light dark; }
 
 body {
