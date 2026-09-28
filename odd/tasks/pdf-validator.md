@@ -595,6 +595,7 @@ Parent spot check: `./mvnw -B verify` re-run → 256/256, `BUILD SUCCESS`; `grep
 - [x] T10 RevocationChecker (OCSP/CRL, trust-gated, DNS-rebinding-safe pinned HTTP, slowloris/overflow hardened)
 - [x] T10b Follow-ups from T10 review advisories: TRUSTED chain with an empty validated path must surface an explicit reason instead of silently skipping revocation (`AnalyzePdfUseCase` ~323-324); log inside `CompositeRevocationChecker` safe wrappers and test them; `RawSocketTestServer` executor leak; stale test-count evidence in this document. — route: direct inline (already-explored files: AnalyzePdfUseCase, CompositeRevocationChecker, RawSocketTestServer; small, well-understood fixes)
 - [x] T11 "Validar" screen + overall signature verdict — route: direct inline for the domain policy/DTO/mapper (already-explored files, no unresolved design decisions after the decision table below), direct inline for the frontend (single-writer static files, no framework/build-tool research needed)
+- [x] T11c Follow-ups from the T11 review advisories (SECURITY: covered-by-untrusted-later-signature; no-signatures-masks-section-error; UI robustness: concurrent submit, invalid payload, stale selection on reject; CSP context path; Spanish UI copy for the new codes) — route: direct inline (already-explored files: SignatureVerdictPolicy, PdfAnalysisReport, app.js, CspHeaderFilter, StaticContentSecurityTest; single-writer, per this task's explicit instruction)
 
 ## Progress / Evidence (T10b, T11)
 
@@ -642,6 +643,56 @@ Branch `feat/validate-ui` (branched from `feat/revocation`). Executed directly b
 Living README updated (`README.md`): new §2.13 (verdict decision table, multi-signature rule + its documented limitation, the web interface's sections/theme/accessibility/security/CSP, the `[hidden]` CSS bug); §2.1 flow diagram (revocation ✅, verdict policy step, UI ✅); §2.3 domain table (`SignatureVerdict`/`OverallVerdict`); §2.9 (final verdict pass); §3 stack table (frontend ✅); §4 (web UI URL, JSON example with `verdict`/`overallVerdict`); §5 project tree (`domain/policy`, `infrastructure/web`, `static/` ✅); §6 functionality table; §7 tests section (10 new rows, 268 → 298) and count; §10 decisions (6 new bullets); §11 change history (two new rows). Commit `34d369f`.
 
 Parent spot check: `./mvnw -B verify` re-run → 298/298, `BUILD SUCCESS`; both grep gates clean; `git status --porcelain` clean except this task-file update.
+
+- Review of T11 (RDD, auto-granted per standing user instruction): reviewed in 3 blocks — **A approved**, **B approved**, **C under budget** (not reviewed within this candidate's budget; its findings became the T11c follow-ups below rather than blocking on a further review round).
+
+## Progress / Evidence (T11c)
+
+Executed directly by a single writer agent (no sub-delegation), per this task's explicit instruction, on branch `feat/validate-ui`.
+
+### Fix 1 — SECURITY: covered-by-untrusted-later-signature (`SignatureVerdictPolicy`)
+
+- An earlier signature reported `MODIFIED_AFTER_SIGNING` was previously exempted from the modification penalty by **any** later `INTACT` signature covering the whole file, regardless of that later signature's own trust — an attacker could modify a trusted-signed document and re-sign it with a self-made certificate, and the original signature would still show `VALID`.
+- `SignatureVerdictPolicy.evaluateAll` now evaluates signatures from the last backwards; a new `LaterSignatureCoverage` enum (`NO_LATER_SIGNATURE`/`ADMITTED`/`UNADMITTED`) is computed per signature (does a later signature exist at all, and if so, are **all** later signatures themselves `VALID`). `evaluate(...)`'s third parameter changed from a `boolean` to this enum. A `MODIFIED_AFTER_SIGNING` signature with `UNADMITTED` coverage is `INVALID` with the new stable reason code `MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY`; `NO_LATER_SIGNATURE` keeps the pre-existing `MODIFIED_AFTER_LAST_SIGNATURE` reason; `ADMITTED` still falls through to the signature's own chain/revocation merits (`COVERED_BY_LATER_SIGNATURE`).
+- **TDD (strict)**: RED — `./mvnw -q -B test-compile` failed with `cannot find symbol: LaterSignatureCoverage`/`REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY` across the updated test file (compile-error RED, this project's precedent for API shape changes). GREEN after implementing: `SignatureVerdictPolicyTest` 23/23, including new tests `trustedFirstSignatureFollowedByAnUntrustedSecondSignatureIsInvalid` (trusted first + untrusted second → first `INVALID`), `trustedFirstSignatureFollowedByATrustedSecondSignatureStillFollowsItsOwnRevocation` (trusted first + trusted second → first still follows its own revocation, here `REVOKED` → `INVALID` despite being covered), and `threeSignatureDocumentWithAnUntrustedIntermediateSignatureInvalidatesTheFirst` (three signatures mixed: an untrusted intermediate signature still invalidates the first even though a further, legitimate signature re-covers the document).
+- Commit: `15eba88` fix: only let an admitted later signature cover earlier modified signatures.
+
+### Fix 2 — no-signatures-masks-section-error (`PdfAnalysisReport`)
+
+- If the `SIGNATURES` section failed (`sectionErrors` contains an entry for it), `overallVerdict()` returned `NO_SIGNATURES` — indistinguishable from a legitimately unsigned document.
+- New `OverallVerdict.ANALYSIS_INCOMPLETE`; `PdfAnalysisReport.overallVerdict()` now checks `sectionErrors` for a `SIGNATURES` entry first, before delegating to `SignatureVerdictPolicy.overallVerdict(signatures)`.
+- **TDD (strict)**: extended the existing `AnalyzePdfUseCaseTest#anUnexpectedSignatureVerifierFailureYieldsNoSignaturesWithoutLosingTheRestOfTheReport` with `assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.ANALYSIS_INCOMPLETE)` — RED (failed, actual `NO_SIGNATURES`) before the fix, GREEN after.
+- Commit: `ad48b57` fix: report incomplete signature analysis instead of no signatures.
+
+### Fix 3 — UI robustness (`app.js`)
+
+- **Concurrent submit**: a single `AbortController`-backed `inFlightAnalysis` flag (`isAnalyzing()`) guards the form's `submit` handler (ignores a re-entrant submit) and the drop zone/file picker (click, keydown, drop) while a request is in flight.
+- **Invalid payload**: `isValidReportPayload(payload)` structurally checks a successful response's shape (`overallVerdict`, `signatures`, `hashes`, `structure`, `security`, `pdfa`) before handing it to the renderers; an invalid shape shows a Spanish error instead of letting a renderer throw on a missing field.
+- **Stale selection on reject**: `clearSelectedFile()` (new) resets `selectedFile`, the file input, and the chip; called on every rejection path in `setSelectedFile` (not a PDF, too large) instead of leaving a previously-selected valid file active behind a rejected file's displayed name.
+- No JS test harness exists for this project (documented project decision, §2.13); verified manually on a running instance (Chrome DevTools MCP, port 8081): uploading `valid.pdf` then `notes.txt` cleared the chip and re-disabled "Analizar PDF" with the Spanish "no parece un PDF" error; three synchronous `analyzeForm.requestSubmit()` calls (via `evaluate_script`, with `window.fetch` instrumented to count calls) produced exactly one `fetch` call; monkey-patching `window.fetch` to resolve an unexpected-shape 200 JSON produced the Spanish "respuesta inesperada" error banner instead of a thrown exception. No console errors (`list_console_messages`).
+- Commit: `6a8205b` fix: harden the Validar screen against double submits and bad payloads.
+
+### Fix 4 — CSP context path (`CspHeaderFilter`)
+
+- The filter compared `request.getRequestURI()` unchanged against its exact-path allow-list, but `getRequestURI()` already includes the context path — so the filter silently stopped protecting the static UI as soon as the app was deployed under one (e.g. `/pdfvalidator/app.js` never matched `/app.js`).
+- Fixed to strip `request.getContextPath()` from the URI before matching.
+- New `CspHeaderFilterTest` (unit test directly against the filter using `MockHttpServletRequest`/`MockHttpServletResponse`/`MockFilterChain`, since `MockMvc` always runs with an empty context path): RED — 2/4 failures (context-path cases) before the fix, GREEN (4/4) after. `StaticContentSecurityTest` gained a negative test asserting the CSP/charset headers are never applied to `/api/v1/pdf/analyze` (6/6 green).
+- Commit: `5e5a06c` fix: apply static CSP relative to the context path.
+
+### Fix 5 — Spanish UI copy for the new codes
+
+- `REASON_TEXT` gained `MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY`; `VERDICT_TEXT` gained `ANALYSIS_INCOMPLETE` ("Análisis incompleto" / "No se ha podido completar el análisis de firmas."); `renderSignatures`'s empty-state text also distinguishes `ANALYSIS_INCOMPLETE` from a legitimately unsigned document. New `.verdict-banner.verdict-incomplete` CSS class (warning colors, consistent with `NOT_ADMITTED`). Included in the `6a8205b` commit above (same file, same work unit as Fix 3).
+
+### Verify (T11c, full suite)
+
+- `./mvnw -B verify` → `BUILD SUCCESS`, `Tests run: 307, Failures: 0, Errors: 0, Skipped: 0` (298 → 307: 4 new `SignatureVerdictPolicyTest`, 4 new `CspHeaderFilterTest`, 1 new `StaticContentSecurityTest`).
+- `grep -rnE "DELIBERATE|if \(true\)|if \(false|false &&|true \|\|" src/main/java` → no output (clean).
+- `grep -n "innerHTML" src/main/resources/static/*.js` → exactly one occurrence, unchanged (the fixed developer-authored icon table).
+- Manual UI check (Chrome DevTools MCP, port 8081, see Fix 3 above): double submit ignored (one `fetch` call), rejected file clears selection, no console errors. App stopped afterward.
+
+Living README updated (`README.md`): §2.13 (three-way `MODIFIED_AFTER_SIGNING` decision table split, the attacker re-signing scenario and why "admitted" is required, `ANALYSIS_INCOMPLETE`, UI robustness bullet, CSP context-path note, accessibility/WCAG AA contrast note — including the previously-undocumented `8d7c8e8` contrast fix), §7 (3 new test rows, 298 → 307), §10 (4 new decision bullets), §11 (3 new change-history rows). Commit `f71e46f`.
+
+Parent spot check: `./mvnw -B verify` re-run → 307/307, `BUILD SUCCESS`; both grep gates clean.
 
 ## Next step
 T11b "Firmar" (AutoFirma), T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
