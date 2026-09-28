@@ -1,5 +1,7 @@
 package com.coam.pdfvalidator.domain.model;
 
+import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -40,5 +42,31 @@ public record PdfAnalysisReport(
         if (sizeBytes < 0) {
             throw new IllegalArgumentException("sizeBytes must be >= 0, got: " + sizeBytes);
         }
+    }
+
+    /**
+     * The document-level summary verdict (T11): the worst of every {@link
+     * SignatureReport#verdict()} in {@link #signatures()}, or {@link
+     * OverallVerdict#NO_SIGNATURES} for an unsigned document. Computed
+     * on demand rather than stored as its own record component -- unlike
+     * {@code pageCount} on {@link DocumentStructure}, this value is never
+     * independently constructed or deserialized, only ever derived from
+     * {@code signatures}, so storing it separately would only add a way for
+     * the two to drift out of sync without ever needing to round-trip on
+     * its own.
+     */
+    public OverallVerdict overallVerdict() {
+        return SignatureVerdictPolicy.overallVerdict(signatures);
+    }
+
+    /**
+     * True when this document has at least one signature and none of them
+     * cover the file all the way to its true end -- see {@link
+     * SignatureVerdictPolicy#documentModifiedAfterLastSignature} for exactly
+     * what this does and does not prove. Computed on demand, same rationale
+     * as {@link #overallVerdict()}.
+     */
+    public boolean modifiedAfterLastSignature() {
+        return SignatureVerdictPolicy.documentModifiedAfterLastSignature(signatures);
     }
 }

@@ -16,6 +16,7 @@ import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
@@ -233,7 +234,10 @@ public final class AnalyzePdfUseCase {
         for (SignatureReport signature : extracted) {
             enriched.add(enrich(signature, options));
         }
-        return enriched;
+        // T11: the overall per-signature verdict is computed last, once every
+        // signature's integrity/chain/revocation is known -- multi-signature
+        // coverage needs to see all of them together (SignatureVerdictPolicy).
+        return SignatureVerdictPolicy.evaluateAll(enriched, options.checkRevocation());
     }
 
     /**

@@ -74,6 +74,23 @@ class DefensiveCopyTest {
     }
 
     @Test
+    void signatureReportCopiesItsVerdictReasonsList() {
+        List<CertificateInfo> chain = List.of();
+        SignatureReport base = new SignatureReport(
+                "Signature1", "ETSI.CAdES.detached", ByteRangeCoverage.of(0, 10, 20, 10, 30),
+                IntegrityStatus.INTACT, null, TimestampInfo.absent(), chain,
+                ChainStatus.NOT_CHECKED, RevocationStatus.notChecked(), null);
+        List<String> mutableReasons = new ArrayList<>(List.of("REASON_ONE"));
+
+        SignatureReport report = base.withVerdict(SignatureVerdict.VALID, mutableReasons);
+        mutableReasons.add("REASON_TWO");
+
+        assertThat(report.verdictReasons()).containsExactly("REASON_ONE");
+        assertThatExceptionOfType(UnsupportedOperationException.class)
+                .isThrownBy(() -> report.verdictReasons().add("REASON_THREE"));
+    }
+
+    @Test
     void pdfAnalysisReportCopiesItsSignaturesList() {
         List<SignatureReport> mutableSignatures = new ArrayList<>();
 

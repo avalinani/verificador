@@ -9,6 +9,7 @@ import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.DocumentHashes;
 import com.coam.pdfvalidator.domain.model.DocumentStructure;
 import com.coam.pdfvalidator.domain.model.IntegrityStatus;
+import com.coam.pdfvalidator.domain.model.OverallVerdict;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
@@ -20,6 +21,7 @@ import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
@@ -474,6 +476,68 @@ class AnalyzePdfUseCaseTest {
                 .isZero();
         assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
                 RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted"));
+    }
+
+    // ---- T11: overall verdict wiring ----
+
+    /**
+     * {@code SignatureVerdictPolicy} itself is exhaustively unit-tested
+     * (every decision-table row); this only proves {@code AnalyzePdfUseCase}
+     * actually wires it in -- the final assembled report's per-signature
+     * {@code verdict} and document-level {@code overallVerdict} reflect a
+     * real end-to-end TRUSTED/GOOD signature.
+     */
+    @Test
+    void assembledReportCarriesTheComputedOverallVerdict() {
+        SignatureReport signature =
+                signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(ChainStatus.TRUSTED), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.VALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.VALID);
+        assertThat(report.modifiedAfterLastSignature()).isFalse();
+    }
+
+    @Test
+    void anUnsignedDocumentHasTheNoSignaturesOverallVerdict() {
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(), new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.NO_SIGNATURES);
+        assertThat(report.modifiedAfterLastSignature()).isFalse();
+    }
+
+    /**
+     * A signature whose coverage does not reach the end of file, with no
+     * other signature that does, is exposed both as an {@code INVALID}
+     * per-signature verdict and as the document-level {@code
+     * modifiedAfterLastSignature} flag -- the user's own example of content
+     * appended after the last (only) signature with nothing re-signing it.
+     */
+    @Test
+    void aDocumentModifiedAfterItsOnlySignatureIsFlaggedBothWays() {
+        SignatureReport modified = new SignatureReport(
+                "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 100),
+                IntegrityStatus.MODIFIED_AFTER_SIGNING, FIXED_NOW, TimestampInfo.absent(),
+                List.of(certificate("signer"), certificate("ca")), ChainStatus.NOT_CHECKED,
+                RevocationStatus.notChecked(), null);
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(modified), new FakeCertificateChainValidator(ChainStatus.TRUSTED),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.INVALID);
+        assertThat(report.modifiedAfterLastSignature()).isTrue();
     }
 
     // ---- PDF/A-2/3 declaration ----
