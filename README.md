@@ -356,7 +356,7 @@ La importación de clases excluye explícitamente los propios tests (`ImportOpti
 
 **Interfaz web "Validar"** (`src/main/resources/static/`, sin *build step*, sin *frameworks*, sin CDNs -- JavaScript nativo con módulos ES, HTML y CSS servidos tal cual por Spring Boot):
 
-- **Cómo abrirla**: con la aplicación arrancada (§4), `http://localhost:8080/` (o `/index.html`).
+- **Cómo abrirla**: con la aplicación arrancada (§4), `http://localhost:8963/` (o `/index.html`).
 - **Qué muestra**: zona de arrastrar-y-soltar (o clic para seleccionar) para un PDF de hasta 20 MB, una casilla "Comprobar revocación (OCSP/CRL)", y un botón "Analizar PDF" que llama a `POST /api/v1/pdf/analyze`. El resultado muestra, en este orden: un **banner de veredicto general** (✅ *Firma válida* / ⚠️ *Firma no admitida* / ❌ *Firma inválida* / *Documento sin firmas* / **(T11c)** ⚠️ *Análisis incompleto*, "No se ha podido completar el análisis de firmas") con sus motivos en español llano; una tarjeta por firma (firmante, emisor, fecha declarada, sello de tiempo, integridad, cadena, revocación, motivos del veredicto, anomalías) con un desplegable de detalles técnicos (cadena completa con huellas SHA-256, cobertura del `ByteRange`); una sección de documento (hashes con botón de copiar, versión, tabla de páginas con rotación/orientación/tamaño, cifrado y permisos, resultado PDF/A con sus incidencias); los `sectionErrors`, si los hay, como avisos; y un botón para descargar el informe JSON completo. Los códigos de motivo (`CHAIN_EXPIRED`, `REVOCATION_UNKNOWN`, ...) se traducen a texto en español en el propio `app.js` (`REASON_TEXT`), nunca en el backend -- el backend solo expone códigos estables.
 - **Tema claro/oscuro**: variables CSS (`prefers-color-scheme` del sistema, más un botón manual que persiste la elección en `localStorage`, envuelto en `try`/`catch` por si el almacenamiento no está disponible).
 - **Navegación**: pestaña "Firmar" visible pero deshabilitada ("próximamente") -- reservada para T11b (AutoFirma).
@@ -440,17 +440,18 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 Con la configuración por defecto (`application.yml`), una vez arrancada:
 
-- Interfaz web ("Validar"): <http://localhost:8080/> (o `/index.html`) ✅ -- ver §2.13
-- API REST: `POST http://localhost:8080/api/v1/pdf/analyze`
-- Swagger UI: <http://localhost:8080/swagger-ui.html> ✅
-- Especificación OpenAPI: <http://localhost:8080/v3/api-docs> ✅
-- Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8080/actuator/health>, <http://localhost:8080/actuator/info>
+- Interfaz web ("Validar"): <http://localhost:8963/> (o `/index.html`) ✅ -- ver §2.13
+- API REST: `POST http://localhost:8963/api/v1/pdf/analyze`
+- **Puerto por defecto: 8963** (se evita el 8080 porque suele chocar con otros servidores locales, como WildFly). Para cambiarlo: variable de entorno `SERVER_PORT=9000` o `java -jar ... --server.port=9000`.
+- Swagger UI: <http://localhost:8963/swagger-ui.html> ✅
+- Especificación OpenAPI: <http://localhost:8963/v3/api-docs> ✅
+- Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8963/actuator/health>, <http://localhost:8963/actuator/info>
 - Docker / Docker Compose: ⏳
 
 ### Ejemplo de uso de la API
 
 ```bash
-curl -F "file=@/ruta/a/documento.pdf" "http://localhost:8080/api/v1/pdf/analyze?checkRevocation=false"
+curl -F "file=@/ruta/a/documento.pdf" "http://localhost:8963/api/v1/pdf/analyze?checkRevocation=false"
 ```
 
 Respuesta (recortada; ver el modelo completo en Swagger UI):
@@ -489,7 +490,7 @@ Respuesta (recortada; ver el modelo completo en Swagger UI):
 Con `checkRevocation=true` (§2.12) y una cadena `TRUSTED`, `revocation` se rellena de verdad:
 
 ```bash
-curl -F "file=@/ruta/a/documento-firmado.pdf" "http://localhost:8080/api/v1/pdf/analyze?checkRevocation=true"
+curl -F "file=@/ruta/a/documento-firmado.pdf" "http://localhost:8963/api/v1/pdf/analyze?checkRevocation=true"
 ```
 
 ```json

@@ -1,3 +1,8 @@
+# Default HTTP port. 8080 is avoided on purpose because it often collides with
+# other local servers (e.g. WildFly). Override with SERVER_PORT or --server.port.
+server:
+  port: 8963
+
 spring:
   application:
     name: pdf-validator
