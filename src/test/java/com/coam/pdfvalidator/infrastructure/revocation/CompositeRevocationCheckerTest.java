@@ -17,7 +17,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -128,6 +133,52 @@ class CompositeRevocationCheckerTest {
                     checker().check(toDomain(identity.signerCertificate()), toDomain(identity.issuerCertificate()));
 
             assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
+        }
+    }
+
+    /**
+     * T10b: the safe wrappers around {@code OcspClient}/{@code CrlClient}
+     * (defense in depth against those adapters' own "never throws" contract)
+     * previously swallowed an unexpected {@link RuntimeException} silently.
+     * Exercises the wrapper's own catch-and-log behavior directly (a package-
+     * private seam, same convention as {@code PreflightPdfaValidator#mapErrors}):
+     * the exception's class name is logged, never its (potentially sensitive)
+     * message, and the reported result stays {@code UNKNOWN}.
+     */
+    @Test
+    void aRuntimeExceptionFromAWrappedCheckIsLoggedByClassNameOnlyAndReportedAsUnknown() {
+        Logger julLogger = Logger.getLogger(CompositeRevocationChecker.class.getName());
+        List<LogRecord> records = new ArrayList<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        julLogger.addHandler(handler);
+        julLogger.setLevel(Level.ALL);
+        try {
+            RevocationStatus status = checker().safely(
+                    "OCSP", () -> {
+                        throw new IllegalStateException("sensitive-detail-must-never-be-logged");
+                    });
+
+            assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
+            assertThat(status.detail()).isEqualTo("OCSP check failed (unexpected error)");
+            assertThat(records).isNotEmpty();
+            String logged = records.stream().map(LogRecord::getMessage).reduce("", String::concat);
+            assertThat(logged).contains("IllegalStateException");
+            assertThat(logged).doesNotContain("sensitive-detail-must-never-be-logged");
+        } finally {
+            julLogger.removeHandler(handler);
         }
     }
 

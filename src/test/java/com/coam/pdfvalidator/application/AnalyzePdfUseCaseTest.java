@@ -394,6 +394,30 @@ class AnalyzePdfUseCaseTest {
         assertThat(revocationChecker.lastIssuer).isEqualTo(realIssuer);
     }
 
+    /**
+     * T10b: a {@code TRUSTED} chain whose {@code validatedPath} is
+     * (unexpectedly) empty must still surface an explicit reason, never the
+     * bare {@link RevocationStatus#notChecked()} placeholder that silently
+     * looks the same as "revocation was simply not requested".
+     */
+    @Test
+    void revocationSurfacesAnExplicitReasonWhenTheTrustedChainsValidatedPathIsEmpty() {
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.overrideValidatedPath(List.of());
+
+        AnalyzePdfUseCase useCase =
+                happyPathUseCaseWithSignatures(List.of(signature), chainValidator, revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount).isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "validated certification path unavailable"));
+    }
+
     @Test
     void revocationIsNotCheckedWhenTheSignatureHasNoCertificateChainEvenIfTheOptionIsEnabled() {
         SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of());

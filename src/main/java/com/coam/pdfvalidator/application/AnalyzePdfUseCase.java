@@ -322,7 +322,11 @@ public final class AnalyzePdfUseCase {
         }
         List<CertificateInfo> validatedPath = certificateChainValidator.validatedPath(signature.chain(), validationTime);
         if (validatedPath.isEmpty()) {
-            return RevocationStatus.notChecked();
+            // T10b: a TRUSTED chain reaching here with an empty validatedPath would
+            // otherwise be indistinguishable from "revocation simply was not
+            // requested" -- surface an explicit reason instead of silently skipping.
+            return new RevocationStatus(
+                    RevocationState.NOT_CHECKED, null, "validated certification path unavailable");
         }
         CertificateInfo certificate = validatedPath.get(0);
         CertificateInfo issuer = validatedPath.size() > 1 ? validatedPath.get(1) : null;

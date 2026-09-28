@@ -7,7 +7,9 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A raw, byte-level loopback HTTP test server for protocol-edge-case tests
@@ -18,6 +20,7 @@ import java.util.concurrent.Executors;
 public final class RawSocketTestServer implements AutoCloseable {
 
     private final ServerSocket serverSocket;
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     private RawSocketTestServer(ServerSocket serverSocket) {
         this.serverSocket = serverSocket;
@@ -42,7 +45,7 @@ public final class RawSocketTestServer implements AutoCloseable {
      * prove a per-read (rather than overall) deadline can be defeated.
      */
     public void respondWithChunks(List<byte[]> chunks, long delayMillis) {
-        Executors.newSingleThreadExecutor().submit(() -> {
+        executor.submit(() -> {
             try (Socket socket = serverSocket.accept(); OutputStream out = socket.getOutputStream()) {
                 // Drain the client's request first: closing this socket while its receive
                 // buffer still holds unread bytes can make some TCP stacks (Windows in
@@ -80,5 +83,11 @@ public final class RawSocketTestServer implements AutoCloseable {
     @Override
     public void close() throws IOException {
         serverSocket.close();
+        executor.shutdownNow();
+        try {
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

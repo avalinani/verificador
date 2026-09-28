@@ -37,6 +37,8 @@ import java.util.List;
  */
 public final class CompositeRevocationChecker implements RevocationChecker {
 
+    private static final System.Logger LOGGER = System.getLogger(CompositeRevocationChecker.class.getName());
+
     private final OcspClient ocspClient;
     private final CrlClient crlClient;
 
@@ -103,18 +105,33 @@ public final class CompositeRevocationChecker implements RevocationChecker {
      * but this adapter must never propagate an exception from them either, whatever its cause.
      */
     private RevocationStatus checkOcspSafely(X509Certificate certificate, X509Certificate issuer, List<String> urls) {
-        try {
-            return ocspClient.check(certificate, issuer, urls);
-        } catch (RuntimeException e) {
-            return new RevocationStatus(RevocationState.UNKNOWN, null, "OCSP check failed (unexpected error)");
-        }
+        return safely("OCSP", () -> ocspClient.check(certificate, issuer, urls));
     }
 
     private RevocationStatus checkCrlSafely(X509Certificate certificate, X509Certificate issuer, List<String> urls) {
+        return safely("CRL", () -> crlClient.check(certificate, issuer, urls));
+    }
+
+    /**
+     * Runs {@code action}, catching any {@link RuntimeException} it throws
+     * and reporting it as {@link RevocationState#UNKNOWN} instead of letting
+     * it escape (T10b). Only the exception's own class name is logged --
+     * never {@link Throwable#getMessage()} or any part of the certificate
+     * being checked -- since the underlying cause could carry
+     * network/response detail that must not reach the server log verbatim.
+     * Package-private (rather than private) specifically so this catch-and-
+     * log behavior can be unit-tested directly, the same convention already
+     * used elsewhere in this codebase (e.g. {@code
+     * PreflightPdfaValidator#mapErrors}) for a seam that is otherwise
+     * impractical to drive through the real adapters it wraps.
+     */
+    RevocationStatus safely(String checkName, java.util.function.Supplier<RevocationStatus> action) {
         try {
-            return crlClient.check(certificate, issuer, urls);
+            return action.get();
         } catch (RuntimeException e) {
-            return new RevocationStatus(RevocationState.UNKNOWN, null, "CRL check failed (unexpected error)");
+            LOGGER.log(System.Logger.Level.WARNING,
+                    checkName + " revocation check failed with an unexpected " + e.getClass().getSimpleName());
+            return new RevocationStatus(RevocationState.UNKNOWN, null, checkName + " check failed (unexpected error)");
         }
     }
 
