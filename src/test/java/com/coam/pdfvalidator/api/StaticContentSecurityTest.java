@@ -1,5 +1,7 @@
 package com.coam.pdfvalidator.api;
 
+import com.coam.pdfvalidator.infrastructure.web.CspHeaderFilter;
+
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,6 +10,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -62,6 +65,21 @@ class StaticContentSecurityTest {
     void swaggerUiApiDocsAreNotAffectedByTheContentSecurityPolicy() throws Exception {
         mockMvc.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())
+                .andExpect(header().doesNotExist("Content-Security-Policy"));
+    }
+
+    /**
+     * T11c: the analysis API must never carry the static UI's CSP/charset
+     * headers either -- the allow-list is exact-path, so this is really a
+     * regression guard against a future, broader match (e.g. a prefix
+     * check) accidentally catching {@code /api/**} too. The request itself
+     * is missing its {@code file} part (400), which is irrelevant here:
+     * {@link CspHeaderFilter} runs upstream of the controller and decides
+     * before the request is even dispatched.
+     */
+    @Test
+    void theAnalyzeApiEndpointIsNotAffectedByTheContentSecurityPolicy() throws Exception {
+        mockMvc.perform(post("/api/v1/pdf/analyze"))
                 .andExpect(header().doesNotExist("Content-Security-Policy"));
     }
 }

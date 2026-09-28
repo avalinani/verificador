@@ -53,7 +53,12 @@ public final class CspHeaderFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        if (PROTECTED_PATHS.contains(request.getRequestURI())) {
+        // T11c: getRequestURI() already includes the context path (e.g.
+        // "/pdfvalidator/app.js" when deployed under "/pdfvalidator"), so
+        // comparing it unchanged against PROTECTED_PATHS silently stopped
+        // matching as soon as the app was deployed under a context path.
+        String contextRelativePath = request.getRequestURI().substring(request.getContextPath().length());
+        if (PROTECTED_PATHS.contains(contextRelativePath)) {
             response.setHeader("Content-Security-Policy", POLICY);
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         }
