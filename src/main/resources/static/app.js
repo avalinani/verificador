@@ -109,16 +109,18 @@ function looksLikePdfFile(file) {
 function setSelectedFile(file) {
   clearError();
   if (!file) {
-    selectedFile = null;
-    fileChip.hidden = true;
-    analyzeButton.disabled = true;
+    clearSelectedFile();
     return;
   }
   if (!looksLikePdfFile(file)) {
+    // A previously selected (valid) file must not silently stay selected
+    // behind the scenes while the UI shows the rejected file's name.
+    clearSelectedFile();
     showError("El archivo seleccionado no parece un PDF. Elige un archivo con extensión .pdf.");
     return;
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
+    clearSelectedFile();
     showError(`El archivo supera el tamaño máximo permitido (20 MB). Tamaño actual: ${formatBytes(file.size)}.`);
     return;
   }
@@ -130,8 +132,21 @@ function setSelectedFile(file) {
   statusLine.textContent = "";
 }
 
-dropzone.addEventListener("click", () => fileInput.click());
+function clearSelectedFile() {
+  selectedFile = null;
+  fileInput.value = "";
+  fileChipName.textContent = "";
+  fileChipSize.textContent = "";
+  fileChip.hidden = true;
+  analyzeButton.disabled = true;
+}
+
+dropzone.addEventListener("click", () => {
+  if (isAnalyzing()) return;
+  fileInput.click();
+});
 dropzone.addEventListener("keydown", (event) => {
+  if (isAnalyzing()) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     fileInput.click();
@@ -152,6 +167,7 @@ dropzone.addEventListener("keydown", (event) => {
 dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   dropzone.classList.remove("is-dragover");
+  if (isAnalyzing()) return;
   const file = event.dataTransfer?.files?.[0];
   if (file) setSelectedFile(file);
 });
@@ -161,21 +177,35 @@ fileInput.addEventListener("change", () => {
 });
 
 fileChipRemove.addEventListener("click", () => {
-  fileInput.value = "";
-  setSelectedFile(null);
+  clearError();
+  clearSelectedFile();
 });
 
 // ---------------------------------------------------------------------
 // Submission
 // ---------------------------------------------------------------------
 
+// The AbortController for the in-flight analyze() request, or null when
+// none is running -- both the single source of truth for isAnalyzing() and
+// the means to cancel a stale request if a new one is ever allowed to start.
+let inFlightAnalysis = null;
+
+function isAnalyzing() {
+  return inFlightAnalysis !== null;
+}
+
 analyzeForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!selectedFile) return;
+  // Concurrent-submit guard: a second submit (double click, Enter held
+  // down, a synthetic event) while a request is already in flight is
+  // ignored outright rather than starting an overlapping request.
+  if (!selectedFile || isAnalyzing()) return;
   void analyze(selectedFile, checkRevocation.checked);
 });
 
 async function analyze(file, wantsRevocationCheck) {
+  const controller = new AbortController();
+  inFlightAnalysis = controller;
   setLoading(true);
   clearError();
   hideResults();
@@ -187,9 +217,11 @@ async function analyze(file, wantsRevocationCheck) {
 
   let response;
   try {
-    response = await fetch(url, { method: "POST", body: formData });
-  } catch {
+    response = await fetch(url, { method: "POST", body: formData, signal: controller.signal });
+  } catch (error) {
+    inFlightAnalysis = null;
     setLoading(false);
+    if (error?.name === "AbortError") return;
     showError("No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.");
     return;
   }
@@ -201,6 +233,7 @@ async function analyze(file, wantsRevocationCheck) {
     payload = null;
   }
 
+  inFlightAnalysis = null;
   setLoading(false);
 
   if (!response.ok) {
@@ -208,8 +241,36 @@ async function analyze(file, wantsRevocationCheck) {
     return;
   }
 
+  if (!isValidReportPayload(payload)) {
+    showError("El servidor devolvió una respuesta inesperada. Inténtalo de nuevo más tarde.");
+    return;
+  }
+
   lastReport = payload;
   renderReport(payload);
+}
+
+/**
+ * Minimal structural check on a successful (2xx) response body before
+ * handing it to the renderers, which assume the report's shape and would
+ * otherwise throw on a missing/malformed field (e.g. a proxy returning an
+ * unexpected 200, or a truncated response `fetch` still resolved as "ok").
+ */
+function isValidReportPayload(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      typeof payload.overallVerdict === "string" &&
+      Array.isArray(payload.signatures) &&
+      payload.hashes &&
+      typeof payload.hashes === "object" &&
+      payload.structure &&
+      typeof payload.structure === "object" &&
+      payload.security &&
+      typeof payload.security === "object" &&
+      payload.pdfa &&
+      typeof payload.pdfa === "object",
+  );
 }
 
 function setLoading(isLoading) {
@@ -253,6 +314,7 @@ const VERDICT_TEXT = {
   NOT_ADMITTED: { label: "Firma no admitida", icon: "warning", cssClass: "verdict-not-admitted" },
   INVALID: { label: "Firma inválida", icon: "cross", cssClass: "verdict-invalid" },
   NO_SIGNATURES: { label: "Documento sin firmas", icon: "info", cssClass: "verdict-none" },
+  ANALYSIS_INCOMPLETE: { label: "Análisis incompleto", icon: "warning", cssClass: "verdict-incomplete" },
 };
 
 const SIGNATURE_VERDICT_BADGE = {
@@ -265,6 +327,7 @@ const REASON_TEXT = {
   SIGNATURE_INVALID: "La firma criptográfica no es válida.",
   SIGNATURE_FORMAT_UNSUPPORTED: "El formato de firma no está soportado por este servicio.",
   MODIFIED_AFTER_LAST_SIGNATURE: "El documento se modificó después de esta firma y ninguna firma posterior cubre el contenido final.",
+  MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY: "El documento cambió después de esta firma y la firma posterior que cubre el contenido final no es de confianza.",
   COVERED_BY_LATER_SIGNATURE: "El documento cambió después de esta firma, pero una firma posterior válida cubre el contenido final (flujo normal de varias firmas).",
   CHAIN_UNTRUSTED_ROOT: "La cadena de certificados no llega a una entidad de confianza reconocida.",
   CHAIN_INCOMPLETE: "Falta al menos un certificado intermedio en la cadena de confianza.",
@@ -364,6 +427,9 @@ function verdictBodyText(report) {
   if (report.overallVerdict === "NO_SIGNATURES") {
     return "Este documento no contiene ninguna firma electrónica.";
   }
+  if (report.overallVerdict === "ANALYSIS_INCOMPLETE") {
+    return "No se ha podido completar el análisis de firmas.";
+  }
   const count = report.signatures.length;
   const plural = count === 1 ? "firma" : "firmas";
   let text = `Se ${count === 1 ? "ha analizado" : "han analizado"} ${count} ${plural}.`;
@@ -403,7 +469,10 @@ function renderSignatures(report) {
   if (!report.signatures || report.signatures.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "Este documento no contiene firmas electrónicas.";
+    empty.textContent =
+      report.overallVerdict === "ANALYSIS_INCOMPLETE"
+        ? "No se ha podido completar el análisis de firmas."
+        : "Este documento no contiene firmas electrónicas.";
     signaturesList.appendChild(empty);
     return;
   }

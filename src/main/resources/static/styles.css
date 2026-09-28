@@ -570,6 +570,13 @@ a { color: var(--color-accent); }
   color: var(--color-neutral-text);
 }
 
+.verdict-banner.verdict-incomplete {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+.verdict-banner.verdict-incomplete .verdict-icon { color: var(--color-warning-icon); }
+
 /* ---------------------------------------------------------------------
    Section errors
    ------------------------------------------------------------------- */
