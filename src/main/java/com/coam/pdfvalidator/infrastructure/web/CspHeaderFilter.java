@@ -47,8 +47,26 @@ public final class CspHeaderFilter extends OncePerRequestFilter {
 
     private static final Set<String> PROTECTED_PATHS = Set.of("/", "/index.html", "/app.js", "/styles.css");
 
+    // T11b: the "Firmar" screen loads the vendored AutoScript library
+    // (script-src 'self', same-origin, no change needed there) to talk to
+    // the user's local AutoFirma installation. Verified directly against
+    // the AutoScript 1.10.1 source (never guessed): its WebSocket client
+    // connects to "wss://127.0.0.1:<port>" and its HTTP-polling fallback
+    // (older browsers) to "https://127.0.0.1:<port>" -- both on a
+    // dynamically chosen port, never a fixed one, hence the "*" wildcard;
+    // it never uses "localhost" or any other host. On launch it navigates
+    // to a custom "afirma://" URL, either as a top-level redirect (Chrome,
+    // Edge -- not restricted by any of these directives) or, on Firefox and
+    // Safari, through a tiny hidden iframe, which needs its own frame-src
+    // entry (default-src alone does not permit a non-'self' iframe target).
+    // Neither of these needed 'unsafe-eval' nor 'unsafe-inline' for
+    // scripts: the library is a fully self-hosted external file (no inline
+    // <script>), never calls eval()/Function(), and this project disables
+    // its own inline-styled support dialog (SupportDialog.enableSupportDialog
+    // (false), see sign.js) instead of loosening style-src for it.
     private static final String POLICY = "default-src 'self'; img-src 'self' data:; style-src 'self'; "
-            + "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+            + "script-src 'self'; connect-src 'self' wss://127.0.0.1:* https://127.0.0.1:*; "
+            + "frame-src 'self' afirma:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)

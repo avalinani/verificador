@@ -27,7 +27,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class StaticContentSecurityTest {
 
     private static final String EXPECTED_CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; "
-            + "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+            + "script-src 'self'; connect-src 'self' wss://127.0.0.1:* https://127.0.0.1:*; "
+            + "frame-src 'self' afirma:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
     @Autowired
     private MockMvc mockMvc;
@@ -80,6 +81,21 @@ class StaticContentSecurityTest {
     @Test
     void theAnalyzeApiEndpointIsNotAffectedByTheContentSecurityPolicy() throws Exception {
         mockMvc.perform(post("/api/v1/pdf/analyze"))
+                .andExpect(header().doesNotExist("Content-Security-Policy"));
+    }
+
+    /**
+     * T11b: the vendored AutoScript library (loaded by the Firmar screen via
+     * a same-origin {@code <script>} tag) must be reachable as a plain
+     * static resource. It is intentionally outside {@link CspHeaderFilter}'s
+     * exact-path allow-list -- a sub-resource's own response does not need
+     * to carry the page's CSP header for {@code script-src 'self'} to permit
+     * loading it, only the four protected paths above do.
+     */
+    @Test
+    void theVendoredAutoScriptLibraryIsServedButNotAffectedByTheContentSecurityPolicy() throws Exception {
+        mockMvc.perform(get("/vendor/autofirma/autoscript.js"))
+                .andExpect(status().isOk())
                 .andExpect(header().doesNotExist("Content-Security-Policy"));
     }
 }
