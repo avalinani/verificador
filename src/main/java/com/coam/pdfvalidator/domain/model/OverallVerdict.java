@@ -11,5 +11,13 @@ public enum OverallVerdict {
     NOT_ADMITTED,
     INVALID,
     /** The document has no signatures at all (not itself a validity problem). */
-    NO_SIGNATURES
+    NO_SIGNATURES,
+    /**
+     * Signature analysis itself failed unexpectedly (T11c; see {@link
+     * PdfAnalysisReport#sectionErrors()} for the {@code SIGNATURES} entry) --
+     * never used together with an empty {@link
+     * PdfAnalysisReport#signatures()} list to mean "legitimately unsigned",
+     * which is what {@link #NO_SIGNATURES} is reserved for.
+     */
+    ANALYSIS_INCOMPLETE
 }

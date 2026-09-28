@@ -46,16 +46,24 @@ public record PdfAnalysisReport(
 
     /**
      * The document-level summary verdict (T11): the worst of every {@link
-     * SignatureReport#verdict()} in {@link #signatures()}, or {@link
-     * OverallVerdict#NO_SIGNATURES} for an unsigned document. Computed
+     * SignatureReport#verdict()} in {@link #signatures()}, {@link
+     * OverallVerdict#NO_SIGNATURES} for a legitimately unsigned document, or
+     * (T11c) {@link OverallVerdict#ANALYSIS_INCOMPLETE} when the {@code
+     * SIGNATURES} section itself failed ({@link #sectionErrors()}) -- an
+     * empty {@link #signatures()} list caused by that failure must never be
+     * indistinguishable from "this document legitimately has no signatures",
+     * the same reasoning {@link SectionError} already exists for. Computed
      * on demand rather than stored as its own record component -- unlike
      * {@code pageCount} on {@link DocumentStructure}, this value is never
      * independently constructed or deserialized, only ever derived from
-     * {@code signatures}, so storing it separately would only add a way for
-     * the two to drift out of sync without ever needing to round-trip on
-     * its own.
+     * {@code signatures}/{@code sectionErrors}, so storing it separately
+     * would only add a way for the two to drift out of sync without ever
+     * needing to round-trip on its own.
      */
     public OverallVerdict overallVerdict() {
+        if (sectionErrors.stream().anyMatch(error -> error.section() == AnalysisSection.SIGNATURES)) {
+            return OverallVerdict.ANALYSIS_INCOMPLETE;
+        }
         return SignatureVerdictPolicy.overallVerdict(signatures);
     }
 

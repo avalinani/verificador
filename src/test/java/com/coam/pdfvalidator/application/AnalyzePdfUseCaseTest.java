@@ -638,6 +638,11 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.sectionErrors().get(0).message())
                 .doesNotContain("BC blew up")
                 .contains("signature verification failed unexpectedly");
+        // T11c: an empty signatures list caused by the verifier itself
+        // blowing up must not look like a legitimately unsigned document
+        // (OverallVerdict.NO_SIGNATURES) -- the analysis is incomplete, not
+        // conclusively "no signatures".
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.ANALYSIS_INCOMPLETE);
     }
 
     @Test
