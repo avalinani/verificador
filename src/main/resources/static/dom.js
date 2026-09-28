@@ -21,11 +21,42 @@ export const tabFirmar = document.getElementById("tab-firmar");
 export const uploadPanel = document.getElementById("upload-panel");
 export const firmarPanel = document.getElementById("firmar-panel");
 export const resultsPanel = document.getElementById("results-panel");
+export const resultsHeading = document.getElementById("results-heading");
 export const verdictBanner = document.getElementById("verdict-banner");
 export const sectionErrorsEl = document.getElementById("section-errors");
 export const signaturesList = document.getElementById("signatures-list");
 export const documentDetails = document.getElementById("document-details");
 export const downloadJsonButton = document.getElementById("download-json");
+
+// ---------------------------------------------------------------------
+// Tab switching (shared by app.js's own tab buttons and, since T11e, the
+// Firmar screen's "Validar este PDF" button, which needs to bring the
+// Validar tab to the front before the analysis result renders into it --
+// see sign.js).
+// ---------------------------------------------------------------------
+
+/**
+ * Switches the visible top-level tab. Does not know about AutoScript lazy
+ * init (app.js's own tab-click handler still calls `ensureAutoScriptReady`
+ * itself when switching *to* Firmar) so this module never has to import
+ * from sign.js, keeping dom.js a leaf module.
+ */
+export function switchTab(tab) {
+  const isValidar = tab === "validar";
+  uploadPanel.hidden = !isValidar;
+  firmarPanel.hidden = isValidar;
+  resultsPanel.hidden = true;
+
+  tabValidar.classList.toggle("is-active", isValidar);
+  tabFirmar.classList.toggle("is-active", !isValidar);
+  if (isValidar) {
+    tabValidar.setAttribute("aria-current", "page");
+    tabFirmar.removeAttribute("aria-current");
+  } else {
+    tabFirmar.setAttribute("aria-current", "page");
+    tabValidar.removeAttribute("aria-current");
+  }
+}
 
 // ---------------------------------------------------------------------
 // Theme

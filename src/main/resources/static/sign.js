@@ -33,6 +33,9 @@ import {
   fileToBase64,
   base64ToBlob,
   downloadBlob,
+  switchTab,
+  resultsHeading,
+  resultsPanel,
   MAX_FILE_SIZE_BYTES,
 } from "./dom.js";
 import { analyzeFile, isAnalyzing } from "./validate.js";
@@ -247,7 +250,17 @@ function onSignSuccess(generation, originalFile, signatureB64) {
   inFlightGeneration = null;
   setWaiting(false);
 
-  signedBlob = base64ToBlob(signatureB64, "application/pdf");
+  // Guard against a malformed/empty payload (unexpected AutoScript response,
+  // truncated WebSocket message, ...): base64ToBlob's atob()/replace() calls
+  // throw on invalid input, which must never surface as an uncaught
+  // exception -- it becomes a normal Spanish error state instead.
+  try {
+    signedBlob = base64ToBlob(signatureB64, "application/pdf");
+  } catch {
+    signedBlob = null;
+    showError("AutoFirma devolvió una respuesta que no se pudo interpretar. Inténtalo de nuevo.");
+    return;
+  }
   signedFileName = signedFileNameFor(originalFile.name);
   resultMessage.textContent = "El documento se ha firmado correctamente con tu certificado.";
   resultPanel.hidden = false;
@@ -274,6 +287,17 @@ function signedFileNameFor(originalName) {
  * (`es.gob.afirma.signers.pades.common.PdfExtraParams.SIGN_REASON`,
  * confirmed in the same official repository). No other extraParams key is
  * set, so the signature stays invisible (the default).
+ *
+ * Non-ASCII "motivo" (T11e): a plain JS string with tildes/ñ/em dash etc. is
+ * passed through as-is here, deliberately -- verified directly in the
+ * vendored `autoscript.js` (`Base64.encode`, `~line 5728`) that it always
+ * runs its input through `_utf8_encode` (`~line 5862`, a standard UTF-8
+ * byte-encoder) before base64-encoding it, for every `extraParams` call site
+ * in the file (`configureExtraParams`, `~line 5373`, is the one `sign()`
+ * uses). There is no separate escaping/encoding convention for Unicode in
+ * this library's public API, so re-encoding the string ourselves before
+ * handing it to `AutoScript.sign` would double-encode it and corrupt
+ * accented characters instead of preserving them.
  */
 function buildExtraParams(reason) {
   const trimmed = (reason || "").trim();
@@ -338,7 +362,24 @@ downloadButton.addEventListener("click", () => {
 validateButton.addEventListener("click", () => {
   if (!signedBlob || isAnalyzing()) return;
   const signedFile = new File([signedBlob], signedFileName, { type: "application/pdf" });
-  void analyzeFile(signedFile, false);
+  // T11e: analyzeFile() renders into the shared #results-panel, but that
+  // panel sits under the Validar tab -- without switching there first, the
+  // result would render invisibly behind the still-active Firmar panel.
+  // Moving focus to the results heading (and scrolling it into view) makes
+  // the "Validar este PDF" outcome noticeable for both sighted and
+  // keyboard/screen-reader users; the verdict banner's own
+  // `aria-live="polite"` (index.html) announces the actual result text once
+  // renderReport() fills it in.
+  switchTab("validar");
+  void analyzeFile(signedFile, false).then(() => {
+    // On failure resultsPanel stays hidden (analyzeFile's own error path);
+    // the now-visible Validar error banner (role="alert", aria-live) already
+    // announces itself, so there is nothing focusable to move to here.
+    if (resultsPanel.hidden) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    resultsHeading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    resultsHeading.focus();
+  });
 });
 
 // ---------------------------------------------------------------------
