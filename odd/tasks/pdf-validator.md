@@ -548,5 +548,8 @@ Living README updated (`README.md`): trust store table (two new FNMT rows), a ne
 
 - Parent spot check: `./mvnw -B verify` re-run → 211/211, BUILD SUCCESS; `git status --porcelain` clean except this task-file update.
 
+- Parent verification: the 4 TSL-sourced anchors (FNMT Usuarios, FNMT Componentes Informáticos, Camerfirma Legal Persons 2016, DNIe 2 root) re-checked by SHA-256 against a fresh download of https://tsl.digital.gob.es/TSL.xml (all present); `./mvnw -B verify` → 211/211. Review (RDD, medium; 13 files, 473 lines, base 77e102c): auto-granted, approved and acknowledged. Remaining advisories (test-only) folded into T10: ByteRange null-message fallback untested; signed-attributes mislabeled-digest variant lacks a tampered negative; upload-500 test should assert the cause is the IOException path.
+- PR #6 retargeted to master after #5 merged (2026-09-28).
+
 ## Next step
 T10 RevocationChecker (OCSP/CRL). Optional backlog: T14 TSL auto-load; PR hygiene for the stacked PRs (#5, #6, and this branch) remains pending.
