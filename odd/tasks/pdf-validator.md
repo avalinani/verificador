@@ -30,7 +30,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - [ ] T09 REST controller, DTOs, ProblemDetail, springdoc, MockMvc + real-PDF integration tests
 - [x] T10 RevocationChecker OCSP/CRL (WireMock) — route: delegated direct (writer trigger: ~15 new/changed infrastructure/domain/application files + fixtures + new test files; broad reading across BC OCSP/CRL APIs and JDK HttpClient to design the SSRF-safe transport)
 - [ ] T11 Static UI — "Validar" screen (index.html, app.js, styles.css)
-- [ ] T11b "Firmar" screen with AutoFirma (user decision 2026-09-27): upload PDF → AutoScript.js invokes the user's local AutoFirma via WebSocket (desktop only, no intermediate storage/retrieve server) → PAdES signature with the user's own certificate (private key never leaves the client) → download signed PDF → one-click "Validar este PDF" through our API. Clear message + official download link when AutoFirma is not installed/reachable. Before bundling AutoScript.js (ctt-gob-es/clienteafirma) verify its license is compatible with GPL-3.0.
+- [x] T11b "Firmar" screen with AutoFirma (user decision 2026-09-27): upload PDF → AutoScript.js invokes the user's local AutoFirma via WebSocket (desktop only, no intermediate storage/retrieve server) → PAdES signature with the user's own certificate (private key never leaves the client) → download signed PDF → one-click "Validar este PDF" through our API. Clear message + official download link when AutoFirma is not installed/reachable. Before bundling AutoScript.js (ctt-gob-es/clienteafirma) verify its license is compatible with GPL-3.0. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/sign-ui`
 - [ ] T12 Dockerfile, docker-compose, memory check, VM deploy, Actuator
 - [ ] T13 README (all TFM sections + slides URL), slides, JaCoCo
 
@@ -696,5 +696,68 @@ Parent spot check: `./mvnw -B verify` re-run → 307/307, `BUILD SUCCESS`; both 
 
 - Parent verification (T11c): `./mvnw -B verify` → 307/307; no short-circuits. Review of the pending range (base ed5e2e2 = T11 block C + T11c, 833 lines): auto-granted, **approved** and acknowledged. Minor advisories → T11d: test the UTF-8 charset header explicitly; make the API negative CSP test assert the exact header absence per path; CSP path matching by exact match instead of substring; align the `SignatureVerdictPolicy` Javadoc structural claim (~141-158) with the implementation. Also pending user decision: optional visual polish for the impeccable "monotonous spacing" hint in index.html.
 
+## Progress / Evidence (T11b)
+
+Executed directly by a single writer agent (no sub-delegation), per this task's explicit instruction, on branch `feat/sign-ui` (branched from `feat/validate-ui`).
+
+### Authorized download and integrity verification
+
+Downloaded exactly the authorized files from `github.com/ctt-gob-es/clienteafirma` (branch `master`), nothing else:
+- `afirma-ui-miniapplet-deploy/src/main/webapp/js/autoscript.js`: 255151 bytes (`wc -c`), git blob SHA-1 `dc9401987c4cd6834cefbb68ec1adee038557f5b` (`git hash-object`), `AutoScript.VERSION` = `"1.10.1"` — all three matched the expected values exactly before anything was committed.
+- `license/LICENSE.txt`, `license/gpl-2.0.txt`, `license/EUPL v.1.1.pdf` (saved as `EUPL-v1.1.pdf`).
+- Also read (not bundled): the repository's root `README.md` (module list, no JS API detail) and, to confirm the exact `extraParams` property name for "motivo de la firma", `afirma-crypto-pdf-common/src/main/java/es/gob/afirma/signers/pades/common/PdfExtraParams.java` (`SIGN_REASON = "signReason"`) — read-only, within the task's "read the official integration docs... to use the API correctly" allowance, never downloaded/bundled.
+
+### Reading the AutoScript source before writing any integration code
+
+Before writing `sign.js`, read the relevant parts of `autoscript.js` directly (not assumed/guessed) to answer every open question the task raised:
+- **`setForceWSMode`'s name is misleading.** `cargarAppAfirma()`: `if (forceWSMode || Platform.isIOS() || Platform.isAndroid()) { clienteFirma = new AppAfirmaJSWebService(...) }` — that branch is the **intermediate web-service** transport (needs `storageServletAddress`/`retrieverServletAddress`, exactly what this task says to avoid), not WebSocket mode. The real WebSocket branch (`AppAfirmaWebSocketClient`) is the `else if (isWebSocketsSupported() && !isInternetExplorer() && !isFirefox60orLower())` branch, taken automatically when `forceWSMode` is left `false`. Decision: never call `setForceWSMode(true)`.
+- **Transport hosts/ports** (`AppAfirmaWebSocketClient`, `~line 2051`): `SERVER_HOST = "127.0.0.1"`, `URL_REQUEST_PREFIX = "wss://127.0.0.1:"` — connects to a dynamically-chosen port (never fixed), never `localhost`. The older-browser fallback (`AppAfirmaJSSocket`, `~line 3006`) uses `https://127.0.0.1:<port>` polling instead. Neither ever appears with `localhost` anywhere in the file (checked with `grep`).
+- **Native app launch**: `openNativeApp` builds `afirma://websocket?ports=...&v=...&jvc=...&idsession=...` and calls `openUrl(url)`, which does `document.location = url` (top-level redirect, unaffected by CSP `frame-src`/`default-src`) on Chrome/Edge (`Platform.isChrome()` matches `CHROME/`/`CHROMIUM`, which Chromium-based Edge's UA also contains), or opens a 1x1 hidden `<iframe src="afirma://...">` (`openUrlWithIframe`) on Firefox/Safari — the latter needs an explicit `frame-src` CSP entry.
+- **`sign()` call shape**: `AutoScript.sign(dataB64, algorithm, format, extraParams, successCallback, errorCallback)`; `extraParams` is a plain Java-Properties-formatted string (`configureExtraParams`: `Base64.encode(extraParams)` as-is, no object-to-string conversion) — confirmed the `signReason` property name against the official repository's own `PdfExtraParams` class (see above).
+- **Success/error callback shapes**: `processSignResponse` calls `successCallback(signature, certificate, extraInfo)` (only `signature`, a base64 string, is used here); `processErrorResponse`/error paths call `errorCallback(exceptionType, errorMessage, errorCode)`. Verified the exact codes used: `AS500001` (`CANCELLED_OP`) for user cancellation, `AS620017`/`AS620020`/`AS620025` for "could not reach AutoFirma after the retry budget" (`es.gob.afirma.standalone.ApplicationNotFoundException`, `AUTOFIRMA_CONNECTION_RETRIES=15` × `AUTOFIRMA_LAUNCHING_TIME=2000ms` + an initial 3000ms wait ≈ 33s total).
+- **`SupportDialog`**: a top-level `var SupportDialog` (global, alongside `AutoScript`) exposing `enableSupportDialog(isEnabled)`. `cargarAppAfirma()` calls `loadSupportDialogStyles()` (only if `Dialog.isEnabled()`, default `true`), which injects a `<style>` element via `document.createElement("style"); styleSheet.innerText = styles;` — inline style, which a strict `style-src 'self'` (no `'unsafe-inline'`) would leave unapplied. Decision: call `SupportDialog.enableSupportDialog(false)` before `cargarAppAfirma()`, avoiding the need to loosen `style-src` at all, and avoiding a duplicate waiting/error UI on top of this screen's own.
+- **No `eval()`/`Function()`/inline `onclick` anywhere in the file** (checked with `grep`) — confirms `script-src 'self'` needs no `'unsafe-eval'`/`'unsafe-inline'` addition.
+
+### Licensing decision (executed exactly as pre-approved)
+
+`autoscript.js` vendored unmodified at `src/main/resources/static/vendor/autofirma/autoscript.js`, alongside `LICENSE.txt`, `gpl-2.0.txt`, `EUPL-v1.1.pdf` and a new `NOTICE.md` (component, version, source URL, blob SHA, date, licenses, "unmodified; loaded as an independent script and used only through its public API"). Added `.gitattributes` rule (`src/main/resources/static/vendor/autofirma/* -text`) after noticing Git's `autocrlf=true` warned about normalizing the file on checkout — verified the committed blob SHA still matches the expected value exactly (`git rev-parse HEAD:.../autoscript.js` == `git hash-object` on the working copy == the expected upstream SHA) before and after adding the attribute. README §13 documents the full reasoning (reasoned aggregation, not a derivative work; explicitly not a legal opinion), per the task's instruction.
+
+### Backend (TDD, strict)
+
+- **CSP policy**: RED — updated `StaticContentSecurityTest`'s expected CSP string first (adding `connect-src`/`frame-src`) and added a new test asserting `/vendor/autofirma/autoscript.js` is served (`200`) without the CSP header; ran `./mvnw -q -B -Dtest=StaticContentSecurityTest test` → 4 failures (exact string mismatch on `/`, `/index.html`, `/app.js`, `/styles.css`), the new vendor-path test passed trivially (static resource already present from the vendoring step). GREEN — updated `CspHeaderFilter.POLICY` to add `connect-src 'self' wss://127.0.0.1:* https://127.0.0.1:*; frame-src 'self' afirma:;`: `./mvnw -q -B -Dtest=StaticContentSecurityTest,CspHeaderFilterTest test` → 7/7 and 4/4.
+- No other Java changes: the Firmar screen is served by the same `index.html`/CSP-protected paths as Validar (single-page, tabbed UI — chosen over a separate `firmar.html` specifically to reuse the header/theme/CSP scope and, on the frontend, `render.js`).
+
+### Frontend
+
+- **Modules** (`src/main/resources/static/`): `dom.js` (shared element refs, theme, formatting, SVG icons, PDF magic-byte check, base64/Blob helpers), `render.js` (report rendering, moved from the old `app.js` verbatim), `validate.js` (the Validar screen; exports `analyzeFile`/`isAnalyzing` for reuse), `sign.js` (the Firmar screen), `app.js` (slim entry: theme init + tab switching).
+- **`index.html`**: second tab enabled (was `disabled` with a "próximamente" badge); new Firmar panel (privacy note, dropzone, file chip, optional "Motivo de la firma" field, submit button, waiting/cancel panel, error banner, success panel with "Descargar PDF firmado"/"Validar este PDF"); vendor `<script>` tag added before the module `<script>` tag (classic script, so `window.AutoScript`/`SupportDialog` exist before the deferred module runs).
+- **`styles.css`**: reused every existing class (`.dropzone`, `.file-chip`, `.button`, `.status-line`, `.error-banner`, ...) unchanged; added a handful of new, narrowly-scoped classes for elements with no prior equivalent (`.privacy-note`, `.field`/`.field-label`/`.field-help`/`.text-input`, `.waiting-panel`, `.sign-result`/`.sign-result-actions`).
+- **Security**: `hasPdfMagicBytes` (checks the first 5 bytes for `%PDF-`, independent of the extension/MIME check) gates file selection on the Firmar screen, since the file never reaches the server for that check on this flow. Every string rendered on the Firmar screen is either developer-authored (Spanish copy, error messages) or already covered by `render.js`'s existing `textContent`-only convention for "Validar este PDF"'s result — no new `innerHTML` use (`grep -n innerHTML src/main/resources/static/*.js` → unchanged, exactly the one pre-existing icon-table line in `dom.js`).
+- **Cancel semantics**: since AutoScript has no API to abort an in-flight native call, a monotonically increasing generation counter is bumped on cancel; the eventual success/error callback (if AutoFirma ever answers) checks it and becomes a no-op if superseded.
+
+### Manual verification (Chrome DevTools MCP, no delegation)
+
+Built the jar, generated a throwaway signed-and-timestamped fixture (`TestPdfFactory.signedWithTimestamp()`, classpath run, written only to a `target/gen/` scratch directory, deleted afterward, never committed), ran it on port 8081 (8080 occupied by an unrelated pre-existing process, same situation as prior tasks' manual runs).
+
+- Firmar tab opens with no console errors; full-page screenshot confirmed layout, tokens and spacing consistent with the Validar screen.
+- Selecting the fixture PDF: async magic-byte check passed, file chip rendered, "Firmar PDF" enabled.
+- Clicking "Firmar PDF": waiting state appeared immediately ("Esperando a AutoFirma... elige tu certificado en la ventana de AutoFirma." + "Cancelar"), console showed `AutoScript.cargarAppAfirma()` correctly chose the WebSocket client (`"Tratamos de conectar con el cliente a traves de WebSockets en los puertos ..."`) and attempted `wss://127.0.0.1:<port>` for three candidate ports — all three rejected by the OS with `net::ERR_CONNECTION_REFUSED` (AutoFirma is not installed on this machine), **never** by CSP (no CSP violation reported anywhere), confirming the `connect-src` addition is both necessary and sufficient. After the retry budget was exhausted (~33s), the button/dropzone re-enabled and the exact expected Spanish message appeared: "No se pudo conectar con AutoFirma. Comprueba que está instalado y en ejecución en este equipo, y vuelve a intentarlo. Si no lo tienes instalado, descárgalo desde https://firmaelectronica.gob.es/Home/Descargas.html."
+- "Cancelar" (verified via a direct DOM `.click()` through `evaluate_script`, after the MCP `click` tool's coordinate-based clicks intermittently missed this specific button in this session — a tooling quirk, not a product defect, cross-checked with `form.requestSubmit()` which reliably re-triggered the same flow): waiting panel hid, button re-enabled, "Has cancelado la operación de firma." shown.
+- **Gotcha found and documented (not a bug, no code change)**: triggering `sign()` through a script-only call (`form.requestSubmit()`, no real user gesture) hit Chrome's own "Not allowed to launch 'afirma://...' because a user gesture is required" console error — confirming Chrome gates the `afirma://` navigation on a genuine user gesture. The **real, click-tool-driven** attempt (a trusted synthetic gesture) launched it without that error, so this only affects script-triggered calls, never an actual user clicking "Firmar PDF".
+- Tab switching (Validar ⇄ Firmar) and the dark theme toggle verified unaffected (screenshot taken in dark mode on the Validar tab).
+- No console errors at any point (`list_console_messages`); no real signature was attempted with any certificate. Stopped the app (`taskkill`) and deleted the throwaway fixture/classpath build directory afterward.
+
+### Verify (T11b, full suite)
+
+- `./mvnw -B verify` → `BUILD SUCCESS`, `Tests run: 308, Failures: 0, Errors: 0, Skipped: 0` (307 → 308: +1 `StaticContentSecurityTest`, the vendor-path test).
+- `grep -rnE "DELIBERATE|if \(true\)|if \(false|false &&|true \|\|" src/main/java` → no output.
+- `git hash-object src/main/resources/static/vendor/autofirma/autoscript.js` → `dc9401987c4cd6834cefbb68ec1adee038557f5b` (expected, unmodified).
+- `grep -n "innerHTML" src/main/resources/static/*.js` (our files only) → exactly the pre-existing icon-table line in `dom.js`, no new occurrence.
+- Manual check: see above.
+
+Living README updated (`README.md`): new §2.14 (Firmar screen), new §13 (Componentes de terceros); stack table, project tree, functionality table, tests table, decisions (§10) and change history (§11) updated for T11b. Test count 307 → 308.
+
+Commits (`feat/sign-ui`): `a93a704` build: vendor the official AutoScript library as a separate third-party component; `018a841` fix: pin vendored AutoScript files against line-ending normalization; `0146763` fix: allow local AutoFirma WebSocket in the UI content security policy; `7c35b60` feat: add Firmar screen signing PDFs with AutoFirma; `a77ef78` docs: document the Firmar screen and third-party components.
+
 ## Next step
-T11b "Firmar" (AutoFirma), T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
+T11d (align `SignatureVerdictPolicy` Javadoc + CSP exact-match/charset-header advisories from T11c), T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
