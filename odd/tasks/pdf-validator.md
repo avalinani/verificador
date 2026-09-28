@@ -759,5 +759,8 @@ Living README updated (`README.md`): new §2.14 (Firmar screen), new §13 (Compo
 
 Commits (`feat/sign-ui`): `a93a704` build: vendor the official AutoScript library as a separate third-party component; `018a841` fix: pin vendored AutoScript files against line-ending normalization; `0146763` fix: allow local AutoFirma WebSocket in the UI content security policy; `7c35b60` feat: add Firmar screen signing PDFs with AutoFirma; `a77ef78` docs: document the Firmar screen and third-party components.
 
+- Parent verification (T11b): `./mvnw -B verify` → 308/308; vendored `autoscript.js` blob sha `dc9401987c4cd6834cefbb68ec1adee038557f5b` = official 1.10.1 (unmodified); no short-circuits; CSP adds only `connect-src wss://127.0.0.1:* https://127.0.0.1:*` and `frame-src afirma:` (no unsafe-eval/unsafe-inline). Review: the vendored third-party commit (a93a704, 6,595 unmodified lines verified by hash) was excluded from line review; the rest (base a93a704, 2,520 lines) auto-granted and **approved**.
+- [ ] T11e UI polish + review follow-ups (next): impeccable "monotonous spacing" hint (clear rhythm: tight within groups, generous between sections); sign.js advisories — a late response after cancel could be routed to a new signing attempt (use a per-attempt token), non-ASCII "motivo" handling in extraParams, guard base64 decode of the success payload, make "Validar este PDF" feedback visible (switch to the Validar view/scroll and announce via aria-live); plus T11d minor test/doc advisories.
+
 ## Next step
 T11d (align `SignatureVerdictPolicy` Javadoc + CSP exact-match/charset-header advisories from T11c), T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
