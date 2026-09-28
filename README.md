@@ -31,15 +31,16 @@
 - **Revocación** (OCSP / CRL) como comprobación opcional y acotada.
 - **Conformidad PDF/A-1b** mediante el módulo oficial *preflight* de Apache PDFBox.
 - **Propiedades físicas**: versión, número de páginas, rotación y dimensiones por página, cifrado y permisos.
+- **Veredicto general por firma** (✅/⚠️/❌) que resume integridad + cadena + revocación en una sola conclusión, con sus motivos explícitos (§2.13).
 
-El servicio no guarda los documentos analizados: es **sin estado** y sin base de datos.
+El servicio no guarda los documentos analizados: es **sin estado** y sin base de datos. Además de la API REST/Swagger UI, incluye una interfaz web estática ("Validar", §2.13) sin frameworks ni dependencias externas.
 
 ## 2. Cómo funciona
 
 ### 2.1 Flujo de análisis (objetivo)
 
 ```
-Cliente (UI ⏳ o Swagger UI ✅)
+Cliente (interfaz web "Validar" ✅ o Swagger UI ✅)
    │  POST /api/v1/pdf/analyze  (multipart, PDF ≤ 20 MB)          ✅
    ▼
 api ──► application: AnalyzePdfUseCase                           ✅
@@ -48,12 +49,13 @@ api ──► application: AnalyzePdfUseCase                           ✅
             ├─► PdfDocumentReader         estructura, páginas, permisos, XMP  ✅
             ├─► SignatureVerifier         /ByteRange + CMS + RFC 3161       ✅
             ├─► CertificateChainValidator PKIX contra trust store            ✅
-            ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳ (NoOp por ahora, T10)
-            └─► PdfaConformanceValidator  preflight PDF/A-1b                 ✅
+            ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ✅
+            ├─► PdfaConformanceValidator  preflight PDF/A-1b                 ✅
+            └─► SignatureVerdictPolicy    veredicto por firma + global (§2.13) ✅
    ◄── PdfAnalysisReportDto (JSON) / ProblemDetail (error)
 ```
 
-La capa `api` (controlador REST, DTOs explícitos, mapeador, gestión de errores con `ProblemDetail`) ya existe (T09), cableada sobre `AnalyzePdfUseCase` mediante Spring (`infrastructure/config` + la raíz `com.coam.pdfvalidator`, ver §2.11); `AnalyzePdfUseCase` está cubierto por tests de unidad, un test de integración con adaptadores reales, tests de la capa `api` (slice de controlador, mapeador, un test end-to-end completo) y por las reglas de arquitectura de ArchUnit (§2.9, §2.10). Falta la interfaz web (⏳, T11).
+La capa `api` (controlador REST, DTOs explícitos, mapeador, gestión de errores con `ProblemDetail`) ya existe (T09), cableada sobre `AnalyzePdfUseCase` mediante Spring (`infrastructure/config` + la raíz `com.coam.pdfvalidator`, ver §2.11); `AnalyzePdfUseCase` está cubierto por tests de unidad, un test de integración con adaptadores reales, tests de la capa `api` (slice de controlador, mapeador, un test end-to-end completo) y por las reglas de arquitectura de ArchUnit (§2.9, §2.10). La interfaz web ("Validar") consume este mismo endpoint (§2.13); la pantalla "Firmar" (AutoFirma) está planificada (⏳, T11b).
 
 ### 2.2 Cómo se detecta que un documento ha cambiado después de firmarse
 
@@ -127,6 +129,8 @@ El núcleo del sistema (`domain/`) es Java puro: no importa Spring, PDFBox ni Bo
 | Sello de tiempo | `TimestampInfo` | `genTime`, `tsaName`, `imprintValid`, `signatureValid`, certificado de la TSA y una nota opcional; `absent()` cuando no hay sello |
 | Cadena y revocación | `ChainStatus`, `RevocationStatus` | Empiezan como `NOT_CHECKED` y se completan más tarde; `ChainStatus` ya lo calcula `PkixCertificateChainValidator` (§2.7) |
 | Error de sección **(T08b)** | `SectionError`, `AnalysisSection` | Cuando una sección guardada (`PDFA`, `SIGNATURES`) falla de forma inesperada, `PdfAnalysisReport.sectionErrors()` lo informa explícitamente, para que una lista de firmas vacía por ese motivo nunca sea indistinguible de "este documento no tiene firmas" |
+| Veredicto por firma **(T11)** | `SignatureVerdict` (`SignatureReport.verdict()`/`verdictReasons()`) | `VALID`/`NOT_ADMITTED`/`INVALID`, calculado por la política pura `domain/policy/SignatureVerdictPolicy` (§2.13); empieza en `NOT_ADMITTED` (marcador seguro) hasta que la pasada final del caso de uso lo calcula de verdad |
+| Veredicto del documento **(T11)** | `OverallVerdict` (`PdfAnalysisReport.overallVerdict()`) | El peor veredicto entre todas las firmas, o `NO_SIGNATURES` si no hay ninguna; método calculado, no un componente almacenado del record (§2.13) |
 
 Los **puertos** son interfaces pequeñas que la infraestructura implementará con las librerías: `HashCalculator`, `PdfDocumentReader`, `SignatureVerifier`, `CertificateChainValidator`, `RevocationChecker` y `PdfaConformanceValidator`.
 
@@ -237,7 +241,9 @@ Cada ancla se descargó por HTTPS directamente de la web oficial de su propia au
 
 **(T08b) Un resultado vacío nunca debe ser indistinguible de un fallo silencioso**: antes de esta tarea, si `SignatureVerifier#verify` lanzaba una excepción inesperada, el informe degradaba a una lista de firmas vacía -- exactamente igual que un documento legítimamente sin firmar. Ahora, además de degradar con elegancia (comportamiento sin cambios), tanto ese caso como el de `PdfaConformanceValidator#validate` añaden un `SectionError` explícito a `PdfAnalysisReport#sectionErrors()`, identificando qué sección (`SIGNATURES` o `PDFA`) falló y por qué. **(T08b) Orden de la validación PDF/A**: la declaración XMP ahora se comprueba *antes* de invocar el validador formal, en vez de después; un documento que declara PDF/A-2/3 ya no llama en absoluto a *preflight* (cuyo resultado se iba a descartar de todos modos), evitando pagar el coste de un segundo parseo completo del módulo -- ya documentado en otro sitio como pesado -- para un resultado que nunca se iba a usar.
 
-**Tests**: `AnalyzePdfUseCaseTest` (16, con *fakes* escritos a mano para cada puerto, sin Mockito) cubre la orquestación completa, las tres combinaciones de `validationTime`, el flag de revocación activado/desactivado (incluida una firma sin cadena), la declaración PDF/A-2 → `NOT_VALIDATED`, el aislamiento de fallos por sección (PDF/A, firmas, enriquecimiento de una firma sin afectar a las demás, fusión de anomalías), la propagación de `EncryptedPdfException`/`InvalidPdfException`, y `analyzedAt` viniendo del `Clock` inyectado. `AnalyzePdfUseCaseIntegrationTest` (1) cablea los adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar, comprobando un informe completo y coherente: integridad íntegra, cadena de confianza `TRUSTED`, sello de tiempo válido.
+**(T11) Veredicto final**: una vez enriquecidas todas las firmas (cadena + revocación), `verifySignatures` hace una última pasada con `SignatureVerdictPolicy.evaluateAll(...)` sobre la lista completa -- necesita verlas todas juntas para la regla de "cubierta por una firma posterior" (§2.13) -- antes de devolverla. `PdfAnalysisReport.overallVerdict()`/`modifiedAfterLastSignature()` se calculan bajo demanda a partir de esa lista ya enriquecida, no se calculan ni se guardan aparte en `analyze(...)`.
+
+**Tests**: `AnalyzePdfUseCaseTest` (con *fakes* escritos a mano para cada puerto, sin Mockito) cubre la orquestación completa, las tres combinaciones de `validationTime`, el flag de revocación activado/desactivado (incluida una firma sin cadena), la declaración PDF/A-2 → `NOT_VALIDATED`, el aislamiento de fallos por sección (PDF/A, firmas, enriquecimiento de una firma sin afectar a las demás, fusión de anomalías), la propagación de `EncryptedPdfException`/`InvalidPdfException`, y `analyzedAt` viniendo del `Clock` inyectado. `AnalyzePdfUseCaseIntegrationTest` (1) cablea los adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar, comprobando un informe completo y coherente: integridad íntegra, cadena de confianza `TRUSTED`, sello de tiempo válido.
 
 ### 2.10 Arquitectura hexagonal comprobada con ArchUnit (T08)
 
@@ -320,6 +326,43 @@ La importación de clases excluye explícitamente los propios tests (`ImportOpti
 
 **Elección del servidor HTTP de test**: en vez de WireMock (`org.wiremock:wiremock-standalone`), estos tests usan `com.sun.net.httpserver.HttpServer` (incluido en el JDK, sin dependencia nueva) — decisión tomada para eliminar cualquier riesgo de conflicto de classpath entre el Jetty embebido de WireMock y el propio arranque de Jetty/Spring Boot 4.1.1, sin necesidad de resolverlo empíricamente primero.
 
+### 2.13 Veredicto general por firma e interfaz web "Validar" (T11)
+
+**`domain/policy/SignatureVerdictPolicy`** (política de dominio pura, sin librerías) combina `IntegrityStatus`, `ChainStatus` y `RevocationStatus` de cada firma ya enriquecida en un único `SignatureVerdict`, más un `OverallVerdict` a nivel de documento (§2.3), según esta tabla de decisión (evaluada de arriba a abajo; la primera fila que aplica decide):
+
+| Condición | Veredicto | Motivo (`verdictReasons`) |
+|---|---|---|
+| `INVALID_SIGNATURE` | ❌ `INVALID` | `SIGNATURE_INVALID` |
+| `UNSUPPORTED` (subfiltro no soportado) | ⚠️ `NOT_ADMITTED` | `SIGNATURE_FORMAT_UNSUPPORTED` |
+| `MODIFIED_AFTER_SIGNING`, ninguna firma posterior del documento es `INTACT` y cubre todo el fichero | ❌ `INVALID` | `MODIFIED_AFTER_LAST_SIGNATURE` |
+| `MODIFIED_AFTER_SIGNING`, pero una firma posterior **sí** es `INTACT` y cubre todo el fichero | *(continúa con cadena/revocación de abajo)* | `COVERED_BY_LATER_SIGNATURE` (informativo) |
+| Integra, cadena `UNTRUSTED_ROOT` / `INCOMPLETE_CHAIN` / `EXPIRED` / `NOT_CHECKED` | ⚠️ `NOT_ADMITTED` | `CHAIN_UNTRUSTED_ROOT` / `CHAIN_INCOMPLETE` / `CHAIN_EXPIRED` / `CHAIN_NOT_CHECKED` |
+| Cadena `TRUSTED`, revocación no solicitada en esta petición | ✅ `VALID` | `REVOCATION_NOT_REQUESTED` (informativo -- la interfaz debe decir "revocación no comprobada", nunca dar a entender que sí se comprobó) |
+| Cadena `TRUSTED`, revocación solicitada, `GOOD` | ✅ `VALID` | — |
+| Cadena `TRUSTED`, revocación solicitada, `REVOKED` | ❌ `INVALID` | `REVOCATION_REVOKED` |
+| Cadena `TRUSTED`, revocación solicitada, `UNKNOWN` | ⚠️ `NOT_ADMITTED` | `REVOCATION_UNKNOWN` |
+| Cadena `TRUSTED`, revocación solicitada, sigue en `NOT_CHECKED` (p. ej. el caso límite de ruta validada vacía, T10b) | ⚠️ `NOT_ADMITTED` | `REVOCATION_UNAVAILABLE` |
+
+`OverallVerdict` (documento) es el peor de los veredictos anteriores (`INVALID` > `NOT_ADMITTED` > `VALID`), o `NO_SIGNATURES` si el documento no tiene ninguna firma.
+
+**Decisiones explícitas**:
+
+- **`UNSUPPORTED` es `NOT_ADMITTED`, no `INVALID`.** Un subfiltro no reconocido significa que este servicio no pudo verificar la firma en ningún sentido -- no es una prueba de que la firma esté mal, así que tratarlo igual que una firma criptográficamente rota exageraría lo que realmente se sabe.
+- **`REVOKED` es siempre `INVALID`** (decisión explícita del usuario). *Salvedad, también en la interfaz*: este servicio consulta el estado de revocación **actual** vía OCSP/CRL (§2.12), no una comprobación en el instante concreto de la firma -- un certificado revocado después de firmar válidamente seguirá apareciendo aquí como `REVOKED`.
+- **Regla de varias firmas**: una firma anterior con `MODIFIED_AFTER_SIGNING` no se penaliza si **alguna** firma del documento es `INTACT` y cubre el fichero completo hasta el final (flujo normal: firmar, y que una firma posterior añada su propia actualización incremental). Es una comprobación **estructural** (el `ByteRange` de alguna firma llega al final real del fichero, y su CMS verificó), **no** una comparación del contenido añadido entre revisiones -- ver la limitación siguiente. `PdfAnalysisReport.modifiedAfterLastSignature()` expone el mismo hecho a nivel de documento, independientemente del resultado de confianza de esa última firma: es cierto en cuanto **ninguna** firma alcanza el final real del fichero, incluso si esa última firma es en sí misma `INVALID_SIGNATURE` (dos problemas distintos, ambos visibles).
+- **Limitación documentada**: no se comparan los bytes concretos que una revisión incremental añadió; "cubierta por una firma posterior" es una garantía estructural, no una prueba de que el contenido visible no cambió entre esa firma y la última.
+
+**Interfaz web "Validar"** (`src/main/resources/static/`, sin *build step*, sin *frameworks*, sin CDNs -- JavaScript nativo con módulos ES, HTML y CSS servidos tal cual por Spring Boot):
+
+- **Cómo abrirla**: con la aplicación arrancada (§4), `http://localhost:8080/` (o `/index.html`).
+- **Qué muestra**: zona de arrastrar-y-soltar (o clic para seleccionar) para un PDF de hasta 20 MB, una casilla "Comprobar revocación (OCSP/CRL)", y un botón "Analizar PDF" que llama a `POST /api/v1/pdf/analyze`. El resultado muestra, en este orden: un **banner de veredicto general** (✅ *Firma válida* / ⚠️ *Firma no admitida* / ❌ *Firma inválida* / *Documento sin firmas*) con sus motivos en español llano; una tarjeta por firma (firmante, emisor, fecha declarada, sello de tiempo, integridad, cadena, revocación, motivos del veredicto, anomalías) con un desplegable de detalles técnicos (cadena completa con huellas SHA-256, cobertura del `ByteRange`); una sección de documento (hashes con botón de copiar, versión, tabla de páginas con rotación/orientación/tamaño, cifrado y permisos, resultado PDF/A con sus incidencias); los `sectionErrors`, si los hay, como avisos; y un botón para descargar el informe JSON completo. Los códigos de motivo (`CHAIN_EXPIRED`, `REVOCATION_UNKNOWN`, ...) se traducen a texto en español en el propio `app.js` (`REASON_TEXT`), nunca en el backend -- el backend solo expone códigos estables.
+- **Tema claro/oscuro**: variables CSS (`prefers-color-scheme` del sistema, más un botón manual que persiste la elección en `localStorage`, envuelto en `try`/`catch` por si el almacenamiento no está disponible).
+- **Navegación**: pestaña "Firmar" visible pero deshabilitada ("próximamente") -- reservada para T11b (AutoFirma).
+- **Accesibilidad**: HTML semántico, región de arrastrar-y-soltar operable por teclado (`tabindex`, `Enter`/`Espacio`), regiones `aria-live` para carga/errores/resultados, ningún estado se transmite solo por color (siempre icono + texto), contraste suficiente en ambos temas.
+- **Seguridad**: toda cadena que pueda venir del PDF analizado (nombre de firmante, nombre de campo, motivo de anomalía, ...) se renderiza con `textContent`, nunca `innerHTML` -- el único uso de `innerHTML` en `app.js` es una tabla fija de iconos SVG escrita por el propio desarrollador, nunca datos del servidor (documentado en el propio código, verificado con `grep -n innerHTML`). Un filtro Spring (`infrastructure/web/CspHeaderFilter`, registrado ampliamente pero que solo añade la cabecera para las rutas exactas `/`, `/index.html`, `/app.js`, `/styles.css`) añade `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`, sin afectar a Swagger UI, Actuator ni al propio endpoint de análisis (probado con un test de Spring MVC, `StaticContentSecurityTest`).
+- **Bug real encontrado en la verificación manual**: en la primera versión, elementos con el atributo `hidden` (la miniatura del fichero, el banner de error, el *spinner* de carga) seguían visibles al cargar la página, porque reglas posteriores de la misma hoja de estilos (`.file-chip { display: inline-flex }`, `.error-banner { display: flex }`, la regla compartida `svg { display: block }`) tienen la misma especificidad CSS que el `[hidden] { display: none }` por defecto del navegador y, al ir después en la cascada, ganaban. Corregido con una única regla `[hidden] { display: none !important; }` cerca del principio de `styles.css`.
+- **Tests**: `SignatureVerdictPolicyTest` (todas las filas de la tabla, más los casos de varias firmas); `PdfAnalysisReportMapperTest`/`PdfAnalysisControllerTest` (forma del JSON: `verdict`/`verdictReasons` por firma, `overallVerdict`/`modifiedAfterLastSignature` del documento, incluido un documento sin firmar → `NO_SIGNATURES`); `StaticContentSecurityTest` (cabecera CSP presente en `/`, `/index.html`, `/app.js`, `/styles.css`, ausente en `/v3/api-docs`). La interfaz en sí (HTML/CSS/JS) se verificó manualmente en un navegador real (Chrome, vía Chrome DevTools) en modo claro y oscuro, con un PDF firmado real generado por `TestPdfFactory`, sin ningún test JS automatizado (decisión permitida por el propio alcance de la tarea).
+
 ## 3. Stack tecnológico
 
 | Área | Tecnología | Versión |
@@ -335,7 +378,7 @@ La importación de clases excluye explícitamente los propios tests (`ImportOpti
 | Build | Maven (wrapper incluido) | 3.9.9 |
 | CI | GitHub Actions (Temurin 25) | — |
 | Contenedor | Docker, `eclipse-temurin:25-jre-alpine` | ⏳ |
-| Frontend | HTML + CSS + JavaScript nativo (sin frameworks) | ⏳ |
+| Frontend | HTML + CSS + JavaScript nativo (módulos ES, sin frameworks, sin CDNs) | ✅ (pantalla "Validar"; "Firmar" ⏳ T11b) |
 
 ## 4. Instalación y ejecución
 
@@ -370,11 +413,11 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 Con la configuración por defecto (`application.yml`), una vez arrancada:
 
+- Interfaz web ("Validar"): <http://localhost:8080/> (o `/index.html`) ✅ -- ver §2.13
 - API REST: `POST http://localhost:8080/api/v1/pdf/analyze`
 - Swagger UI: <http://localhost:8080/swagger-ui.html> ✅
 - Especificación OpenAPI: <http://localhost:8080/v3/api-docs> ✅
 - Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8080/actuator/health>, <http://localhost:8080/actuator/info>
-- Interfaz web (`/index.html`): ⏳
 - Docker / Docker Compose: ⏳
 
 ### Ejemplo de uso de la API
@@ -402,15 +445,19 @@ Respuesta (recortada; ver el modelo completo en Swagger UI):
       "chain": [ { "subject": "CN=...", "sha256Fingerprint": "78682c..." } ],
       "chainStatus": "UNTRUSTED_ROOT",
       "revocation": { "state": "NOT_CHECKED" },
-      "anomaly": null
+      "anomaly": null,
+      "verdict": "NOT_ADMITTED",
+      "verdictReasons": ["CHAIN_UNTRUSTED_ROOT"]
     }
   ],
   "analyzedAt": "2026-09-27T19:59:31.644705600Z",
-  "sectionErrors": []
+  "sectionErrors": [],
+  "overallVerdict": "NOT_ADMITTED",
+  "modifiedAfterLastSignature": false
 }
 ```
 
-`chainStatus` depende de si el certificado firmante llega a una de las raíces configuradas (§2.7); `sectionErrors` solo contiene entradas si una sección falló de forma inesperada (§2.9/§2.11).
+`chainStatus` depende de si el certificado firmante llega a una de las raíces configuradas (§2.7); `sectionErrors` solo contiene entradas si una sección falló de forma inesperada (§2.9/§2.11); `verdict`/`verdictReasons` y `overallVerdict`/`modifiedAfterLastSignature` son el veredicto general por firma y a nivel de documento (§2.13).
 
 Con `checkRevocation=true` (§2.12) y una cadena `TRUSTED`, `revocation` se rellena de verdad:
 
@@ -459,18 +506,20 @@ Arquitectura **hexagonal** (puertos y adaptadores): el dominio no depende de Spr
 src/main/java/com/coam/pdfvalidator/
 ├─ PdfValidatorApplication.java   Punto de entrada Spring Boot
 ├─ domain/                        Java puro, sin librerías externas
-│  ├─ model/                      Records inmutables del informe (páginas, firmas, certificados…)
+│  ├─ model/                      Records inmutables del informe (páginas, firmas, certificados, SignatureVerdict/OverallVerdict…)
+│  ├─ policy/                     SignatureVerdictPolicy (veredicto por firma + documento, T11)  ✅
 │  ├─ port/                       Interfaces que implementa la infraestructura
 │  └─ exception/                  InvalidPdfException, EncryptedPdfException
 ├─ application/                   AnalyzePdfUseCase (orquestación), AnalysisOptions, NoOpRevocationChecker  ✅
-├─ infrastructure/                Adaptadores PDFBox, Bouncy Castle, PKIX, OCSP/CRL (T10), preflight
+├─ infrastructure/                Adaptadores PDFBox, Bouncy Castle, PKIX, OCSP/CRL, preflight, web
 │  ├─ crypto/                     JcaHashCalculator (SHA-256/SHA-512)
 │  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
 │  ├─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados, sellos RFC 3161), DigestAlgorithmOidNormalizer/NormalizingDigestCalculatorProvider (T09c)
 │  ├─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
-│  ├─ revocation/                 CompositeRevocationChecker (OCSP+CRL), OcspClient, CrlClient, RevocationUrlGuard + PinnedHttpClient (guarda SSRF con anclaje de conexión)  ✅ (T10)
+│  ├─ revocation/                 CompositeRevocationChecker (OCSP+CRL), OcspClient, CrlClient, RevocationUrlGuard + PinnedHttpClient (guarda SSRF con anclaje de conexión)  ✅
 │  ├─ preflight/                  PreflightPdfaValidator (validación formal PDF/A-1b)
-│  └─ config/                     AdapterConfiguration (beans de adaptadores), TrustStoreProperties, RevocationProperties, OpenApiConfiguration  ✅
+│  ├─ web/                        CspHeaderFilter (cabecera CSP de la interfaz web, T11)  ✅
+│  └─ config/                     AdapterConfiguration (beans de adaptadores), TrustStoreProperties, RevocationProperties, OpenApiConfiguration, WebSecurityHeadersConfiguration  ✅
 ├─ api/                           Controlador REST, DTOs, gestión de errores  ✅
 │  ├─ dto/                        PdfAnalysisReportDto y el resto de DTOs explícitos + PdfAnalysisReportMapper
 │  └─ error/                      PdfAnalysisExceptionHandler (ProblemDetail), MaxUploadSizeExceptionHandler (T09b), MissingFileException, NotAPdfException
@@ -479,15 +528,16 @@ src/main/java/com/coam/pdfvalidator/
 src/main/resources/
 ├─ application.yml                Configuración (límite de subida 20 MB, Actuator, trust store opcional)
 ├─ truststore/                    Anclas de confianza españolas empaquetadas (PEM, incluida una CA emisora no autofirmada) + SOURCES.md (procedencia y huellas)
-└─ static/                        Interfaz web                           ⏳
+└─ static/                        Interfaz web "Validar" (index.html, app.js, styles.css -- sin frameworks, sin CDNs)  ✅ (T11; "Firmar" ⏳ T11b)
 
 src/test/java/com/coam/pdfvalidator/
-├─ fixtures/                      Generación de PDFs de prueba (CA de test, firma, cifrado…), TestHttpServer/TestRevocationResponder (servidor y respuestas OCSP/CRL reales para T10)
+├─ fixtures/                      Generación de PDFs de prueba (CA de test, firma, cifrado…), TestHttpServer/TestRevocationResponder (servidor y respuestas OCSP/CRL reales)
 ├─ spike/                         Prueba de concepto inicial de verificación de firma
 ├─ domain/                        Tests del modelo de dominio
+│  └─ policy/                     SignatureVerdictPolicyTest (tabla de decisión completa, T11)
 ├─ application/                   AnalyzePdfUseCaseTest (fakes) + AnalyzePdfUseCaseIntegrationTest (adaptadores reales)
 ├─ infrastructure/                Tests de los adaptadores (pdfbox, bouncycastle, crypto, pki, preflight, revocation)
-├─ api/                           PdfAnalysisControllerTest (slice), PdfAnalysisEndToEndTest (SpringBootTest + MockMvc)
+├─ api/                           PdfAnalysisControllerTest (slice), PdfAnalysisEndToEndTest (SpringBootTest + MockMvc), StaticContentSecurityTest (cabecera CSP, T11)
 │  ├─ dto/                        PdfAnalysisReportMapperTest
 │  └─ error/                      PdfAnalysisExceptionHandlerTest
 └─ architecture/                  ArchitectureTest: reglas ArchUnit de la arquitectura hexagonal
@@ -524,7 +574,8 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | API REST (`POST /api/v1/pdf/analyze`) + Swagger UI + OpenAPI | ✅ |
 | Errores RFC 9457 (`ProblemDetail`) con `type` estable por causa | ✅ |
 | Actuator (`health`, `info` únicamente) | ✅ |
-| Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
+| Veredicto general por firma (✅/⚠️/❌) y a nivel de documento, con motivos explícitos (§2.13) | ✅ |
+| Interfaz web con arrastrar y soltar (pantalla **Validar**), tema claro/oscuro, cabecera CSP | ✅ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
 | Despliegue Docker en VM de bajo consumo | ⏳ |
 
@@ -569,8 +620,17 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `PkixCertificateChainValidatorTest` **(T10)** | `validatedPath`: devuelve la cadena tal cual cuando se presentó completa; añade el certificado del ancla (mapeado desde su propio DER) cuando solo se presentó el firmante (caso FNMT); **excluye** un certificado adicional no relacionado presentado junto a una ruta genuina (la prueba central de que la revocación nunca consulta un certificado que PKIX no usó realmente); lista vacía para una cadena vacía o que no llega a `TRUSTED` |
 | `BcSignatureVerifierTest` **(T10)** | Seguimiento de revisión T09d: el motivo de reserva cuando la excepción de `/ByteRange` no lleva mensaje (comprobado directamente vía un método de solo-paquete, ya que ningún PDF real puede provocarlo); la variante con atributos firmados del atajo de `digestAlgorithm` mal codificado, manipulada tras la firma → `INVALID_SIGNATURE` (antes solo se probaba la variante sin atributos firmados) |
 | `PdfAnalysisControllerTest` **(T10)** | Seguimiento de revisión T09d: el `500` del `IOException` leyendo el fichero subido se prueba también comprobando que el caso de uso **nunca** se invoca (`verify(..., never())`), no solo por el `type` de la respuesta |
+| `AnalyzePdfUseCaseTest` **(T10b)** | Una cadena `TRUSTED` cuya `validatedPath` viene vacía (caso límite) informa `NOT_CHECKED` con el motivo explícito `"validated certification path unavailable"`, en vez del marcador `notChecked()` a secas (indistinguible de "no se solicitó") |
+| `CompositeRevocationCheckerTest` **(T10b)** | El envoltorio de seguridad (`safely`, deliberadamente de visibilidad de paquete, mismo motivo que `PreflightPdfaValidator#mapErrors`) que atrapa una `RuntimeException` inesperada de `OcspClient`/`CrlClient` registra por log solo el nombre de la clase de la excepción (nunca su mensaje, potencialmente sensible) y sigue informando `UNKNOWN` |
+| `DefensiveCopyTest` **(T10b)** | `SignatureReport#withVerdict(...)` copia defensivamente `verdictReasons` |
+| `SignatureVerdictPolicyTest` **(T11)** | Cada fila de la tabla de decisión (§2.13) de forma aislada; `overallVerdict` como el peor veredicto entre varias firmas y `NO_SIGNATURES` para una lista vacía; `documentModifiedAfterLastSignature` con y sin una firma que cubra el fichero completo; un escenario completo de dos firmas donde la segunda cubre todo el fichero exime a la primera de la penalización por modificación |
+| `AnalyzePdfUseCaseTest` **(T11)** | La pasada final de veredicto queda cableada en `analyze(...)`: una firma `TRUSTED`/`GOOD` con revocación solicitada → `VALID` en el informe ensamblado; un documento sin firmar → `overallVerdict` `NO_SIGNATURES`; una firma cuya cobertura no llega al final del fichero, sin otra firma que lo cubra → `INVALID` y `modifiedAfterLastSignature` `true` a la vez |
+| `DefensiveCopyTest`, `SignatureReport`/`PdfAnalysisReport` **(T11)** | Constructor de 10 argumentos preexistente de `SignatureReport` sigue funcionando sin cambios (compatibilidad hacia atrás de todos los *fixtures*/tests anteriores a T11), con `verdict` por defecto en el marcador seguro `NOT_ADMITTED` |
+| `PdfAnalysisReportMapperTest` **(T11)** | `verdict`/`verdictReasons` de una firma y `overallVerdict`/`modifiedAfterLastSignature` del documento se mapean al DTO; un documento sin firmar mapea a `overallVerdict: "NO_SIGNATURES"` |
+| `PdfAnalysisControllerTest` **(T11)** | Forma del JSON de una respuesta 200: `overallVerdict`/`modifiedAfterLastSignature` presentes y correctos para un informe sin firmar |
+| `StaticContentSecurityTest` **(T11)** | `@SpringBootTest` + `MockMvc`: cabecera `Content-Security-Policy` exacta presente en `/`, `/index.html`, `/app.js`, `/styles.css`; **ausente** en `/v3/api-docs` (Swagger UI no se ve afectado) |
 
-**Estado actual:** 256 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 298 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, firmado con sello de tiempo RFC 3161 válido, firmado con sello de tiempo de imprint incorrecto, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF, con declaración PDF/A (XMP `pdfaid`) y **(T09c)** firmado por un certificado ya caducado en el instante de firma / firmado con `digestAlgorithm` codificado como el OID del algoritmo de firma. La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria independiente de la CA de firma, con un certificado que declara el uso extendido de clave `id-kp-timeStamping`.
 
@@ -610,6 +670,14 @@ Enlace público a las slides: ⏳ *(pendiente)*
 - **(T10) `PinnedHttpClient`: un cliente HTTP/1.1 propio sobre `Socket`, no `java.net.http.HttpClient`, para evitar el *DNS rebinding*.** `java.net.http.HttpClient` resuelve el nombre de host por su cuenta al conectar, después de que la guarda ya lo hubiera resuelto y validado — dos resoluciones independientes que un DNS autoritativo hostil puede responder de forma distinta, sorteando la guarda. La solución resuelve una sola vez y ancla la conexión a esa dirección exacta (§2.12).
 - **(T10) Solo `http`, nunca `https`, para OCSP/CRL.** Anclar una conexión TLS a una IP concreta mientras se preserva la verificación SNI/nombre de host del nombre original es posible pero se consideró desproporcionado para una función opcional y de mejor esfuerzo; se rechaza explícitamente en vez de una implementación TLS parcial. Ninguna de las dos entidades reales probadas (FNMT, Camerfirma) lo necesita: ambas publican OCSP/CRL por `http://` (§2.12).
 - **(T10) Servidor HTTP de test propio (`com.sun.net.httpserver.HttpServer`) en vez de WireMock.** Elimina cualquier riesgo de conflicto de classpath entre el Jetty embebido de WireMock y el propio Jetty de Spring Boot 4.1.1, sin depender de una nueva librería de test ni tener que verificar antes esa compatibilidad (§2.12).
+- **(T10b) Un caso límite de revocación "no comprobada" necesitaba un motivo explícito.** Una cadena ya `TRUSTED` cuya `validatedPath` volviera vacía (algo que no debería pasar en la práctica, pero que el código no descartaba) devolvía el mismo marcador `RevocationStatus.notChecked()` que "el usuario no pidió comprobar revocación" -- dos situaciones muy distintas que se veían igual en la respuesta. Ahora lleva siempre un detalle explícito (`"validated certification path unavailable"`).
+- **(T10b) Los envoltorios de seguridad de `CompositeRevocationChecker` registran solo el nombre de la clase de la excepción, nunca su mensaje.** Igual que en el resto del proyecto (§10, T09b): un detalle de excepción inesperado puede llevar información de red o de protocolo que no debe acabar en el log tal cual; el nombre de la clase basta para diagnosticar sin arriesgar nada sensible.
+- **(T11) Veredicto por firma como una política de dominio pura y separada, no lógica dispersa en el caso de uso.** `SignatureVerdictPolicy` vive en `domain/policy` (no en `application`) precisamente porque es una regla de negocio -- qué combinación de integridad/cadena/revocación cuenta como "válida" -- no un detalle de orquestación; se puede testear exhaustivamente sin ningún *fake* de puerto.
+- **(T11) `SignatureReport`/`PdfAnalysisReport` ganan el veredicto sin romper ningún constructor existente.** `SignatureReport` añade un constructor de conveniencia con la forma original (10 argumentos), que reduce a la forma canónica (12 argumentos) con un veredicto de marcador seguro (`NOT_ADMITTED`, sin motivos) -- todos los *fixtures*/tests anteriores a T11 siguen compilando sin tocarlos. `PdfAnalysisReport.overallVerdict()`/`modifiedAfterLastSignature()` son métodos calculados a partir de `signatures()`, no componentes nuevos del *record*: no hay manera de que queden desincronizados con las firmas que realmente contiene, y tampoco obligan a tocar ningún `new PdfAnalysisReport(...)` existente.
+- **(T11) `UNSUPPORTED` es `NOT_ADMITTED`, no `INVALID`; `REVOKED` es siempre `INVALID`.** Ambas, decisiones explícitas del usuario/proyecto, documentadas con su razonamiento completo en §2.13 (incluida la salvedad de que la revocación consultada es la actual, no la del instante de firma).
+- **(T11) La regla de "cubierta por una firma posterior" es estructural, no una comparación de contenido.** Comprobar si alguna firma del documento es `INTACT` y cubre el fichero completo es barato y ya estaba disponible; diferenciar el contenido añadido entre dos revisiones incrementales sería una funcionalidad mucho más grande, fuera del alcance de esta tarea -- documentado como limitación explícita, no silenciada (§2.13).
+- **(T11) Cabecera CSP mediante un filtro Spring acotado por ruta exacta, no un `url-pattern` de Servlet ni una etiqueta `<meta>`.** Un `url-pattern` de Servlet `"/"` es, por especificación, el mapeo por defecto -- coincide con *toda* petición, no solo la raíz literal. El filtro se registra ampliamente (`/*`) pero decide él mismo, comparando `getRequestURI()` contra una lista fija (`/`, `/index.html`, `/app.js`, `/styles.css`), así que Swagger UI/Actuator/la API nunca la reciben. Se prefirió una cabecera HTTP real (comprobable con `MockMvc`) frente a una etiqueta `<meta http-equiv="Content-Security-Policy">`, que además no soporta `frame-ancestors`.
+- **(T11) Bug real de CSS encontrado en la verificación manual: `[hidden]` no ganaba siempre.** Documentado en detalle en §2.13; la lección general (no solo de este proyecto) es que una regla de igual especificidad que la del navegador para `[hidden]`, si va después en la cascada, gana -- conviene una única regla `!important` temprana en vez de acordarse de añadir `[hidden]` a cada selector nuevo.
 - **(⏳ mejora futura, T14) Carga automática de anclas desde la Lista de Confianza española.** En vez de curar manualmente cada ancla (como se hace hoy), una tarea futura opcional podría descargar y verificar `https://tsl.digital.gob.es/TSL.xml` (resuelta a través de la LOTL de la UE), interpretar los `TSPService` de tipo CA/QC con su estado (`granted`/`withdrawn` con semántica de vigencia por fecha), verificar la firma XML de la propia TSL contra los certificados firmantes publicados por la LOTL, y cachear el resultado con una vuelta al almacén empaquetado si la red no está disponible — cubriendo así todas las CA cualificadas españolas sin mantenerlas a mano. No implementado; ver la tarea T14 en `odd/tasks/pdf-validator.md`.
 
 ## 11. Historial de cambios
@@ -632,6 +700,7 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-27 | (T09b) El `413` de subida ya lleva cuerpo `ProblemDetail` (antes vacío, porque el límite se comprueba antes de que Spring resuelva ningún controlador): nuevo `@RestControllerAdvice` sin acotar, exclusivo para esa excepción. `SectionError` y las notas de anomalía de enriquecimiento de firma ya no reflejan el mensaje bruto de una excepción inesperada. Un `IOException` leyendo el fichero subido se informa como `500`, no como `400` de fichero ausente. |
 | 2026-09-28 | (T09d) Añadidas al almacén de confianza las CA emisoras cualificadas de FNMT ("AC FNMT Usuarios" y "AC Componentes Informáticos", esta última cubre también el servicio TSL "AC Representación" — mismo certificado), extraídas de la Lista de Confianza española igual que la de Camerfirma (§2.7, `truststore/SOURCES.md`): el PDF real firmado con FNMT pasó de `INCOMPLETE_CHAIN` a `TRUSTED` (confirmado con una ejecución manual real, resultados anonimizados abajo). Seguimiento de la revisión de T09c: el fallo estructural de `/ByteRange` ya siempre lleva una nota de anomalía no nula; el atajo de verificación para `digestAlgorithm` mal codificado ya tiene un test negativo (contenido manipulado → `INVALID_SIGNATURE`) y un test con atributos firmados presentes; el fallo al leer un fichero subido (`IOException`) ya se prueba también a través de la petición HTTP completa, no solo de forma aislada (§7). Verificación manual real (anonimizada): PDF firmado con FNMT → `INTACT`/`TRUSTED`; PDF firmado con Camerfirma → `INTACT`/`EXPIRED` (igual que en T09c, sin cambios para este caso). |
 | 2026-09-28 | (T10) Comprobación de revocación OCSP/CRL real (`CompositeRevocationChecker`, `OcspClient`, `CrlClient`): OCSP primero con respaldo en CRL, verificación real de firma/frescura/*nonce*/identidad del respondedor, *timeout* de 2 s y límite de tamaño de respuesta configurables. Guarda SSRF con conexión anclada (`RevocationUrlGuard` + `PinnedHttpClient`, un cliente HTTP/1.1 propio sobre `Socket`): resuelve el nombre de host una sola vez y conecta exactamente a esa dirección, cerrando un hueco de *DNS rebinding* de una versión anterior que resolvía dos veces; rechaza direcciones privadas/reservadas (incluidas variantes IPv6) y cualquier URL que no sea `http`. Decisión de seguridad añadida durante la revisión: la revocación solo se comprueba para una cadena ya `TRUSTED`, y el certificado/emisor consultados vienen de `CertificateChainValidator#validatedPath` (los certificados que PKIX realmente usó), nunca de la cadena tal cual la presentó el CMS — cierra el vector de un certificado autofirmado con una URL OCSP interna, y el de un certificado adicional irrelevante embebido junto a una ruta genuina. Servidor HTTP de test propio sobre el JDK (`com.sun.net.httpserver.HttpServer`) en vez de WireMock, para evitar un posible conflicto de classpath con el Jetty de Spring Boot 4.1.1. Seguimiento de la revisión de T09d: motivo de reserva de `/ByteRange` sin mensaje probado directamente; variante con atributos firmados del atajo de `digestAlgorithm` con manipulación → `INVALID_SIGNATURE`; el 500 de lectura de subida se prueba también verificando que el caso de uso nunca se invoca. 211 → 256 tests. |
+| 2026-09-28 | (T10b) Seguimiento de la revisión de T10: una cadena `TRUSTED` con `validatedPath` vacía ya informa un motivo explícito en vez del marcador `notChecked()` a secas; los envoltorios de seguridad de `CompositeRevocationChecker` registran por log el nombre de la clase de la excepción inesperada (nunca su mensaje) antes de informar `UNKNOWN`; `RawSocketTestServer` reutiliza un único `ExecutorService` por instancia y lo cierra en `close()` en vez de crear uno nuevo (sin cerrar) por llamada. (T11) Veredicto general por firma y de documento (`SignatureVerdict`/`OverallVerdict`, política pura `domain/policy/SignatureVerdictPolicy`, §2.13) combinando integridad, cadena y revocación, con la regla de varias firmas (una firma anterior modificada solo tras la firma no se penaliza si otra firma posterior cubre todo el fichero) y `modifiedAfterLastSignature` a nivel de documento. Expuesto en la API (`verdict`/`verdictReasons` por firma, `overallVerdict`/`modifiedAfterLastSignature` del documento). Nueva interfaz web estática "Validar" (`static/index.html`/`app.js`/`styles.css`, sin *frameworks* ni CDNs): arrastrar-y-soltar, comprobación de revocación opcional, banner de veredicto, tarjetas de firma con detalle expandible, sección de documento, descarga del informe JSON, tema claro/oscuro persistente, cabecera CSP acotada a la propia interfaz (`CspHeaderFilter`) sin afectar a Swagger UI. Verificación manual en un navegador real (modo claro y oscuro) encontró y corrigió un bug real: elementos `hidden` seguían visibles por una regla CSS posterior de igual especificidad; corregido con una única regla `[hidden] { display: none !important; }`. 268 → 298 tests. |
 
 ## 12. Repositorio y licencia
 
