@@ -84,6 +84,10 @@ final class CrlClient {
             return unknown(url, "CRL request timed out");
         } catch (IOException e) {
             return unknown(url, "CRL request failed (network error)");
+        } catch (RuntimeException e) {
+            // Defense in depth: PinnedHttpClient documents "never throws unchecked", but this
+            // client must never propagate one either, whatever its actual cause.
+            return unknown(url, "CRL request failed (unexpected error)");
         }
 
         return evaluate(certificate, issuer, url, body);

@@ -3,6 +3,7 @@ package com.coam.pdfvalidator.infrastructure.revocation;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
+import com.coam.pdfvalidator.fixtures.RawSocketTestServer;
 import com.coam.pdfvalidator.fixtures.TestHttpServer;
 import com.coam.pdfvalidator.fixtures.TestPki;
 import com.coam.pdfvalidator.fixtures.TestRevocationResponder;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
@@ -105,6 +107,28 @@ class CompositeRevocationCheckerTest {
 
         assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
         assertThat(status.detail()).contains("issuer certificate not available");
+    }
+
+    /**
+     * A malformed OCSP response (negative {@code Content-Length}, which
+     * would throw an unchecked {@code NegativeArraySizeException} without
+     * {@link PinnedHttpClient}'s validation) must still surface as {@code
+     * UNKNOWN}, never as an exception out of this adapter
+     * (R3-unchecked-parse-escapes, defense in depth end to end).
+     */
+    @Test
+    void aMalformedOcspResponseIsUnknownNotAnException() throws Exception {
+        try (RawSocketTestServer malformed = RawSocketTestServer.start()) {
+            malformed.respondWithChunks(List.of(
+                    "HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n".getBytes(StandardCharsets.US_ASCII)), 0);
+            TestPki.RevocationTestIdentity identity =
+                    TestPki.issueRevocationTestIdentity(malformed.baseUrl() + "/ocsp", null);
+
+            RevocationStatus status =
+                    checker().check(toDomain(identity.signerCertificate()), toDomain(identity.issuerCertificate()));
+
+            assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
+        }
     }
 
     /**

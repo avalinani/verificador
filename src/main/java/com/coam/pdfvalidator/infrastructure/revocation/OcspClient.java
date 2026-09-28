@@ -125,6 +125,11 @@ final class OcspClient {
             return unknown(url, "OCSP request timed out");
         } catch (IOException e) {
             return unknown(url, "OCSP request failed (network error)");
+        } catch (RuntimeException e) {
+            // Defense in depth: PinnedHttpClient documents "never throws unchecked", but this
+            // client must never propagate one either, whatever its actual cause.
+            LOG.log(System.Logger.Level.DEBUG, "OCSP request failed unexpectedly", e);
+            return unknown(url, "OCSP request failed (unexpected error)");
         }
 
         return evaluate(certificate, issuer, url, certId, nonce, responseBytes);

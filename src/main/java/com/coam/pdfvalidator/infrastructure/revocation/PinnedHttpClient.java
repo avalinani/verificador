@@ -80,10 +80,13 @@ final class PinnedHttpClient {
             path = path + "?" + target.uri().getRawQuery();
         }
 
-        int timeoutMillis = Math.toIntExact(Math.max(1, timeout.toMillis()));
+        // The absolute deadline is computed BEFORE connecting, and governs the connect timeout
+        // too, so a slow server can no longer take up to ~2x the configured timeout by stalling
+        // the connect+write phase before the read-side deadline was ever started.
+        long deadlineNanos = System.nanoTime() + timeout.toNanos();
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(target.address(), port), timeoutMillis);
-            socket.setSoTimeout(timeoutMillis);
+            socket.connect(new InetSocketAddress(target.address(), port), remainingMillisOrThrow(deadlineNanos));
+            adjustSoTimeout(socket, deadlineNanos);
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("Host", port == 80 ? host : host + ":" + port);
@@ -95,8 +98,7 @@ final class PinnedHttpClient {
 
             writeRequest(socket.getOutputStream(), method, path, headers, requestBody);
 
-            long deadline = System.nanoTime() + timeout.toNanos();
-            return readResponse(socket, deadline, maxResponseBytes);
+            return readResponse(socket, deadlineNanos, maxResponseBytes);
         }
     }
 
@@ -119,17 +121,25 @@ final class PinnedHttpClient {
     private static Response readResponse(Socket socket, long deadlineNanos, long maxResponseBytes)
             throws IOException {
         InputStream in = socket.getInputStream();
-        adjustSoTimeout(socket, deadlineNanos);
 
-        String statusLine = readLine(in);
+        String statusLine = readLine(in, socket, deadlineNanos);
         if (statusLine == null || !statusLine.startsWith("HTTP/1.")) {
-            throw new IOException("malformed HTTP status line");
+            throw new MalformedHttpResponseException("malformed HTTP status line");
         }
-        int statusCode = Integer.parseInt(statusLine.split(" ")[1]);
+        String[] statusParts = statusLine.split(" ", 3);
+        if (statusParts.length < 2) {
+            throw new MalformedHttpResponseException("malformed HTTP status line: missing status code");
+        }
+        int statusCode;
+        try {
+            statusCode = Integer.parseInt(statusParts[1]);
+        } catch (NumberFormatException e) {
+            throw new MalformedHttpResponseException("malformed HTTP status line: non-numeric status code");
+        }
 
         Map<String, String> responseHeaders = new LinkedHashMap<>();
         String line;
-        while ((line = readLine(in)) != null && !line.isEmpty()) {
+        while ((line = readLine(in, socket, deadlineNanos)) != null && !line.isEmpty()) {
             int colon = line.indexOf(':');
             if (colon > 0) {
                 responseHeaders.put(line.substring(0, colon).trim().toLowerCase(java.util.Locale.ROOT),
@@ -137,7 +147,6 @@ final class PinnedHttpClient {
             }
         }
 
-        adjustSoTimeout(socket, deadlineNanos);
         byte[] body = readBody(in, responseHeaders, maxResponseBytes, deadlineNanos, socket);
         return new Response(statusCode, body);
     }
@@ -152,9 +161,18 @@ final class PinnedHttpClient {
 
         String contentLengthHeader = headers.get("content-length");
         if (contentLengthHeader == null) {
-            throw new IOException("unsupported response framing (no Content-Length or chunked Transfer-Encoding)");
+            throw new MalformedHttpResponseException(
+                    "unsupported response framing (no Content-Length or chunked Transfer-Encoding)");
         }
-        long contentLength = Long.parseLong(contentLengthHeader.trim());
+        long contentLength;
+        try {
+            contentLength = Long.parseLong(contentLengthHeader.trim());
+        } catch (NumberFormatException e) {
+            throw new MalformedHttpResponseException("malformed Content-Length header");
+        }
+        if (contentLength < 0) {
+            throw new MalformedHttpResponseException("negative Content-Length");
+        }
         if (contentLength > maxResponseBytes) {
             throw new ResponseTooLargeException();
         }
@@ -175,18 +193,25 @@ final class PinnedHttpClient {
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         while (true) {
-            adjustSoTimeout(socket, deadlineNanos);
-            String sizeLine = readLine(in);
+            String sizeLine = readLine(in, socket, deadlineNanos);
             if (sizeLine == null) {
                 throw new IOException("connection closed while reading a chunk size");
             }
             int semicolon = sizeLine.indexOf(';');
             String hex = (semicolon >= 0 ? sizeLine.substring(0, semicolon) : sizeLine).trim();
-            int chunkSize = Integer.parseInt(hex, 16);
+            int chunkSize;
+            try {
+                chunkSize = Integer.parseInt(hex, 16);
+            } catch (NumberFormatException e) {
+                throw new MalformedHttpResponseException("malformed chunk size");
+            }
+            if (chunkSize < 0) {
+                throw new MalformedHttpResponseException("negative chunk size");
+            }
             if (chunkSize == 0) {
                 // Trailing headers (if any), then the final blank line.
                 String trailer;
-                while ((trailer = readLine(in)) != null && !trailer.isEmpty()) {
+                while ((trailer = readLine(in, socket, deadlineNanos)) != null && !trailer.isEmpty()) {
                     // discarded
                 }
                 break;
@@ -205,24 +230,38 @@ final class PinnedHttpClient {
                 read += n;
             }
             buffer.write(chunk, 0, chunk.length);
-            readLine(in); // trailing CRLF after each chunk's data
+            readLine(in, socket, deadlineNanos); // trailing CRLF after each chunk's data
         }
         return buffer.toByteArray();
     }
 
-    private static void adjustSoTimeout(Socket socket, long deadlineNanos) throws IOException {
+    private static int remainingMillisOrThrow(long deadlineNanos) throws SocketTimeoutException {
         long remainingMillis = (deadlineNanos - System.nanoTime()) / 1_000_000;
         if (remainingMillis <= 0) {
             throw new SocketTimeoutException("revocation request exceeded its overall timeout");
         }
-        socket.setSoTimeout(Math.toIntExact(Math.min(remainingMillis, Integer.MAX_VALUE)));
+        return Math.toIntExact(Math.min(remainingMillis, Integer.MAX_VALUE));
     }
 
-    private static String readLine(InputStream in) throws IOException {
+    private static void adjustSoTimeout(Socket socket, long deadlineNanos) throws IOException {
+        socket.setSoTimeout(remainingMillisOrThrow(deadlineNanos));
+    }
+
+    /**
+     * Reads one CRLF-terminated line, re-checking the overall deadline before EVERY individual
+     * byte read (not just once before the call) -- otherwise a responder trickling one byte just
+     * under each read's own socket timeout can keep a single {@code readLine} call (a status
+     * line, a header line, a chunk-trailer line, ...) alive far past the configured deadline.
+     */
+    private static String readLine(InputStream in, Socket socket, long deadlineNanos) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         int previous = -1;
-        int current;
-        while ((current = in.read()) != -1) {
+        while (true) {
+            adjustSoTimeout(socket, deadlineNanos);
+            int current = in.read();
+            if (current == -1) {
+                return line.size() == 0 ? null : new String(line.toByteArray(), StandardCharsets.US_ASCII);
+            }
             if (previous == '\r' && current == '\n') {
                 byte[] bytes = line.toByteArray();
                 return new String(bytes, 0, bytes.length - 1, StandardCharsets.US_ASCII);
@@ -230,7 +269,13 @@ final class PinnedHttpClient {
             line.write(current);
             previous = current;
         }
-        return line.size() == 0 ? null : new String(line.toByteArray(), StandardCharsets.US_ASCII);
+    }
+
+    /** Thrown when a response's HTTP framing cannot be parsed safely; mapped to {@code UNKNOWN} by the caller. */
+    static final class MalformedHttpResponseException extends IOException {
+        MalformedHttpResponseException(String message) {
+            super(message);
+        }
     }
 
     /** Thrown when a response body exceeds the configured size cap; mapped to {@code UNKNOWN} by the caller. */

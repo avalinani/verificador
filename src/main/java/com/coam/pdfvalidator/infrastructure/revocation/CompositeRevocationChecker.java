@@ -13,6 +13,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * {@link RevocationChecker} adapter: OCSP first ({@link OcspClient}), CRL as
@@ -82,11 +83,11 @@ public final class CompositeRevocationChecker implements RevocationChecker {
         }
 
         if (hasOcsp) {
-            RevocationStatus ocsp = ocspClient.check(certificateX509, issuerX509, certificate.ocspUrls());
+            RevocationStatus ocsp = checkOcspSafely(certificateX509, issuerX509, certificate.ocspUrls());
             if (ocsp.state() != RevocationState.UNKNOWN || !hasCrl) {
                 return ocsp;
             }
-            RevocationStatus crl = crlClient.check(certificateX509, issuerX509, certificate.crlUrls());
+            RevocationStatus crl = checkCrlSafely(certificateX509, issuerX509, certificate.crlUrls());
             if (crl.state() != RevocationState.UNKNOWN) {
                 return crl;
             }
@@ -94,7 +95,27 @@ public final class CompositeRevocationChecker implements RevocationChecker {
                     "OCSP: " + ocsp.detail() + "; CRL: " + crl.detail());
         }
 
-        return crlClient.check(certificateX509, issuerX509, certificate.crlUrls());
+        return checkCrlSafely(certificateX509, issuerX509, certificate.crlUrls());
+    }
+
+    /**
+     * Defense in depth: {@link OcspClient}/{@link CrlClient} already document "never throws",
+     * but this adapter must never propagate an exception from them either, whatever its cause.
+     */
+    private RevocationStatus checkOcspSafely(X509Certificate certificate, X509Certificate issuer, List<String> urls) {
+        try {
+            return ocspClient.check(certificate, issuer, urls);
+        } catch (RuntimeException e) {
+            return new RevocationStatus(RevocationState.UNKNOWN, null, "OCSP check failed (unexpected error)");
+        }
+    }
+
+    private RevocationStatus checkCrlSafely(X509Certificate certificate, X509Certificate issuer, List<String> urls) {
+        try {
+            return crlClient.check(certificate, issuer, urls);
+        } catch (RuntimeException e) {
+            return new RevocationStatus(RevocationState.UNKNOWN, null, "CRL check failed (unexpected error)");
+        }
     }
 
     private static X509Certificate decode(byte[] der) throws CertificateException {
