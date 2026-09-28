@@ -3,13 +3,19 @@ package com.coam.pdfvalidator.api;
 import com.coam.pdfvalidator.infrastructure.web.CspHeaderFilter;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -97,5 +103,79 @@ class StaticContentSecurityTest {
         mockMvc.perform(get("/vendor/autofirma/autoscript.js"))
                 .andExpect(status().isOk())
                 .andExpect(header().doesNotExist("Content-Security-Policy"));
+    }
+
+    /**
+     * T11d: {@link CspHeaderFilter#PROTECTED_PATHS} is matched with {@code
+     * Set.contains} (exact string equality), never a prefix/substring check
+     * -- regression guard proving a path that merely <em>looks like</em> one
+     * of the four protected paths (a backup file sharing the same name, or
+     * the name appearing as a path segment further down) is not swept in.
+     * {@code /vendor/...} is included here even though it was never in the
+     * allow-list to begin with (see the test above): the same exact-match
+     * guarantee is what keeps a near-miss vendor path unaffected too.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"/index.html.bak", "/api/v1/index.html", "/app.js.map", "/vendor/autofirma/autoscript.js.bak"})
+    void aNearMissPathIsNotTreatedAsOneOfTheProtectedPaths(String path) throws Exception {
+        mockMvc.perform(get(path)).andExpect(header().doesNotExist("Content-Security-Policy"));
+    }
+
+    /**
+     * T11d: the static UI (html/js/css) must be served as UTF-8 -- README
+     * §2.13's Spanish copy (tildes, ñ, "revocación", ...) must round-trip
+     * correctly in the browser regardless of the client's own Accept-Charset
+     * default. See {@link CspHeaderFilter}'s class Javadoc for why this is
+     * forced here rather than through the global {@code
+     * spring.servlet.encoding.force} property (that property would also force
+     * a charset onto the JSON API, which {@link
+     * #theAnalyzeApiEndpointIsServedAsBareApplicationJsonWithNoForcedCharset}
+     * below guards against; {@link
+     * com.coam.pdfvalidator.api.PdfAnalysisControllerTest} already covers the
+     * success-path equivalent of that same guarantee).
+     *
+     * <p>{@code "/"} is deliberately not included here: Spring Boot's welcome
+     * page mechanism resolves it to an internal {@code forward:index.html},
+     * which {@code MockMvc} under {@code @SpringBootTest} never actually
+     * executes (the forwarded response comes back with no content type/body
+     * at all in this test harness, independently of {@link CspHeaderFilter}
+     * -- a test-infrastructure limitation, not a production gap: the same
+     * {@code Content-Security-Policy} header assertion above for {@code "/"}
+     * still passes, because the filter sets headers on the original response
+     * before the never-executed forward). {@link CspHeaderFilterTest}'s
+     * {@code theUtf8CharsetIsForcedOnlyOnTheProtectedWelcomePage} covers
+     * {@code "/"} directly against the filter instead, bypassing MockMvc's
+     * forward handling entirely.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"/index.html", "/app.js", "/styles.css"})
+    void theStaticUiIsServedWithUtf8Charset(String path) throws Exception {
+        MvcResult result = mockMvc.perform(get(path)).andExpect(status().isOk()).andReturn();
+
+        assertThat(result.getResponse().getContentType()).containsIgnoringCase("charset=utf-8");
+    }
+
+    /**
+     * T11d: the analysis API's JSON responses must never pick up the static
+     * UI's forced UTF-8 charset (see {@link #theStaticUiIsServedWithUtf8Charset}
+     * above and {@link CspHeaderFilter}'s class Javadoc). Uploads a
+     * non-PDF-content file (real {@link PdfAnalysisExceptionHandler} error
+     * path, exercised through the whole filter chain, not a slice test) to
+     * get a genuine JSON error body rather than the content-type-less 415
+     * from an empty request.
+     */
+    @Test
+    void theAnalyzeApiEndpointIsServedAsBareApplicationJsonWithNoForcedCharset() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "not-a-pdf.txt", "text/plain", "hello".getBytes());
+
+        MvcResult result = mockMvc.perform(multipart("/api/v1/pdf/analyze").file(file))
+                .andExpect(status().is4xxClientError())
+                .andReturn();
+
+        // The error path returns RFC 7807 application/problem+json (see
+        // PdfAnalysisExceptionHandler); PdfAnalysisControllerTest's success
+        // path is the plain "application/json" one. Either way, bare -- no
+        // charset parameter forced onto it.
+        assertThat(result.getResponse().getContentType()).isEqualTo("application/problem+json");
     }
 }

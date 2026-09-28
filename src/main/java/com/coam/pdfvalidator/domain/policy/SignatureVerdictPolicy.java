@@ -82,13 +82,16 @@ import java.util.Objects;
  *       (the attacker's) covered the file end-to-end. Requiring every later
  *       signature to be admitted closes this: only an admitted signer --
  *       one this service actually trusts -- can vouch for the appended
- *       revision. This is still a structural check only (does each later
- *       signature's {@code ByteRangeCoverage} reach the true end of file,
- *       and is it itself {@code INTACT}) plus a trust check on that later
- *       signature -- it does not diff the bytes an incremental update
- *       actually appended, so it cannot distinguish "a legitimate second
- *       signature" from "an admitted party's incremental update that
- *       happens to be followed by one". See {@link
+ *       revision. This is still a structural check only -- {@link
+ *       #laterSignatureCoverage} requires every later signature's own
+ *       already-computed {@link SignatureVerdict verdict} to be {@code
+ *       VALID} (trusted chain, not revoked, and either {@code INTACT} itself
+ *       or, recursively, covered by a further later {@code VALID} signature);
+ *       it never inspects a later signature's {@code ByteRangeCoverage}
+ *       directly, only its final verdict -- it does not diff the bytes an
+ *       incremental update actually appended, so it cannot distinguish "a
+ *       legitimate second signature" from "an admitted party's incremental
+ *       update that happens to be followed by one". See {@link
  *       #documentModifiedAfterLastSignature} and README §2.13.</li>
  * </ul>
  */

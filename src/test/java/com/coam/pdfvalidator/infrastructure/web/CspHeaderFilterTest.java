@@ -53,6 +53,44 @@ class CspHeaderFilterTest {
         assertThat(response.getHeader("Content-Security-Policy")).isNull();
     }
 
+    /**
+     * T11d: {@code PROTECTED_PATHS} is a {@code Set.contains} exact-string
+     * check, not a prefix/substring match -- a path that merely shares a
+     * suffix, or contains one of the four protected names as a segment
+     * further down, must never be swept in.
+     */
+    @Test
+    void aBackupFileSharingTheIndexHtmlNameIsNotTreatedAsTheProtectedPage() throws ServletException, IOException {
+        MockHttpServletResponse response = filterRequest("", "/index.html.bak");
+
+        assertThat(response.getHeader("Content-Security-Policy")).isNull();
+    }
+
+    @Test
+    void anApiPathContainingIndexHtmlAsAFurtherSegmentIsNotAffected() throws ServletException, IOException {
+        MockHttpServletResponse response = filterRequest("", "/api/v1/index.html");
+
+        assertThat(response.getHeader("Content-Security-Policy")).isNull();
+    }
+
+    @Test
+    void theUtf8CharsetIsForcedOnlyOnTheProtectedWelcomePage() throws ServletException, IOException {
+        MockHttpServletResponse response = filterRequest("", "/");
+
+        assertThat(response.getCharacterEncoding()).isEqualToIgnoringCase("UTF-8");
+    }
+
+    @Test
+    void theUtf8CharsetIsNotForcedOnAnUnrelatedPath() throws ServletException, IOException {
+        MockHttpServletResponse response = filterRequest("", "/api/v1/pdf/analyze");
+
+        // MockHttpServletResponse defaults to ISO-8859-1 when nothing sets an
+        // explicit encoding -- this asserts the filter itself never called
+        // setCharacterEncoding(...) for this path, not merely that the final
+        // value happens to differ from UTF-8.
+        assertThat(response.getCharacterEncoding()).isEqualToIgnoringCase("ISO-8859-1");
+    }
+
     private MockHttpServletResponse filterRequest(String contextPath, String requestUri)
             throws ServletException, IOException {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", requestUri);
