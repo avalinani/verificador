@@ -224,7 +224,7 @@ class AnalyzePdfUseCaseTest {
     // ---- test data builders ----
 
     private static CertificateInfo certificate(String subject) {
-        return new CertificateInfo(subject, "CN=issuer-of-" + subject, "01",
+        return new CertificateInfo(subject, null, "CN=issuer-of-" + subject, "01",
                 Instant.parse("2020-01-01T00:00:00Z"), Instant.parse("2030-01-01T00:00:00Z"),
                 "SHA256withRSA", List.of(), List.of(), new byte[] {1, 2, 3});
     }

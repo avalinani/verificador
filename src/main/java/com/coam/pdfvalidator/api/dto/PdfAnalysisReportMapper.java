@@ -132,9 +132,9 @@ public class PdfAnalysisReportMapper {
 
     private CertificateInfoDto toDto(CertificateInfo certificate) {
         return new CertificateInfoDto(
-                certificate.subject(), certificate.issuer(), certificate.serialNumberHex(), certificate.notBefore(),
-                certificate.notAfter(), certificate.signatureAlgorithm(), certificate.ocspUrls(),
-                certificate.crlUrls(), sha256Fingerprint(certificate.encoded()));
+                certificate.subject(), certificate.commonName(), certificate.issuer(), certificate.serialNumberHex(),
+                certificate.notBefore(), certificate.notAfter(), certificate.signatureAlgorithm(),
+                certificate.ocspUrls(), certificate.crlUrls(), sha256Fingerprint(certificate.encoded()));
     }
 
     private static RevocationStatusDto toDto(RevocationStatus revocation) {

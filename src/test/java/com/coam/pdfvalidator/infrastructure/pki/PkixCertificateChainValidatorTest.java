@@ -165,7 +165,7 @@ class PkixCertificateChainValidatorTest {
 
         CertificateInfo validEndEntity = toCertificateInfo(identity.chain().get(0));
         CertificateInfo garbage = new CertificateInfo(
-                "CN=garbage", "CN=garbage", "00", Instant.EPOCH, Instant.EPOCH.plusSeconds(3600),
+                "CN=garbage", "garbage", "CN=garbage", "00", Instant.EPOCH, Instant.EPOCH.plusSeconds(3600),
                 "SHA256withRSA", List.of(), List.of(), new byte[] {1, 2, 3, 4, 5});
 
         ChainStatus status = validator.validate(List.of(validEndEntity, garbage), Instant.now());
@@ -265,6 +265,7 @@ class PkixCertificateChainValidatorTest {
         try {
             return new CertificateInfo(
                     certificate.getSubjectX500Principal().getName(),
+                    null,
                     certificate.getIssuerX500Principal().getName(),
                     HexFormat.of().formatHex(certificate.getSerialNumber().toByteArray()),
                     certificate.getNotBefore().toInstant(),

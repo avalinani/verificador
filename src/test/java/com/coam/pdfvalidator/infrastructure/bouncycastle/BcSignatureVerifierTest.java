@@ -54,8 +54,13 @@ class BcSignatureVerifierTest {
         CertificateInfo signerInfo = report.chain().get(0);
         CertificateInfo issuerInfo = report.chain().get(1);
 
-        assertThat(signerInfo.subject())
-                .isEqualTo(identity.endEntityCertificate().getSubjectX500Principal().getName());
+        // T11f: subject/issuer are rendered by X509CertificateInfoMapper's own
+        // BCStyle-based formatting (readable, decodes every attribute BCStyle
+        // recognizes), not by X500Principal#getName()'s JDK RFC 2253
+        // rendering -- for this fixture's plain CN/O/C subject, the two only
+        // ever differ in whether they happen to agree on attribute order.
+        assertThat(signerInfo.subject()).isEqualTo("CN=Spike Test Signer,O=COAM,C=ES");
+        assertThat(signerInfo.commonName()).isEqualTo("Spike Test Signer");
         assertThat(new BigInteger(signerInfo.serialNumberHex(), 16))
                 .isEqualTo(identity.endEntityCertificate().getSerialNumber());
         assertThat(signerInfo.notBefore()).isEqualTo(identity.endEntityCertificate().getNotBefore().toInstant());
@@ -63,7 +68,7 @@ class BcSignatureVerifierTest {
 
         assertThat(issuerInfo.subject())
                 .as("chain is ordered signer first, then issuer")
-                .isEqualTo(identity.rootCertificate().getSubjectX500Principal().getName());
+                .isEqualTo("CN=Spike Test Root CA,O=COAM,C=ES");
     }
 
     @Test

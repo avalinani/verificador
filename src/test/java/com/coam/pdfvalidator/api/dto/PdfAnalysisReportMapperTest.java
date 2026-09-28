@@ -45,7 +45,7 @@ class PdfAnalysisReportMapperTest {
         Instant notBefore = Instant.parse("2020-01-01T00:00:00Z");
         Instant notAfter = Instant.parse("2030-01-01T00:00:00Z");
         CertificateInfo certificate = new CertificateInfo(
-                "CN=signer", "CN=issuer", "01", notBefore, notAfter, "SHA256withRSA",
+                "CN=signer", "signer", "CN=issuer", "01", notBefore, notAfter, "SHA256withRSA",
                 List.of("http://ocsp.example.org"), List.of("http://crl.example.org"), encoded);
 
         Box box = new Box(0, 0, 200, 100);
@@ -118,6 +118,7 @@ class PdfAnalysisReportMapperTest {
 
         CertificateInfoDto signerDto = signatureDto.chain().get(0);
         assertThat(signerDto.subject()).isEqualTo("CN=signer");
+        assertThat(signerDto.commonName()).isEqualTo("signer");
         assertThat(signerDto.issuer()).isEqualTo("CN=issuer");
         assertThat(signerDto.serialNumberHex()).isEqualTo("01");
         assertThat(signerDto.notBefore()).isEqualTo(notBefore);

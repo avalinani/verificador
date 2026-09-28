@@ -11,9 +11,20 @@ import java.util.Objects;
  * (defensively copied both ways) so a {@code CertificateChainValidator} can
  * rebuild a real certificate object without the domain depending on any
  * X.509 library.
+ *
+ * <p>{@code subject}/{@code issuer} are human-readable distinguished names
+ * (T11f: {@code infrastructure.bouncycastle.X509CertificateInfoMapper}
+ * decodes every known attribute -- including {@code emailAddress}, which the
+ * JDK's own {@code X500Principal} formatting leaves as {@code
+ * "#16<hex>"} -- instead of the raw RFC 2253 string the JDK would produce).
+ * {@code commonName} is the subject's own {@code CN} attribute, extracted
+ * separately so a caller (the web UI) can show it prominently without
+ * re-parsing {@code subject}; it is {@code null} when the certificate's
+ * subject has no {@code CN} attribute at all.
  */
 public record CertificateInfo(
         String subject,
+        String commonName,
         String issuer,
         String serialNumberHex,
         Instant notBefore,
@@ -25,6 +36,7 @@ public record CertificateInfo(
 
     public CertificateInfo {
         Objects.requireNonNull(subject, "subject");
+        // commonName is intentionally nullable -- see the class Javadoc.
         Objects.requireNonNull(issuer, "issuer");
         Objects.requireNonNull(serialNumberHex, "serialNumberHex");
         Objects.requireNonNull(notBefore, "notBefore");
@@ -62,6 +74,7 @@ public record CertificateInfo(
             return false;
         }
         return Objects.equals(subject, that.subject)
+                && Objects.equals(commonName, that.commonName)
                 && Objects.equals(issuer, that.issuer)
                 && Objects.equals(serialNumberHex, that.serialNumberHex)
                 && Objects.equals(notBefore, that.notBefore)
@@ -76,16 +89,17 @@ public record CertificateInfo(
     @Override
     public int hashCode() {
         int result = Objects.hash(
-                subject, issuer, serialNumberHex, notBefore, notAfter, signatureAlgorithm, ocspUrls, crlUrls);
+                subject, commonName, issuer, serialNumberHex, notBefore, notAfter, signatureAlgorithm, ocspUrls,
+                crlUrls);
         return 31 * result + Arrays.hashCode(encoded);
     }
 
     /** Reports the encoded certificate's length instead of dumping its bytes. */
     @Override
     public String toString() {
-        return ("CertificateInfo[subject=%s, issuer=%s, serialNumberHex=%s, notBefore=%s, notAfter=%s, "
-                + "signatureAlgorithm=%s, ocspUrls=%s, crlUrls=%s, encoded=%d bytes]")
-                        .formatted(subject, issuer, serialNumberHex, notBefore, notAfter, signatureAlgorithm,
-                                ocspUrls, crlUrls, encoded.length);
+        return ("CertificateInfo[subject=%s, commonName=%s, issuer=%s, serialNumberHex=%s, notBefore=%s, "
+                + "notAfter=%s, signatureAlgorithm=%s, ocspUrls=%s, crlUrls=%s, encoded=%d bytes]")
+                        .formatted(subject, commonName, issuer, serialNumberHex, notBefore, notAfter,
+                                signatureAlgorithm, ocspUrls, crlUrls, encoded.length);
     }
 }

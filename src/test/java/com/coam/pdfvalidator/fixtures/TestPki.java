@@ -12,6 +12,7 @@ import org.bouncycastle.asn1.x509.GeneralName;
 import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.asn1.x509.KeyPurposeId;
 import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -165,6 +166,38 @@ public final class TestPki {
                     List.of(eeCertificate, rootCertificate));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build test PKI with an end-entity expired at signing time", e);
+        }
+    }
+
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but the end-entity
+     * certificate's subject is the given {@code X500Name} instead of the
+     * fixed {@code "CN=Spike Test Signer,O=COAM,C=ES"} -- used by T11f's
+     * readable-DN test, which needs a subject carrying an {@code
+     * emailAddress} (OID 1.2.840.113549.1.9.1) attribute that a real,
+     * honestly-issued certificate (e.g. a Spanish DNIe/FNMT one) can also
+     * carry.
+     */
+    public static IssuedIdentity issueSigningIdentityWithSubject(X500Name subject) {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), notBefore, notAfter,
+                    "http://ocsp.example.org/ee", "http://crl.example.org/ee.crl", subject);
+
+            return new IssuedIdentity(
+                    rootCertificate,
+                    eeCertificate,
+                    eeKeyPair.getPrivate(),
+                    List.of(eeCertificate, rootCertificate));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with a custom subject", e);
         }
     }
 
@@ -451,10 +484,22 @@ public final class TestPki {
             Date notAfter,
             String ocspUrl,
             String crlUrl) throws Exception {
+        return buildEndEntityCertificate(rootCertificate, rootPrivateKey, eePublicKey, notBefore, notAfter,
+                ocspUrl, crlUrl, new X500Name("CN=Spike Test Signer,O=COAM,C=ES"));
+    }
+
+    /** Same as the 7-argument overload, but with an explicit subject {@code X500Name}. */
+    private static X509Certificate buildEndEntityCertificate(
+            X509Certificate rootCertificate,
+            PrivateKey rootPrivateKey,
+            java.security.PublicKey eePublicKey,
+            Date notBefore,
+            Date notAfter,
+            String ocspUrl,
+            String crlUrl,
+            X500Name subject) throws Exception {
 
         org.bouncycastle.asn1.x500.X500Name issuer = subjectName(rootCertificate);
-        org.bouncycastle.asn1.x500.X500Name subject =
-                new org.bouncycastle.asn1.x500.X500Name("CN=Spike Test Signer,O=COAM,C=ES");
 
         X509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(
                 issuer,

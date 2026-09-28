@@ -3,7 +3,12 @@ package com.coam.pdfvalidator.infrastructure.bouncycastle;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1String;
+import org.bouncycastle.asn1.x500.RDN;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.style.BCStyle;
+import org.bouncycastle.asn1.x500.style.IETFUtils;
 import org.bouncycastle.asn1.x509.AccessDescription;
 import org.bouncycastle.asn1.x509.AuthorityInformationAccess;
 import org.bouncycastle.asn1.x509.CRLDistPoint;
@@ -13,6 +18,7 @@ import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.GeneralName;
 import org.bouncycastle.asn1.x509.GeneralNames;
 
+import javax.security.auth.x500.X500Principal;
 import java.io.IOException;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
@@ -46,9 +52,11 @@ public final class X509CertificateInfoMapper {
      */
     public static CertificateInfo toDomain(X509Certificate certificate) {
         try {
+            ReadableSubject subject = readableSubject(certificate.getSubjectX500Principal());
             return new CertificateInfo(
-                    certificate.getSubjectX500Principal().getName(),
-                    certificate.getIssuerX500Principal().getName(),
+                    subject.dn(),
+                    subject.commonName(),
+                    readableDn(certificate.getIssuerX500Principal()),
                     HexFormat.of().formatHex(certificate.getSerialNumber().toByteArray()),
                     certificate.getNotBefore().toInstant(),
                     certificate.getNotAfter().toInstant(),
@@ -59,6 +67,62 @@ public final class X509CertificateInfoMapper {
         } catch (CertificateEncodingException e) {
             throw new IllegalStateException("Failed to DER-encode a certificate extracted from a CMS signature", e);
         }
+    }
+
+    /** {@link #readableDn}'s formatted DN, plus the subject's own {@code CN} attribute (or {@code null}). */
+    private record ReadableSubject(String dn, String commonName) {
+    }
+
+    /**
+     * A human-readable rendering of {@code principal}, decoding every
+     * attribute Bouncy Castle's {@link BCStyle} recognizes by OID --
+     * including {@code emailAddress} (OID 1.2.840.113549.1.9.1, labeled
+     * {@code E}), {@code organizationIdentifier}, {@code SERIALNUMBER},
+     * {@code GIVENNAME}/{@code SURNAME}, {@code T} (title), etc. -- instead
+     * of the JDK's own {@code X500Principal#getName()} RFC 2253 rendering,
+     * which falls back to a {@code "#16<hex>"} dump of the raw DER value for
+     * any attribute type it does not itself recognize (T11f: this made
+     * emailAddress, a very common attribute on Spanish qualified
+     * certificates, unreadable in the web UI). An OID neither style
+     * recognizes still renders as {@code <oid>=<value>} with the value
+     * decoded when it is a string type -- Bouncy Castle's own fallback,
+     * hex only as a last resort for a non-string-typed value.
+     *
+     * <p>Falls back to {@code principal.getName()} if the principal's own
+     * DER encoding cannot be re-parsed into an {@link X500Name} at all
+     * (defensive: every real {@code X509Certificate}'s principal is valid
+     * DER by construction, so this path is not expected to be reachable in
+     * practice).
+     */
+    private static String readableDn(X500Principal principal) {
+        try {
+            return BCStyle.INSTANCE.toString(x500NameOf(principal));
+        } catch (RuntimeException e) {
+            return principal.getName();
+        }
+    }
+
+    /** Same as {@link #readableDn}, but also extracts the subject's own {@code CN} attribute. */
+    private static ReadableSubject readableSubject(X500Principal principal) {
+        try {
+            X500Name name = x500NameOf(principal);
+            return new ReadableSubject(BCStyle.INSTANCE.toString(name), commonNameOf(name));
+        } catch (RuntimeException e) {
+            return new ReadableSubject(principal.getName(), null);
+        }
+    }
+
+    /** The first {@code CN} RDN's decoded string value, or {@code null} if {@code name} has none. */
+    private static String commonNameOf(X500Name name) {
+        RDN[] commonNameRdns = name.getRDNs(BCStyle.CN);
+        if (commonNameRdns.length == 0) {
+            return null;
+        }
+        return IETFUtils.valueToString(commonNameRdns[0].getFirst().getValue());
+    }
+
+    private static X500Name x500NameOf(X500Principal principal) {
+        return X500Name.getInstance(ASN1Sequence.getInstance(principal.getEncoded()));
     }
 
     static List<CertificateInfo> toDomain(List<X509Certificate> certificates) {

@@ -2,6 +2,9 @@ package com.coam.pdfvalidator.infrastructure.bouncycastle;
 
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.fixtures.TestPki;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x509.Extension;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +40,39 @@ class X509CertificateInfoMapperTest {
         // extension must be readable without needing the malformed-extension fallback below.
         assertThat(info.ocspUrls()).isNotEmpty();
         assertThat(info.crlUrls()).isNotEmpty();
+    }
+
+    /**
+     * T11f: a real signer's subject can declare {@code emailAddress} (OID
+     * 1.2.840.113549.1.9.1). The JDK's own {@code X500Principal} RFC 2253
+     * formatting doesn't know that OID and falls back to a hex-encoded
+     * {@code "#16<hex>"} dump of the raw DER value -- unreadable in the web
+     * UI. The mapper must instead produce a human-readable DN (decoded
+     * string value, {@code E=...} label) and expose the subject's {@code CN}
+     * separately via {@link CertificateInfo#commonName()}.
+     */
+    @Test
+    void aReadableSubjectDecodesTheEmailAddressAttributeAndExposesTheCommonNameSeparately() {
+        X500NameBuilder builder = new X500NameBuilder(BCStyle.INSTANCE);
+        builder.addRDN(BCStyle.C, "ES");
+        builder.addRDN(BCStyle.O, "COAM");
+        builder.addRDN(BCStyle.OU, "Certificado de pruebas T11f");
+        builder.addRDN(BCStyle.SERIALNUMBER, "12345678A");
+        builder.addRDN(BCStyle.GIVENNAME, "MARIA");
+        builder.addRDN(BCStyle.SURNAME, "GARCIA LOPEZ");
+        builder.addRDN(BCStyle.E, "maria.garcia@example.org");
+        builder.addRDN(BCStyle.CN, "GARCIA LOPEZ MARIA - 12345678A");
+        X500Name subjectWithEmail = builder.build();
+
+        X509Certificate certificate =
+                TestPki.issueSigningIdentityWithSubject(subjectWithEmail).endEntityCertificate();
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.subject()).doesNotContain("#16");
+        assertThat(info.subject()).containsAnyOf(
+                "E=maria.garcia@example.org", "EMAILADDRESS=maria.garcia@example.org");
+        assertThat(info.commonName()).isEqualTo("GARCIA LOPEZ MARIA - 12345678A");
     }
 
     @Test
