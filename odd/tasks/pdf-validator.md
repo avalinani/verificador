@@ -761,6 +761,7 @@ Commits (`feat/sign-ui`): `a93a704` build: vendor the official AutoScript librar
 
 - Parent verification (T11b): `./mvnw -B verify` → 308/308; vendored `autoscript.js` blob sha `dc9401987c4cd6834cefbb68ec1adee038557f5b` = official 1.10.1 (unmodified); no short-circuits; CSP adds only `connect-src wss://127.0.0.1:* https://127.0.0.1:*` and `frame-src afirma:` (no unsafe-eval/unsafe-inline). Review: the vendored third-party commit (a93a704, 6,595 unmodified lines verified by hash) was excluded from line review; the rest (base a93a704, 2,520 lines) auto-granted and **approved**.
 - [x] T11e UI polish + review follow-ups: impeccable "monotonous spacing" hint (clear rhythm: tight within groups, generous between sections); sign.js advisories — a late response after cancel could be routed to a new signing attempt (use a per-attempt token), non-ASCII "motivo" handling in extraParams, guard base64 decode of the success payload, make "Validar este PDF" feedback visible (switch to the Validar view/scroll and announce via aria-live); plus T11d minor test/doc advisories. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/ui-polish`
+- [x] T11f UI fixes after a real AutoFirma signature test: certificate chain overflowing its card (long DNs/fingerprints); unreadable DN (`emailAddress` OID shown as hex); PDF permissions shown as raw codes instead of Spanish labels; footer referencing "COAM" by name. User confirmed a real AutoFirma signature works end to end on 2026-09-28. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/ui-polish`
 
 ## Progress / Evidence (T11e, T11d)
 
@@ -808,6 +809,38 @@ Built and ran the jar; generated a minimal valid fixture PDF and a throwaway "si
 Living README updated (`README.md`): new §2.15 (design/accessibility notes, Firmar robustness notes); §7 test table (+2 rows) and count (308 → 320); §10 decisions (Javadoc alignment, scoped Impeccable exception, `switchTab` architecture); §11 change history entry (2026-09-28).
 
 Commits (`feat/ui-polish`): `b448523` style: establish a spacing rhythm and hierarchy in the web UI; `ca37660` fix: ignore stale AutoFirma callbacks and harden the signing flow; `c3171aa` test: cover CSP exact-path matching and UTF-8 charset headers; `57e39ee` docs: document UI design and signing robustness.
+
+## Progress / Evidence (T11f)
+
+Executed directly by a single writer agent (no sub-delegation), per this task's explicit instruction, on branch `feat/ui-polish`. Trigger: user feedback after a real AutoFirma signature test (screenshot of the "Validar" result).
+
+**1. DN readability (backend, TDD)** — `X509CertificateInfoMapper.toDomain` used `X500Principal#getName()` (JDK RFC 2253), which renders any attribute it doesn't itself recognize (e.g. `emailAddress`, OID `1.2.840.113549.1.9.1`) as `<oid>=#16<hex-DER>`. RED: added `X509CertificateInfoMapperTest.aReadableSubjectDecodesTheEmailAddressAttributeAndExposesTheCommonNameSeparately`, with a subject built via `X500NameBuilder`/`BCStyle` (extended `TestPki` with `issueSigningIdentityWithSubject(X500Name)`) — failed genuinely against the unchanged mapper: `assertThat(info.subject()).doesNotContain("#16")` failed with the actual hex-encoded DN (`...1.2.840.113549.1.9.1=#16186d6172696...`). GREEN: reformatted subject/issuer with Bouncy Castle `X500Name` + `BCStyle.INSTANCE.toString(...)` (recognizes `E`/`emailAddress`, `SERIALNUMBER`, `GIVENNAME`, `SURNAME`, `organizationIdentifier`, etc.), with a defensive fallback to the JDK rendering if the principal's own DER can't be re-parsed (not expected to be reachable). Added `commonName` (nullable) to the domain `CertificateInfo` record — deliberately on the **domain**, not only the DTO as the task text suggested, because `ArchitectureTest.apiDependsOnlyOnApplicationAndDomain` forbids `api` from depending on `infrastructure`, so the Bouncy Castle-based CN extraction can only live in `infrastructure.bouncycastle`; the domain field is what lets it reach `CertificateInfoDto` without breaking that rule. Updated 5 existing direct-constructor call sites (`CertificateInfoTest`, `PdfAnalysisReportMapperTest`, `AnalyzePdfUseCaseTest`, `PkixCertificateChainValidatorTest`) and one existing assertion that compared against the old JDK-formatted DN (`BcSignatureVerifierTest`, order changed from least-specific-first to most-specific-first — an intentional, expected format change, not a regression).
+
+**2. Chain card overflow (CSS)** — added `overflow-wrap: anywhere`/`word-break: break-word` to `.chain-item-subject`, `.chain-item-meta`, `.mono`, `.signature-signer`, `.signature-field-name`, `.fact-value`; `min-width: 0` to `.chain-item`, `.chain-list`, `.signature-card`, `.detail-card`, `.signature-name-wrap`, `.signatures-column`/`.document-column`, and `minmax(0, 1fr)` tracks on `.signature-facts`; `max-width: 100%` on the card containers. `render.js`'s `renderCertificateItem` now shows each certificate's `commonName` (falling back to a client-side CN regex) as a prominent heading, with the full DN as secondary muted monospace text below it (new `.chain-item-dn` class), instead of only the raw full DN.
+
+**3. Permissions + other raw values** — added a `PERMISSION_TEXT` map in `render.js` (Imprimir, Anotar, Modificar, Rellenar formularios, Extraer para accesibilidad, Ensamblar, Imprimir en alta calidad, Extraer contenido); API codes (`SecurityInfoDto.permissions()`) unchanged. Audited the other user-visible enum-shaped values named in the task (rotation/orientation, PDF/A status, revocation state, integrity, chain status): all already translated since T11/T11c (`ORIENTATION_TEXT`, `PDFA_STATUS_TEXT`, `REVOCATION_STATE_TEXT`, `INTEGRITY_TEXT`, `CHAIN_STATUS_TEXT`); `AnalysisSection` only has `PDFA`/`SIGNATURES`, both already mapped in `sectionSpanish`. No further changes needed there.
+
+**4. Footer** — replaced `"Trabajo de Fin de Máster · COAM · el documento no se almacena en el servidor."` with a neutral footer (project name + GitHub repo link); confirmed no other institutional reference exists anywhere in `static/` (title, meta tags, headers). Did not touch the Java package (`com.coam.pdfvalidator`) or Maven `groupId`, out of scope.
+
+**Manual verification (Playwright MCP)** — built the jar and started it; port 8963 was already occupied by another process on the development machine (not this task's), so used the documented 8081 fallback instead of touching that process. Generated a fixture PDF with `TestPki.issueSigningIdentityWithSubject` (long DN with `SERIALNUMBER`/`GIVENNAME`/`SURNAME`/`emailAddress`) signed via `TestPdfSigner.sign` (throwaway JUnit generator, deleted immediately after use, never committed). Uploaded and analyzed through the real UI:
+- Signer name shown prominently as the decoded CN (`GARCIADELAFUENTE RODRIGUEZ MARIADELOSANGELES - 12345678A`), not the raw DN.
+- Full DN visible in "Detalles técnicos" with `E=mariadelosangeles.garciadelafuente@example.org` decoded, no `#16` anywhere.
+- All 8 permission chips in Spanish.
+- No horizontal overflow at 1280px or 375px width (`document.documentElement.scrollWidth === clientWidth` confirmed at 375px), light and dark theme (screenshots taken, reviewed visually).
+- Zero console errors/warnings at any point (`browser_console_messages`).
+- Footer neutral, GitHub link present, no "COAM" anywhere (`grep -rniE coam` over `static/*.html/js/css` → no output).
+- App stopped (`taskkill`) afterward; fixture and `.playwright-mcp/` scratch directory deleted.
+
+### Verify (T11f)
+
+- `./mvnw -B verify` → `BUILD SUCCESS`, `Tests run: 321, Failures: 0, Errors: 0, Skipped: 0` (320 → 321: +1 `X509CertificateInfoMapperTest`).
+- `grep -rniE "coam" src/main/resources/static/*.html src/main/resources/static/*.js src/main/resources/static/*.css` → no output.
+- `git diff --stat HEAD -- src/main/resources/static/vendor` → empty (vendor untouched).
+- Short-circuit grep on `src/main/java` → no output.
+
+Living README updated (`README.md`): new §2.16 (DN readability decision incl. why `commonName` landed on the domain, chain overflow fix, permission translation, footer); §6 feature rows for certificate data/permissions; §7 `X509CertificateInfoMapperTest` row; §11 change history entry (2026-09-28).
+
+Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished names readably; `ad9b6f6` fix: keep certificate details inside their cards and translate permission labels; `e242733` chore: remove institutional references from the web interface footer; `a394857` docs: note readable DNs and neutral footer.
 
 ## Next step
 T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
