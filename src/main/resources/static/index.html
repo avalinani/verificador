@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Validador de firmas PDF</title>
-  <meta name="description" content="Audita la firma electronica, la integridad y la conformidad PDF/A de un documento PDF.">
+  <meta name="description" content="Audita la firma electrónica, la integridad y la conformidad PDF/A de un documento PDF.">
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -24,8 +24,8 @@
 
       <nav class="tabs" aria-label="Secciones">
         <button type="button" class="tab is-active" id="tab-validar" aria-current="page">Validar</button>
-        <button type="button" class="tab" id="tab-firmar" disabled title="Proximamente: firma con AutoFirma">
-          Firmar <span class="tab-badge">proximamente</span>
+        <button type="button" class="tab" id="tab-firmar" disabled title="Próximamente: firma con AutoFirma">
+          Firmar <span class="tab-badge">próximamente</span>
         </button>
       </nav>
 
@@ -44,7 +44,7 @@
       <section class="panel upload-panel" aria-labelledby="upload-heading">
         <h1 id="upload-heading" class="panel-title">Validar un documento PDF</h1>
         <p class="panel-subtitle">
-          Analiza la integridad de las firmas electronicas, la cadena de confianza, la revocacion (opcional),
+          Analiza la integridad de las firmas electrónicas, la cadena de confianza, la revocación (opcional),
           la conformidad PDF/A y las propiedades del documento. El archivo no se almacena.
         </p>
 
@@ -60,7 +60,7 @@
             <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
           </svg>
           <p class="dropzone-text">
-            <span class="dropzone-text-main">Arrastra un PDF aqui</span>
+            <span class="dropzone-text-main">Arrastra un PDF aquí</span>
             <span class="dropzone-text-sub">o haz clic para seleccionarlo</span>
           </p>
           <p class="dropzone-hint" id="dropzone-hint">Solo archivos PDF, hasta 20&nbsp;MB.</p>
@@ -82,8 +82,8 @@
             <input type="checkbox" id="check-revocation">
             <span class="checkbox-box" aria-hidden="true"></span>
             <span class="checkbox-label">
-              Comprobar revocacion (OCSP/CRL)
-              <span class="checkbox-help">Requiere red y puede tardar unos segundos; solo se aplica a cadenas de confianza validas.</span>
+              Comprobar revocación (OCSP/CRL)
+              <span class="checkbox-help">Requiere red y puede tardar unos segundos; solo se aplica a cadenas de confianza válidas.</span>
             </span>
           </label>
         </div>
@@ -103,7 +103,7 @@
       </section>
 
       <section class="panel results-panel" id="results-panel" aria-labelledby="results-heading" hidden>
-        <h2 id="results-heading" class="visually-hidden">Resultado del analisis</h2>
+        <h2 id="results-heading" class="visually-hidden">Resultado del análisis</h2>
 
         <div class="verdict-banner" id="verdict-banner" role="status" aria-live="polite"></div>
 
@@ -136,13 +136,13 @@
       <section class="panel firmar-placeholder" id="firmar-panel" aria-labelledby="firmar-heading" hidden>
         <h2 id="firmar-heading" class="panel-title">Firmar</h2>
         <p class="panel-subtitle">
-          Proximamente: firma de documentos con AutoFirma desde el navegador. La clave privada nunca sale de tu equipo.
+          Próximamente: firma de documentos con AutoFirma desde el navegador. La clave privada nunca sale de tu equipo.
         </p>
       </section>
     </main>
 
     <footer class="app-footer">
-      <p>Trabajo de Fin de Master &middot; COAM &middot; el documento no se almacena en el servidor.</p>
+      <p>Trabajo de Fin de Máster &middot; COAM &middot; el documento no se almacena en el servidor.</p>
     </footer>
   </div>
 

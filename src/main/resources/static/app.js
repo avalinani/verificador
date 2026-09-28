@@ -115,11 +115,11 @@ function setSelectedFile(file) {
     return;
   }
   if (!looksLikePdfFile(file)) {
-    showError("El archivo seleccionado no parece un PDF. Elige un archivo con extension .pdf.");
+    showError("El archivo seleccionado no parece un PDF. Elige un archivo con extensión .pdf.");
     return;
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    showError(`El archivo supera el tamano maximo permitido (20 MB). Tamano actual: ${formatBytes(file.size)}.`);
+    showError(`El archivo supera el tamaño máximo permitido (20 MB). Tamaño actual: ${formatBytes(file.size)}.`);
     return;
   }
   selectedFile = file;
@@ -190,7 +190,7 @@ async function analyze(file, wantsRevocationCheck) {
     response = await fetch(url, { method: "POST", body: formData });
   } catch {
     setLoading(false);
-    showError("No se pudo conectar con el servidor. Comprueba tu conexion e intentalo de nuevo.");
+    showError("No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.");
     return;
   }
 
@@ -221,13 +221,13 @@ function setLoading(isLoading) {
 
 function describeError(status, problem) {
   const type = problem?.type ?? "";
-  if (type.endsWith("missing-file")) return "Falta el archivo o esta vacio. Selecciona un PDF antes de continuar.";
-  if (type.endsWith("not-a-pdf")) return "El contenido subido no es un PDF valido.";
-  if (type.endsWith("corrupt-pdf")) return "El PDF esta danado y no se pudo analizar.";
-  if (type.endsWith("encrypted-pdf")) return "El PDF esta cifrado con contrasena y no se puede analizar.";
-  if (type.endsWith("file-too-large") || status === 413) return "El archivo supera el tamano maximo permitido (20 MB).";
-  if (status === 500) return "Se produjo un error inesperado en el servidor. Intentalo de nuevo mas tarde.";
-  return problem?.detail || "No se pudo completar el analisis. Intentalo de nuevo.";
+  if (type.endsWith("missing-file")) return "Falta el archivo o está vacío. Selecciona un PDF antes de continuar.";
+  if (type.endsWith("not-a-pdf")) return "El contenido subido no es un PDF válido.";
+  if (type.endsWith("corrupt-pdf")) return "El PDF está dañado y no se pudo analizar.";
+  if (type.endsWith("encrypted-pdf")) return "El PDF está cifrado con contraseña y no se puede analizar.";
+  if (type.endsWith("file-too-large") || status === 413) return "El archivo supera el tamaño máximo permitido (20 MB).";
+  if (status === 500) return "Se produjo un error inesperado en el servidor. Inténtalo de nuevo más tarde.";
+  return problem?.detail || "No se pudo completar el análisis. Inténtalo de nuevo.";
 }
 
 function showError(message) {
@@ -249,43 +249,43 @@ function hideResults() {
 // ---------------------------------------------------------------------
 
 const VERDICT_TEXT = {
-  VALID: { label: "Firma valida", icon: "check", cssClass: "verdict-valid" },
+  VALID: { label: "Firma válida", icon: "check", cssClass: "verdict-valid" },
   NOT_ADMITTED: { label: "Firma no admitida", icon: "warning", cssClass: "verdict-not-admitted" },
-  INVALID: { label: "Firma invalida", icon: "cross", cssClass: "verdict-invalid" },
+  INVALID: { label: "Firma inválida", icon: "cross", cssClass: "verdict-invalid" },
   NO_SIGNATURES: { label: "Documento sin firmas", icon: "info", cssClass: "verdict-none" },
 };
 
 const SIGNATURE_VERDICT_BADGE = {
-  VALID: { label: "Valida", cssClass: "badge-valid" },
+  VALID: { label: "Válida", cssClass: "badge-valid" },
   NOT_ADMITTED: { label: "No admitida", cssClass: "badge-not-admitted" },
-  INVALID: { label: "Invalida", cssClass: "badge-invalid" },
+  INVALID: { label: "Inválida", cssClass: "badge-invalid" },
 };
 
 const REASON_TEXT = {
-  SIGNATURE_INVALID: "La firma criptografica no es valida.",
-  SIGNATURE_FORMAT_UNSUPPORTED: "El formato de firma no esta soportado por este servicio.",
-  MODIFIED_AFTER_LAST_SIGNATURE: "El documento se modifico despues de esta firma y ninguna firma posterior cubre el contenido final.",
-  COVERED_BY_LATER_SIGNATURE: "El documento cambio despues de esta firma, pero una firma posterior valida cubre el contenido final (flujo normal de varias firmas).",
+  SIGNATURE_INVALID: "La firma criptográfica no es válida.",
+  SIGNATURE_FORMAT_UNSUPPORTED: "El formato de firma no está soportado por este servicio.",
+  MODIFIED_AFTER_LAST_SIGNATURE: "El documento se modificó después de esta firma y ninguna firma posterior cubre el contenido final.",
+  COVERED_BY_LATER_SIGNATURE: "El documento cambió después de esta firma, pero una firma posterior válida cubre el contenido final (flujo normal de varias firmas).",
   CHAIN_UNTRUSTED_ROOT: "La cadena de certificados no llega a una entidad de confianza reconocida.",
   CHAIN_INCOMPLETE: "Falta al menos un certificado intermedio en la cadena de confianza.",
-  CHAIN_EXPIRED: "Algun certificado de la cadena estaba caducado en el momento de la validacion.",
+  CHAIN_EXPIRED: "Algún certificado de la cadena estaba caducado en el momento de la validación.",
   CHAIN_NOT_CHECKED: "No se pudo comprobar la cadena de confianza de esta firma.",
-  REVOCATION_NOT_REQUESTED: "No se comprobo la revocacion del certificado (opcion desactivada).",
-  REVOCATION_REVOKED: "El certificado del firmante esta revocado.",
-  REVOCATION_UNKNOWN: "No se pudo determinar si el certificado esta revocado.",
-  REVOCATION_UNAVAILABLE: "La comprobacion de revocacion no estuvo disponible para esta firma.",
+  REVOCATION_NOT_REQUESTED: "No se comprobó la revocación del certificado (opción desactivada).",
+  REVOCATION_REVOKED: "El certificado del firmante está revocado.",
+  REVOCATION_UNKNOWN: "No se pudo determinar si el certificado está revocado.",
+  REVOCATION_UNAVAILABLE: "La comprobación de revocación no estuvo disponible para esta firma.",
 };
 
 const INTEGRITY_TEXT = {
-  INTACT: "Integra",
+  INTACT: "Íntegra",
   MODIFIED_AFTER_SIGNING: "Modificado tras la firma",
-  INVALID_SIGNATURE: "Firma invalida",
+  INVALID_SIGNATURE: "Firma inválida",
   UNSUPPORTED: "Formato no soportado",
 };
 
 const CHAIN_STATUS_TEXT = {
   TRUSTED: "De confianza",
-  UNTRUSTED_ROOT: "Raiz no reconocida",
+  UNTRUSTED_ROOT: "Raíz no reconocida",
   INCOMPLETE_CHAIN: "Cadena incompleta",
   EXPIRED: "Certificado caducado",
   NOT_CHECKED: "No comprobada",
@@ -362,13 +362,13 @@ function renderVerdictBanner(report) {
 
 function verdictBodyText(report) {
   if (report.overallVerdict === "NO_SIGNATURES") {
-    return "Este documento no contiene ninguna firma electronica.";
+    return "Este documento no contiene ninguna firma electrónica.";
   }
   const count = report.signatures.length;
   const plural = count === 1 ? "firma" : "firmas";
   let text = `Se ${count === 1 ? "ha analizado" : "han analizado"} ${count} ${plural}.`;
   if (report.modifiedAfterLastSignature) {
-    text += " El documento se modifico despues de la ultima firma.";
+    text += " El documento se modificó después de la última firma.";
   }
   return text;
 }
@@ -403,7 +403,7 @@ function renderSignatures(report) {
   if (!report.signatures || report.signatures.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "Este documento no contiene firmas electronicas.";
+    empty.textContent = "Este documento no contiene firmas electrónicas.";
     signaturesList.appendChild(empty);
     return;
   }
@@ -445,7 +445,7 @@ function renderSignatureCard(signature, index) {
     fact("Sello de tiempo", signature.timestamp?.present ? formatInstant(signature.timestamp.genTime) : "No presente"),
     fact("Integridad", INTEGRITY_TEXT[signature.integrity] || signature.integrity),
     fact("Cadena de confianza", CHAIN_STATUS_TEXT[signature.chainStatus] || signature.chainStatus),
-    fact("Revocacion", REVOCATION_STATE_TEXT[signature.revocation?.state] || signature.revocation?.state || "-"),
+    fact("Revocación", REVOCATION_STATE_TEXT[signature.revocation?.state] || signature.revocation?.state || "-"),
   );
   card.appendChild(facts);
 
@@ -463,7 +463,7 @@ function renderSignatureCard(signature, index) {
   if (signature.anomaly) {
     const anomaly = document.createElement("p");
     anomaly.className = "anomaly-note";
-    anomaly.textContent = `Anomalia: ${signature.anomaly}`;
+    anomaly.textContent = `Anomalía: ${signature.anomaly}`;
     card.appendChild(anomaly);
   }
 
@@ -487,7 +487,7 @@ function renderSignatureDetails(signature) {
   const details = document.createElement("details");
   details.className = "signature-details";
   const summary = document.createElement("summary");
-  summary.textContent = "Detalles tecnicos";
+  summary.textContent = "Detalles técnicos";
   details.appendChild(summary);
 
   const body = document.createElement("div");
@@ -496,7 +496,7 @@ function renderSignatureDetails(signature) {
   const coverage = document.createElement("p");
   coverage.textContent = signature.coverage?.coversWholeDocument
     ? "El rango firmado cubre todo el archivo."
-    : "El rango firmado no llega al final del archivo (se anadio contenido despues).";
+    : "El rango firmado no llega al final del archivo (se añadió contenido después).";
   body.appendChild(coverage);
 
   if (signature.chain && signature.chain.length > 0) {
@@ -608,7 +608,7 @@ function renderStructureCard(structure) {
   card.appendChild(heading);
 
   card.append(
-    fact("Version PDF", structure.headerVersion || "Desconocida"),
+    fact("Versión PDF", structure.headerVersion || "Desconocida"),
     fact("Revisiones", String(structure.revisionCount)),
   );
 
@@ -617,7 +617,7 @@ function renderStructureCard(structure) {
     table.className = "pages-table";
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
-    ["Pagina", "Rotacion", "Orientacion", "Tamano"].forEach((label) => {
+    ["Página", "Rotación", "Orientación", "Tamaño"].forEach((label) => {
       const th = document.createElement("th");
       th.textContent = label;
       headRow.appendChild(th);
@@ -630,7 +630,7 @@ function renderStructureCard(structure) {
       const row = document.createElement("tr");
       const cells = [
         String(page.number),
-        page.rotationValid ? `${page.rawRotation}°` : `${page.rawRotation}° (no valida)`,
+        page.rotationValid ? `${page.rawRotation}°` : `${page.rawRotation}° (no válida)`,
         ORIENTATION_TEXT[page.orientation] || page.orientation,
         `${Math.round(page.mediaBox.width)} x ${Math.round(page.mediaBox.height)}`,
       ];
@@ -655,7 +655,7 @@ function renderSecurityCard(security) {
   heading.textContent = "Cifrado y permisos";
   card.appendChild(heading);
 
-  card.appendChild(fact("Cifrado", security.encrypted ? "Si" : "No"));
+  card.appendChild(fact("Cifrado", security.encrypted ? "Sí" : "No"));
 
   const permissions = document.createElement("div");
   permissions.className = "permission-list";
@@ -686,7 +686,7 @@ function renderPdfaCard(pdfa) {
 
   card.appendChild(fact("Resultado", PDFA_STATUS_TEXT[pdfa.status] || pdfa.status));
   card.appendChild(fact(
-    "Declaracion XMP",
+    "Declaración XMP",
     pdfa.declaration?.declared ? `PDF/A-${pdfa.declaration.part}${pdfa.declaration.conformance}` : "No declarada",
   ));
 
