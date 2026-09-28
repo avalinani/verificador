@@ -84,6 +84,17 @@ const PDFA_STATUS_TEXT = {
 
 const ORIENTATION_TEXT = { PORTRAIT: "Vertical", LANDSCAPE: "Horizontal", SQUARE: "Cuadrada" };
 
+const PERMISSION_TEXT = {
+  PRINT: "Imprimir",
+  ANNOTATE: "Anotar",
+  MODIFY: "Modificar",
+  FILL_FORMS: "Rellenar formularios",
+  EXTRACT_FOR_ACCESSIBILITY: "Extraer para accesibilidad",
+  ASSEMBLE: "Ensamblar",
+  PRINT_HIGH_QUALITY: "Imprimir en alta calidad",
+  EXTRACT_CONTENT: "Extraer contenido",
+};
+
 function reasonText(code) {
   return REASON_TEXT[code] || code;
 }
@@ -179,10 +190,11 @@ function renderSignatureCard(signature, index) {
   header.className = "signature-card-header";
 
   const nameWrap = document.createElement("div");
+  nameWrap.className = "signature-name-wrap";
   const signer = signature.chain?.[0];
   const signerName = document.createElement("p");
   signerName.className = "signature-signer";
-  signerName.textContent = signer ? commonNameOf(signer.subject) : `Firma ${index + 1}`;
+  signerName.textContent = signer ? signer.commonName || commonNameOf(signer.subject) : `Firma ${index + 1}`;
   const fieldName = document.createElement("p");
   fieldName.className = "signature-field-name";
   fieldName.textContent = signature.fieldName;
@@ -268,10 +280,18 @@ function renderCertificateItem(certificate) {
   const item = document.createElement("li");
   item.className = "chain-item";
 
+  // CN shown prominently, full DN (which can be long and space-free --
+  // e.g. "CN=...,SERIALNUMBER=...,GIVENNAME=...") as secondary, wrapping
+  // text right below it (T11f).
   const subject = document.createElement("div");
   subject.className = "chain-item-subject";
-  subject.textContent = certificate.subject;
+  subject.textContent = certificate.commonName || commonNameOf(certificate.subject);
   item.appendChild(subject);
+
+  const fullDn = document.createElement("div");
+  fullDn.className = "chain-item-dn mono";
+  fullDn.textContent = certificate.subject;
+  item.appendChild(fullDn);
 
   const meta = document.createElement("div");
   meta.className = "chain-item-meta";
@@ -406,7 +426,7 @@ function renderSecurityCard(security) {
     for (const permission of list) {
       const chip = document.createElement("span");
       chip.className = "permission-chip";
-      chip.textContent = permission;
+      chip.textContent = PERMISSION_TEXT[permission] || permission;
       permissions.appendChild(chip);
     }
   }
