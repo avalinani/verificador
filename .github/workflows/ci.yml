@@ -22,7 +22,8 @@ jobs:
         run: ./mvnw -B verify
 
   docker:
-    # Proves the Dockerfile stays valid; the image is built but never pushed.
+    # Builds the image (never pushed) and smoke-tests it at runtime under the same
+    # limits as docker-compose.yml: 512 MB, read-only root filesystem, 64 MB /tmp.
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -31,3 +32,32 @@ jobs:
 
       - name: Build Docker image (no push)
         run: docker build -t pdf-validator:ci .
+
+      - name: Smoke-test the container (health, UI, read-only, 512 MB)
+        run: |
+          docker run -d --name pdfv -p 8963:8963 --memory=512m \
+            --read-only --tmpfs /tmp:size=64m,mode=1777 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            pdf-validator:ci
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fs http://localhost:8963/actuator/health | grep -q '"status":"UP"'; then ok=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' pdfv)" != "true" ]; then break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Container did not become healthy"
+            docker logs pdfv
+            docker stats --no-stream pdfv || true
+            docker rm -f pdfv
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8963/)
+          docker stats --no-stream pdfv
+          if [ "$code" != "200" ]; then
+            echo "GET / returned $code"
+            docker logs pdfv
+            docker rm -f pdfv
+            exit 1
+          fi
+          docker rm -f pdfv
