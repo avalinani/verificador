@@ -47,7 +47,7 @@ management:
 # and PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT.
 pdfvalidator:
   analysis:
-    max-concurrent: 2
+    max-concurrent: 1
     acquire-timeout: 5s
 
 # Trust store used by CertificateChainValidator (PkixCertificateChainValidator)

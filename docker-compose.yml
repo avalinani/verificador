@@ -36,9 +36,9 @@ services:
     # environment:
     #   # Extra trusted roots, one certificate per file (additive to the bundled ones):
     #   PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR: /truststore
-    #   # Simultaneous analyses (default 2) and wait for a free slot before a 503 (default 5s).
+    #   # Simultaneous analyses (default 1; use 2 only with a VM of 1 GB or more) and wait for a free slot before a 503 (default 5s).
     #   # Raising max-concurrent raises worst-case memory: re-check the budget in the README.
-    #   PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT: "2"
+    #   PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT: "1"
     #   PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT: 5s
     #   # Revocation (OCSP/CRL) timeout, default 2s:
     #   PDFVALIDATOR_REVOCATION_TIMEOUT: 2s

@@ -143,12 +143,15 @@ jobs:
           limit=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
           if [ -n "$peak" ] && [ -n "$limit" ] && [ "$limit" != "max" ]; then
             echo "$peak $limit" | awk '{ printf "cgroup memory.peak: %.1f MiB of %.1f MiB (%.1f%%)\n", $1/1048576, $2/1048576, 100*$1/$2 }'
-            # Headroom guard: fail at >= 95% of the limit so we notice before an OOM kill happens.
-            if [ "$(echo "$peak $limit" | awk '{ print ($1 >= 0.95 * $2) ? 1 : 0 }')" = "1" ]; then
-              echo "memory.peak is at or above 95% of the container limit"; fail=1
-            fi
           else
-            echo "cgroup memory.peak/memory.max not readable; headroom guard skipped"
+            echo "cgroup memory.peak/memory.max not readable"
+          fi
+          # memory.peak is informational only (it counts reclaimable page cache and tmpfs).
+          # The kernel oom_kill counter is the real signal that the limit was hit.
+          oomkills=$(docker exec pdfv-load sh -c "sed -n 's/^oom_kill //p' /sys/fs/cgroup/memory.events" 2>/dev/null || true)
+          echo "cgroup oom_kill count: ${oomkills:-unreadable}"
+          if [ -n "$oomkills" ] && [ "$oomkills" -gt 0 ]; then
+            echo "the kernel OOM killer acted inside the container"; fail=1
           fi
           docker stats --no-stream pdfv-load
 
