@@ -34,6 +34,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - [~] T12 Dockerfile, docker-compose, memory check, VM deploy, Actuator — container files ✅ (branch `feat/docker`); real build/run + memory check ⏳ (Docker daemon not running); VM deploy ⏳ pending user authorization of a destination
 - [x] T12b Fix T12 review advisories: JVM/tmpfs memory budget under 512 MB, CI runtime smoke test, deterministic jar name, docs (branch `feat/docker`)
 - [x] T12c Bounded concurrency: bulkhead (max 2 analyses, 5 s wait, 503 busy + Retry-After), uploads on tmpfs, CI load test (branch `feat/bounded-concurrency`)
+- [x] T12d Fix T12c review findings: bulkhead URI-variant bypass, Connection: close on 503, CI load-test robustness/OOM check/95% headroom guard, busy-only UI message, PDFBox font log level (branch `feat/bounded-concurrency`)
 - [ ] T13 README (all TFM sections + slides URL), slides, JaCoCo
 
 ## Acceptance
@@ -865,6 +866,12 @@ Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished name
   - RED: tests written first; `mvn test` failed with compilation errors (missing AnalysisBulkhead/AnalysisBusyException/AnalysisBusyExceptionHandler). GREEN: `./mvnw -B verify` BUILD SUCCESS, 347 tests (336 + 11).
   - Evidence: local jar (-Xmx240m, max-concurrent=1, timeout 50ms), 4 concurrent 19.9 MB uploads -> 1x200 + 3x503 with `Retry-After: 1` and busy ProblemDetail; defaults -> 3 uploads served serially (200). `docker compose config` OK; `grep` for short-circuits in src/main/java empty. CI step bash syntax checked (`bash -n`); the container load test itself has not run (no Docker daemon locally).
   - Commits: 84eff03 (feat), b001dd5 (build), 44ca03e (ci), a1d22b9 (docs).
+- T12d (2026-09-29, route: direct inline single writer, branch `feat/bounded-concurrency`): filter now selects every `multipart/*` request on `/*` (fail-safe, path-independent); single path constant `PdfAnalysisController.ANALYZE_PATH`; `Connection: close` on the 503; CI step collects `wait` per pid, matches `java.lang.OutOfMemoryError` only, fails at cgroup memory.peak >= 95% of memory.max; `validate.js` busy message only for `urn:pdfvalidator:error:busy` (other 503 -> unavailable message); `logging.level.org.apache.pdfbox.pdmodel.font=ERROR`; test rename + yml/config comments.
+  - RED: with the exact-URI filter, `everyUriVariantOfTheUploadEndpointIsLimitedWhileThePermitIsHeld` failed: `;jsessionid=x` and `%61nalyze` reached the controller (500 from the unconfigured mock, not 503). GREEN after the fix: all 8 variants 503 while the permit is held; idle: exact/`;jsessionid`/`%61nalyze` 200, trailing slash, `//api`, `/API`, dot segments 404.
+  - Finding: Tomcat already adds `Connection: close` to a 503 and closes after `maxSwallowSize` (2 MB), so the two Connection tests (small body, 20 MB body streamed in parallel) pass even without the explicit header (no honest RED); the header stays as a container-independent guarantee and the tests as regression guards. `maxSwallowSize` left at default.
+  - Measured (CI run 36530307714, ubuntu runner, 19.9 MB PDF, 5 concurrent, max-concurrent=2): 5x HTTP 200, restart 0, OOMKilled false, peak sampled 439.9 MiB, cgroup memory.peak 502.3 of 512 MiB -> headroom ~10 MB. Failure cause was the JVM banner matching `OutOfMemoryError` (fixed). Options for the user (not applied): max-concurrent=1 on 512 MB, or 768 MB/1 GB VM with 2.
+  - Verify: `./mvnw -B verify` BUILD SUCCESS, 351 tests (347 + 4); `docker compose config -q` OK; `bash -n` on the extracted CI step OK, `wait` loop exercised under `bash -e`; no short-circuit in src/main/java.
+  - Commits: 4ffab5d (URI variants), c8dba8f (Connection: close), 5583895 (ci), 4cad3f7 (busy-only UI), 0362cf1 (pdfbox log level), plus the docs commit.
 
 ## Next step
 T13 README/slides. Pending: VM deploy (needs user authorization of a destination); first real CI run of the `docker` job (smoke + load test) to record the measured peak memory in the README (no local Docker daemon).
