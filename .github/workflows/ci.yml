@@ -95,21 +95,26 @@ jobs:
            done) &
           sampler=$!
 
-          pids=""
+          # Actions runs bash with -e: a failing `wait` would end the step before any HTTP code
+          # is printed, so every curl's exit status is collected explicitly and judged below.
           for i in 1 2 3 4 5; do
             curl -s -o "$RUNNER_TEMP/resp$i.json" -w '%{http_code}' --max-time 120 \
               -F "file=@$RUNNER_TEMP/large.pdf;type=application/pdf" \
               http://localhost:8963/api/v1/pdf/analyze > "$RUNNER_TEMP/code$i.txt" &
-            pids="$pids $!"
+            pid[$i]=$!
           done
-          wait $pids
+          for i in 1 2 3 4 5; do
+            rc[$i]=0
+            wait "${pid[$i]}" || rc[$i]=$?
+          done
           kill $sampler 2>/dev/null || true
 
           fail=0
           twohundreds=0
           for i in 1 2 3 4 5; do
             code=$(cat "$RUNNER_TEMP/code$i.txt")
-            echo "request $i -> HTTP $code"
+            echo "request $i -> HTTP $code (curl exit ${rc[$i]})"
+            [ "${rc[$i]}" = "0" ] || { echo "curl failed for request $i"; fail=1; }
             case "$code" in
               200) twohundreds=$((twohundreds + 1)) ;;
               503) grep -q 'urn:pdfvalidator:error:busy' "$RUNNER_TEMP/resp$i.json" || { echo "503 without the busy problem type"; fail=1; } ;;
@@ -123,8 +128,9 @@ jobs:
           running=$(docker inspect -f '{{.State.Running}}' pdfv-load)
           echo "running=$running restartCount=$restarts oomKilled=$oom"
           if [ "$running" != "true" ] || [ "$restarts" != "0" ] || [ "$oom" != "false" ]; then fail=1; fi
-          if docker logs pdfv-load 2>&1 | grep -q 'OutOfMemoryError'; then
-            echo "OutOfMemoryError found in the container logs"; fail=1
+          # Match a real error, not the JVM banner echoing -XX:+ExitOnOutOfMemoryError.
+          if docker logs pdfv-load 2>&1 | grep -Eq 'java\.lang\.OutOfMemoryError'; then
+            echo "java.lang.OutOfMemoryError found in the container logs"; fail=1
           fi
 
           echo "--- memory samples (docker stats) ---"
@@ -133,8 +139,17 @@ jobs:
                  if (u=="GiB") v*=1024; else if (u=="KiB") v/=1024; else if (u=="B") v/=1048576;
                  if (v>max) max=v }
                END { printf "peak sampled memory: %.1f MiB (limit 512)\n", max }' "$RUNNER_TEMP/mem.txt"
-          docker exec pdfv-load cat /sys/fs/cgroup/memory.peak 2>/dev/null \
-            | awk '{ printf "cgroup memory.peak: %.1f MiB\n", $1/1048576 }' || true
+          peak=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.peak 2>/dev/null || true)
+          limit=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+          if [ -n "$peak" ] && [ -n "$limit" ] && [ "$limit" != "max" ]; then
+            echo "$peak $limit" | awk '{ printf "cgroup memory.peak: %.1f MiB of %.1f MiB (%.1f%%)\n", $1/1048576, $2/1048576, 100*$1/$2 }'
+            # Headroom guard: fail at >= 95% of the limit so we notice before an OOM kill happens.
+            if [ "$(echo "$peak $limit" | awk '{ print ($1 >= 0.95 * $2) ? 1 : 0 }')" = "1" ]; then
+              echo "memory.peak is at or above 95% of the container limit"; fail=1
+            fi
+          else
+            echo "cgroup memory.peak/memory.max not readable; headroom guard skipped"
+          fi
           docker stats --no-stream pdfv-load
 
           if [ "$fail" != "0" ]; then
