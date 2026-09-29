@@ -5,3 +5,23 @@ spring:
     multipart:
       max-file-size: 20MB
       max-request-size: 20MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Only health and info are exposed; every other actuator endpoint
+        # (env, beans, threaddump, ...) stays off by default.
+        include: health,info
+
+# Trust store used by CertificateChainValidator (PkixCertificateChainValidator)
+# to validate a signer's certificate chain. All properties are optional: the
+# bundled Spanish root certificates (src/main/resources/truststore/) are
+# always loaded; an external directory and/or a PKCS#12 file are additive on
+# top of them, never a replacement. Uncomment and set to add custom roots
+# without touching the code -- see README section 2.7/4.
+#pdfvalidator:
+#  truststore:
+#    external-dir: /path/to/a/directory/with/one-certificate-per-file
+#    pkcs12-path: /path/to/truststore.p12
+#    pkcs12-password: change-me

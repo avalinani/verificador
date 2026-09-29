@@ -81,17 +81,23 @@ class ArchitectureTest {
     }
 
     /**
-     * {@code api} (not created yet -- T09) may depend on {@code application}
-     * and {@code domain}, but not on {@code infrastructure} directly (it
-     * should only ever see infrastructure adapters through the ports/use
-     * case they implement). {@code allowEmptyShould(true)} lets this rule
-     * pass vacuously today and start being enforced the moment the package
-     * exists.
+     * {@code api} may depend on {@code application} and {@code domain}
+     * (never on {@code infrastructure} directly -- it should only ever see
+     * infrastructure adapters through the ports/use case they implement),
+     * plus the web framework and API-documentation libraries a REST
+     * controller layer legitimately needs to exist at all (Spring MVC/HTTP
+     * types, springdoc/swagger annotations). This does not weaken the
+     * boundary the rule exists for: {@code infrastructure} is still not in
+     * the allowed list, so an {@code api} class reaching around the use case
+     * into a concrete adapter is still caught. {@code allowEmptyShould(true)}
+     * lets this rule pass vacuously before T09, when the package did not yet
+     * exist.
      */
     @Test
     void apiDependsOnlyOnApplicationAndDomain() {
         ArchRule rule = classes().that().resideInAPackage(API)
-                .should().onlyDependOnClassesThat().resideInAnyPackage(API, APPLICATION, DOMAIN, "java..", "javax..")
+                .should().onlyDependOnClassesThat().resideInAnyPackage(
+                        API, APPLICATION, DOMAIN, "java..", "javax..", "org.springframework..", "io.swagger..")
                 .allowEmptyShould(true);
         rule.check(classes);
     }

@@ -39,8 +39,8 @@ El servicio no guarda los documentos analizados: es **sin estado** y sin base de
 ### 2.1 Flujo de análisis (objetivo)
 
 ```
-Cliente (UI o Swagger)
-   │  POST /api/v1/pdf/analyze  (multipart, PDF ≤ 20 MB)          ⏳
+Cliente (UI ⏳ o Swagger UI ✅)
+   │  POST /api/v1/pdf/analyze  (multipart, PDF ≤ 20 MB)          ✅
    ▼
 api ──► application: AnalyzePdfUseCase                           ✅
             │ orquesta los puertos del dominio (ver §2.9)
@@ -50,10 +50,10 @@ api ──► application: AnalyzePdfUseCase                           ✅
             ├─► CertificateChainValidator PKIX contra trust store            ✅
             ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)   ⏳ (NoOp por ahora, T10)
             └─► PdfaConformanceValidator  preflight PDF/A-1b                 ✅
-   ◄── PdfAnalysisReport (JSON)
+   ◄── PdfAnalysisReportDto (JSON) / ProblemDetail (error)
 ```
 
-La capa `api` (controlador REST, DTOs, mapeo de errores) todavía no existe (⏳, T09); `AnalyzePdfUseCase` ya es real y está cubierto por tests de unidad, un test de integración con adaptadores reales y por las reglas de arquitectura de ArchUnit (§2.9, §2.10).
+La capa `api` (controlador REST, DTOs explícitos, mapeador, gestión de errores con `ProblemDetail`) ya existe (T09), cableada sobre `AnalyzePdfUseCase` mediante Spring (`infrastructure/config` + la raíz `com.coam.pdfvalidator`, ver §2.11); `AnalyzePdfUseCase` está cubierto por tests de unidad, un test de integración con adaptadores reales, tests de la capa `api` (slice de controlador, mapeador, un test end-to-end completo) y por las reglas de arquitectura de ArchUnit (§2.9, §2.10). Falta la interfaz web (⏳, T11).
 
 ### 2.2 Cómo se detecta que un documento ha cambiado después de firmarse
 
@@ -106,6 +106,7 @@ El núcleo del sistema (`domain/`) es Java puro: no importa Spring, PDFBox ni Bo
 | Certificado | `CertificateInfo` | Sujeto, emisor, fechas, algoritmo, URLs OCSP/CRL y el certificado codificado (DER) |
 | Sello de tiempo | `TimestampInfo` | `genTime`, `tsaName`, `imprintValid`, `signatureValid`, certificado de la TSA y una nota opcional; `absent()` cuando no hay sello |
 | Cadena y revocación | `ChainStatus`, `RevocationStatus` | Empiezan como `NOT_CHECKED` y se completan más tarde; `ChainStatus` ya lo calcula `PkixCertificateChainValidator` (§2.7) |
+| Error de sección **(T08b)** | `SectionError`, `AnalysisSection` | Cuando una sección guardada (`PDFA`, `SIGNATURES`) falla de forma inesperada, `PdfAnalysisReport.sectionErrors()` lo informa explícitamente, para que una lista de firmas vacía por ese motivo nunca sea indistinguible de "este documento no tiene firmas" |
 
 Los **puertos** son interfaces pequeñas que la infraestructura implementará con las librerías: `HashCalculator`, `PdfDocumentReader`, `SignatureVerifier`, `CertificateChainValidator`, `RevocationChecker` y `PdfaConformanceValidator`.
 
@@ -207,6 +208,8 @@ Cada raíz se descargó por HTTPS directamente de la web oficial de su propia au
 
 `HashCalculator#hash` es la única sección deliberadamente **sin** esta guarda: calcular un hash de un array de bytes no puede fallar de forma significativa con ninguna de las implementaciones de este proyecto, y `PdfAnalysisReport` exige hashes no nulos, así que no hay ningún valor de repuesto razonable que sustituir si de algún modo fallara.
 
+**(T08b) Un resultado vacío nunca debe ser indistinguible de un fallo silencioso**: antes de esta tarea, si `SignatureVerifier#verify` lanzaba una excepción inesperada, el informe degradaba a una lista de firmas vacía -- exactamente igual que un documento legítimamente sin firmar. Ahora, además de degradar con elegancia (comportamiento sin cambios), tanto ese caso como el de `PdfaConformanceValidator#validate` añaden un `SectionError` explícito a `PdfAnalysisReport#sectionErrors()`, identificando qué sección (`SIGNATURES` o `PDFA`) falló y por qué. **(T08b) Orden de la validación PDF/A**: la declaración XMP ahora se comprueba *antes* de invocar el validador formal, en vez de después; un documento que declara PDF/A-2/3 ya no llama en absoluto a *preflight* (cuyo resultado se iba a descartar de todos modos), evitando pagar el coste de un segundo parseo completo del módulo -- ya documentado en otro sitio como pesado -- para un resultado que nunca se iba a usar.
+
 **Tests**: `AnalyzePdfUseCaseTest` (16, con *fakes* escritos a mano para cada puerto, sin Mockito) cubre la orquestación completa, las tres combinaciones de `validationTime`, el flag de revocación activado/desactivado (incluida una firma sin cadena), la declaración PDF/A-2 → `NOT_VALIDATED`, el aislamiento de fallos por sección (PDF/A, firmas, enriquecimiento de una firma sin afectar a las demás, fusión de anomalías), la propagación de `EncryptedPdfException`/`InvalidPdfException`, y `analyzedAt` viniendo del `Clock` inyectado. `AnalyzePdfUseCaseIntegrationTest` (1) cablea los adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar, comprobando un informe completo y coherente: integridad íntegra, cadena de confianza `TRUSTED`, sello de tiempo válido.
 
 ### 2.10 Arquitectura hexagonal comprobada con ArchUnit (T08)
@@ -220,6 +223,33 @@ Cada raíz se descargó por HTTPS directamente de la web oficial de su propia au
 - **Sin ciclos de importación entre los cuatro paquetes de primer nivel** (`domain`, `application`, `infrastructure`, `api`).
 
 La importación de clases excluye explícitamente los propios tests (`ImportOption.Predefined.DO_NOT_INCLUDE_TESTS`): los *fixtures* de prueba (`TestPdfFactory`, `TestPki`, etc.) usan PDFBox/Bouncy Castle directamente a propósito y no deben hacer fallar estas reglas, que protegen la arquitectura de producción, no las herramientas de test.
+
+### 2.11 API REST y cableado Spring (T09)
+
+**Endpoint único**: `POST /api/v1/pdf/analyze` (`api/PdfAnalysisController`), `multipart/form-data` con el campo `file` y el parámetro opcional `checkRevocation` (booleano, por defecto `false`). Nunca confía en el nombre del fichero subido: comprueba los propios bytes en busca de una cabecera `%PDF-` reconocible en los primeros 1024 bytes (la misma ventana que usa `PdfBoxDocumentReader`) antes de intentar analizarlo, así que un fichero llamado `factura.pdf` con contenido que no sea un PDF se rechaza igual.
+
+**DTOs explícitos, nunca tipos de dominio en la respuesta** (`api/dto/`): `PdfAnalysisReportMapper` traduce `PdfAnalysisReport` (y todo lo que contiene) a `PdfAnalysisReportDto`, campo a campo, con nombres de campo JSON estables y documentados (`camelCase`). Los enumerados del dominio (`IntegrityStatus`, `ChainStatus`, `RevocationState`, `PdfaValidationStatus`, `Rotation`, `Orientation`, `AnalysisSection`) se exponen como su nombre en texto (`"INTACT"`, `"TRUSTED"`, ...), nunca como el tipo Java. Un `CertificateInfo` **nunca** expone su codificación DER (`encoded`) en la respuesta: en su lugar se calcula y expone una huella SHA-256 (`sha256Fingerprint`) como identificador estable y compacto.
+
+**Validación y errores** (`api/error/`, `@RestControllerAdvice(assignableTypes = PdfAnalysisController.class)`, RFC 9457 `ProblemDetail`):
+
+| Estado | Causa | `type` |
+|---|---|---|
+| `400` | Falta el campo `file`, o está vacío | `urn:pdfvalidator:error:missing-file` |
+| `400` | El contenido no empieza por una cabecera `%PDF-` reconocible (aunque el nombre del fichero termine en `.pdf`) | `urn:pdfvalidator:error:not-a-pdf` |
+| `422` | Cabecera `%PDF-` presente, pero el documento está corrupto (`InvalidPdfException`) | `urn:pdfvalidator:error:corrupt-pdf` |
+| `422` | El documento está cifrado con una contraseña de usuario no vacía (`EncryptedPdfException`) | `urn:pdfvalidator:error:encrypted-pdf` |
+| `413` | El fichero supera el límite de subida configurado (`spring.servlet.multipart.max-file-size`, 20 MB) | `urn:pdfvalidator:error:file-too-large` |
+| `500` | Fallo inesperado; nunca se filtra el mensaje de la excepción ni la traza | `urn:pdfvalidator:error:internal-error` |
+
+**Lección aprendida ejecutando la aplicación en local**: `@RestControllerAdvice` sin `assignableTypes` se aplica a **toda** la aplicación, incluido el manejo de errores interno de Spring MVC para peticiones que no llegan a ningún controlador propio. La primera versión de este *advice* no estaba acotada, y su `@ExceptionHandler(Exception.class)` interceptaba la `NoResourceFoundException` que Spring lanza para un endpoint de Actuator no expuesto (p. ej. `/actuator/env`), convirtiendo un `404` correcto en un `500` que además filtraba un mensaje genérico. Se detectó arrancando la aplicación en local y probando `/actuator/env` manualmente (no solo con MockMvc), y se corrigió acotando el *advice* únicamente a `PdfAnalysisController` (`assignableTypes = PdfAnalysisController.class`); un test de regresión (`PdfAnalysisEndToEndTest#healthAndInfoAreExposedButOtherActuatorEndpointsAreNot`) comprueba que Actuator, *springdoc* y el resto de la aplicación siguen con el comportamiento de error por defecto de Spring Boot.
+
+**Cableado de adaptadores** (`infrastructure/config/AdapterConfiguration` + `com.coam.pdfvalidator.UseCaseConfiguration`): `AdapterConfiguration` declara un `@Bean` de Spring por cada adaptador de infraestructura (`JcaHashCalculator`, `PdfBoxDocumentReader`, `BcSignatureVerifier`, `PreflightPdfaValidator`, `PkixCertificateChainValidator`, `TrustAnchorProvider`) sin que ninguno de ellos deje de ser una clase Java sencilla e inyectable por constructor. `AnalyzePdfUseCase` (y el `NoOpRevocationChecker` provisional) se cablean, en cambio, en `UseCaseConfiguration`, en el paquete raíz `com.coam.pdfvalidator` -- **fuera** de las cuatro capas de la arquitectura hexagonal -- porque `ArchitectureTest` prohíbe que `infrastructure` dependa de `application`, y el cableado del caso de uso necesariamente depende de ambos. Poner ese único `@Bean` en el paquete raíz (el mismo donde ya vive `PdfValidatorApplication`) es la "raíz de composición" convencional de una arquitectura hexagonal: el pegamento de cableado no pertenece a ninguna de las capas que conecta. La regla de ArchUnit `apiDependsOnlyOnApplicationAndDomain` se amplió en la misma tarea para permitir que `api` dependa también de Spring MVC y de las anotaciones de *springdoc*/*swagger* (indispensables para que exista un controlador REST real), sin dejar de prohibir que dependa de `infrastructure`.
+
+**`TrustStoreProperties`** (`infrastructure/config`, `@ConfigurationProperties(prefix = "pdfvalidator.truststore")`): `external-dir`, `pkcs12-path`, `pkcs12-password`, los tres opcionales (ver §4).
+
+**Documentación OpenAPI** (`infrastructure/config/OpenApiConfiguration`): título, descripción y licencia GPL-3.0; la versión se lee de `BuildProperties` (generado por el objetivo `build-info` de `spring-boot-maven-plugin`, añadido en esta tarea) cuando está disponible, con una constante de respaldo sincronizada manualmente con `pom.xml` para cuando no lo está (p. ej. un `mvn test` suelto, sin pasar por `package`/`verify`).
+
+**Tests**: `PdfAnalysisControllerTest` (slice `@WebMvcTest`, caso de uso *stubbeado* con `@MockitoBean`): 200 con el informe mapeado, `checkRevocation` reenviado (y su valor por defecto `false`), 400 (fichero ausente/vacío, contenido sin cabecera PDF), 422 (corrupto, cifrado), 500 sin filtrar el mensaje. `PdfAnalysisExceptionHandlerTest`: cada `@ExceptionHandler` probado directamente (sin contexto Spring), incluida la comprobación de que el detalle de un fallo inesperado no contiene el mensaje original de la excepción. `PdfAnalysisReportMapperTest`: mapeo campo a campo de un informe completo, incluida la comprobación estructural (por reflexión) de que `CertificateInfoDto` no tiene ningún componente de tipo `byte[]`. `PdfAnalysisEndToEndTest` (`@SpringBootTest` + `MockMvc`, un único test de extremo a extremo con adaptadores reales): sube un PDF firmado y sellado en tiempo real (`TestPdfFactory#signedWithTimestamp`) y comprueba el JSON completo; además sirve de test de "el contexto arranca" para `/v3/api-docs` (contiene la ruta `/api/v1/pdf/analyze`, título y licencia correctos) y para la exposición de Actuator (`health`/`info` sí, el resto no).
 
 ## 3. Stack tecnológico
 
@@ -262,12 +292,77 @@ mvnw.cmd verify
 ### Arrancar la aplicación
 
 ```bash
+# Linux / macOS / Git Bash -- asegúrate de que JAVA_HOME apunta al JDK 25
+export JAVA_HOME="/ruta/al/jdk-25"   # en el equipo de desarrollo: /c/Program Files/OpenLogic/jdk-25.0.4.7-hotspot
+export PATH="$JAVA_HOME/bin:$PATH"
+
 ./mvnw spring-boot:run
 ```
 
-- API REST y Swagger UI (`/swagger-ui.html`): ⏳
+Con la configuración por defecto (`application.yml`), una vez arrancada:
+
+- API REST: `POST http://localhost:8080/api/v1/pdf/analyze`
+- Swagger UI: <http://localhost:8080/swagger-ui.html> ✅
+- Especificación OpenAPI: <http://localhost:8080/v3/api-docs> ✅
+- Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8080/actuator/health>, <http://localhost:8080/actuator/info>
 - Interfaz web (`/index.html`): ⏳
 - Docker / Docker Compose: ⏳
+
+### Ejemplo de uso de la API
+
+```bash
+curl -F "file=@/ruta/a/documento.pdf" "http://localhost:8080/api/v1/pdf/analyze?checkRevocation=false"
+```
+
+Respuesta (recortada; ver el modelo completo en Swagger UI):
+
+```json
+{
+  "fileName": "documento.pdf",
+  "sizeBytes": 153521,
+  "hashes": { "sha256": "ec9493...", "sha512": "02bc1c..." },
+  "structure": { "headerVersion": "1.6", "pageCount": 1, "revisionCount": 2, "pages": [ { "rotation": "DEG_0", "orientation": "PORTRAIT" } ] },
+  "security": { "encrypted": false, "permissions": ["PRINT", "MODIFY"] },
+  "pdfa": { "status": "NON_COMPLIANT", "declaration": { "declared": false }, "issues": [ { "code": "3.1.3", "message": "..." } ] },
+  "signatures": [
+    {
+      "fieldName": "Signature1",
+      "integrity": "INTACT",
+      "coverage": { "coversWholeDocument": true },
+      "timestamp": { "present": true, "imprintValid": true, "signatureValid": true },
+      "chain": [ { "subject": "CN=...", "sha256Fingerprint": "78682c..." } ],
+      "chainStatus": "UNTRUSTED_ROOT",
+      "revocation": { "state": "NOT_CHECKED" },
+      "anomaly": null
+    }
+  ],
+  "analyzedAt": "2026-09-27T19:59:31.644705600Z",
+  "sectionErrors": []
+}
+```
+
+`chainStatus` depende de si el certificado firmante llega a una de las raíces configuradas (§2.7); `sectionErrors` solo contiene entradas si una sección falló de forma inesperada (§2.9/§2.11).
+
+### Errores de la API
+
+| Estado HTTP | Causa | `type` |
+|---|---|---|
+| `400` | Falta el campo `file`, o está vacío | `urn:pdfvalidator:error:missing-file` |
+| `400` | El contenido no empieza por una cabecera `%PDF-` reconocible | `urn:pdfvalidator:error:not-a-pdf` |
+| `422` | Documento con cabecera PDF pero corrupto | `urn:pdfvalidator:error:corrupt-pdf` |
+| `422` | Documento cifrado con contraseña de usuario no vacía | `urn:pdfvalidator:error:encrypted-pdf` |
+| `413` | Fichero superior al límite de subida configurado | `urn:pdfvalidator:error:file-too-large` |
+| `500` | Fallo inesperado (sin detalle interno en la respuesta) | `urn:pdfvalidator:error:internal-error` |
+
+### Configuración
+
+| Propiedad | Descripción | Por defecto |
+|---|---|---|
+| `spring.servlet.multipart.max-file-size` / `max-request-size` | Límite de subida | `20MB` |
+| `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
+| `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
+| `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |
+| `management.endpoints.web.exposure.include` | Endpoints de Actuator expuestos | `health,info` |
 
 ## 5. Estructura del proyecto
 
@@ -286,11 +381,15 @@ src/main/java/com/coam/pdfvalidator/
 │  ├─ pdfbox/                     PdfBoxDocumentReader (estructura, seguridad, declaración PDF/A), RevisionCounter
 │  ├─ bouncycastle/               BcSignatureVerifier (/ByteRange + CMS, cadena de certificados, sellos RFC 3161)
 │  ├─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
-│  └─ preflight/                  PreflightPdfaValidator (validación formal PDF/A-1b)
-└─ api/                           Controlador REST, DTOs, gestión de errores  ⏳
+│  ├─ preflight/                  PreflightPdfaValidator (validación formal PDF/A-1b)
+│  └─ config/                     AdapterConfiguration (beans de adaptadores), TrustStoreProperties, OpenApiConfiguration  ✅
+├─ api/                           Controlador REST, DTOs, gestión de errores  ✅
+│  ├─ dto/                        PdfAnalysisReportDto y el resto de DTOs explícitos + PdfAnalysisReportMapper
+│  └─ error/                      PdfAnalysisExceptionHandler (ProblemDetail), MissingFileException, NotAPdfException
+└─ UseCaseConfiguration.java      Cableado de AnalyzePdfUseCase (raíz de composición, fuera de las 4 capas)  ✅
 
 src/main/resources/
-├─ application.yml                Configuración (límite de subida 20 MB)
+├─ application.yml                Configuración (límite de subida 20 MB, Actuator, trust store opcional)
 ├─ truststore/                    Raíces españolas empaquetadas (PEM) + SOURCES.md (procedencia y huellas)
 └─ static/                        Interfaz web                           ⏳
 
@@ -300,6 +399,9 @@ src/test/java/com/coam/pdfvalidator/
 ├─ domain/                        Tests del modelo de dominio
 ├─ application/                   AnalyzePdfUseCaseTest (fakes) + AnalyzePdfUseCaseIntegrationTest (adaptadores reales)
 ├─ infrastructure/                Tests de los adaptadores (pdfbox, bouncycastle, crypto, pki, preflight)
+├─ api/                           PdfAnalysisControllerTest (slice), PdfAnalysisEndToEndTest (SpringBootTest + MockMvc)
+│  ├─ dto/                        PdfAnalysisReportMapperTest
+│  └─ error/                      PdfAnalysisExceptionHandlerTest
 └─ architecture/                  ArchitectureTest: reglas ArchUnit de la arquitectura hexagonal
 
 odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
@@ -328,7 +430,10 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Validación formal PDF/A-1b (*preflight*) | ✅ |
 | Orquestación completa del análisis (`AnalyzePdfUseCase`): hashes, estructura, PDF/A combinado, firmas enriquecidas con cadena/revocación, aislamiento de fallos por sección | ✅ |
 | Arquitectura hexagonal comprobada automáticamente (ArchUnit) | ✅ |
-| API REST + Swagger UI | ⏳ |
+| Errores explícitos por sección (`sectionErrors`) cuando una sección falla inesperadamente | ✅ |
+| API REST (`POST /api/v1/pdf/analyze`) + Swagger UI + OpenAPI | ✅ |
+| Errores RFC 9457 (`ProblemDetail`) con `type` estable por causa | ✅ |
+| Actuator (`health`, `info` únicamente) | ✅ |
 | Interfaz web con arrastrar y soltar (pantalla **Validar**) | ⏳ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ⏳ |
 | Despliegue Docker en VM de bajo consumo | ⏳ |
@@ -357,9 +462,16 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `PreflightPdfaValidatorTest` **(T07, T07b)** | Documento sin `OutputIntent` ni XMP → `NON_COMPLIANT` con códigos de error reales de *preflight* (`3.1.3`, `2.4.3`, `7.1`); entrada corrupta (cabecera presente pero estructura rota) → `NOT_VALIDATED`, sin lanzar excepción; entrada cifrada (contraseña de usuario no vacía) → `NOT_VALIDATED` con incidencia `ENCRYPTED`; entrada que no es un PDF en absoluto → `InvalidPdfException`; documento mínimo con `OutputIntent` sRGB (perfil del JDK) y XMP `pdfaid` → `COMPLIANT`, ya sin saltarse en ninguna plataforma; **(T07b)** documento cifrado con contraseña de usuario vacía (rama `probe.isEncrypted()`, distinta de la de excepción) → `NOT_VALIDATED`; más de 200 incidencias sintéticas (con un duplicado exacto) → deduplicadas y truncadas con un marcador `TRUNCATED` |
 | `AnalyzePdfUseCaseTest` **(T08)** | Orquestación completa con *fakes* escritos a mano para cada puerto: ensamblado del informe; las tres combinaciones de `validationTime` (sello de tiempo válido, sello inválido con fecha de firma auto-declarada, ninguna de las dos → reloj); revocación desactivada, activada con emisor, activada sin cadena de certificados; declaración PDF/A-2 → `NOT_VALIDATED` (frente a PDF/A-1, que usa el resultado formal tal cual); aislamiento de fallos (validador PDF/A, verificador de firmas, enriquecimiento de una firma sin afectar a otra ni fusionar mal una anomalía ya existente); `analyzedAt` viene del `Clock` inyectado; `EncryptedPdfException`/`InvalidPdfException` se propagan |
 | `AnalyzePdfUseCaseIntegrationTest` **(T08)** | El único test de integración de la orquestación: adaptadores reales (sin *fakes*) contra un PDF firmado y sellado en tiempo real (`TestPdfSigner#signWithTimestamp`) con un almacén de confianza que contiene la raíz de prueba usada para firmar — informe completo coherente: integridad `INTACT`, cadena `TRUSTED`, sello de tiempo válido |
-| `ArchitectureTest` **(T08)** | Reglas ArchUnit (§2.10): dominio sin librerías (ni siquiera `java.security.cert`/`java.awt`), `application` solo depende de `domain` y Java puro, `infrastructure` nunca depende de `application`/`api`, `api` (aún no existe) solo podrá depender de `application`/`domain`, sin ciclos entre los cuatro paquetes de primer nivel — verificado también introduciendo a propósito una dependencia prohibida y comprobando que la regla correspondiente la detecta |
+| `ArchitectureTest` **(T08, T09)** | Reglas ArchUnit (§2.10): dominio sin librerías (ni siquiera `java.security.cert`/`java.awt`), `application` solo depende de `domain` y Java puro, `infrastructure` nunca depende de `application`/`api`, `api` solo puede depender de `application`/`domain`/Spring MVC/`springdoc` (nunca de `infrastructure`), sin ciclos entre los cuatro paquetes de primer nivel — verificado también introduciendo a propósito una dependencia prohibida y comprobando que la regla correspondiente la detecta |
+| `SectionErrorTest`, `PdfAnalysisReport` (defensivo) **(T08b)** | `SectionError`/`AnalysisSection`: construcción, `null` rechazado; copia defensiva de `PdfAnalysisReport#sectionErrors()` |
+| `AnalyzePdfUseCaseTest` **(T08b)** | Además de lo ya cubierto en T08: una sección guardada que falla añade el `SectionError` correspondiente (`SIGNATURES`/`PDFA`) sin perder el resto del informe; un análisis sin fallos no añade ninguno; un documento que declara PDF/A-2/3 ya no invoca en absoluto al validador formal (verificado contando invocaciones sobre el *fake*) |
+| `RevisionCounterTest` **(T08b)** | Las dos pruebas de concurrencia acotan `executor.invokeAll(...)` con un *timeout* real en vez de uno inalcanzable en la práctica (ver texto de T08b más abajo); verificado deliberadamente con una tarea artificialmente colgada: con el código anterior el test tardaba lo que tardara la tarea y aun así pasaba, con el corregido falla dentro del *timeout* configurado |
+| `PdfAnalysisControllerTest` **(T09)** | *Slice* `@WebMvcTest` con `AnalyzePdfUseCase` *stubbeado* (`@MockitoBean`): 200 con el informe mapeado y `checkRevocation` reenviado (incluido su valor por defecto), 400 (parte `file` ausente, vacía, contenido sin cabecera PDF pese a llamarse `.pdf`), 422 (`InvalidPdfException`/`EncryptedPdfException`), 500 sin filtrar el mensaje de una excepción inesperada |
+| `PdfAnalysisExceptionHandlerTest` **(T09)** | Cada `@ExceptionHandler` invocado directamente (sin contexto Spring): estado HTTP y `type` correctos para cada causa; el detalle de un fallo inesperado nunca contiene el mensaje original de la excepción |
+| `PdfAnalysisReportMapperTest` **(T09)** | Mapeo completo de un informe con todos sus campos poblados (incluida una firma con sello de tiempo, cadena de certificados y `sectionErrors`); un informe mínimo (sello ausente, sin declaración PDF/A, sin `sectionErrors`); comprobación estructural por reflexión de que `CertificateInfoDto` no expone ningún componente `byte[]` |
+| `PdfAnalysisEndToEndTest` **(T09)** | `@SpringBootTest` + `MockMvc`, adaptadores reales: sube un PDF firmado y sellado en tiempo real (`TestPdfFactory#signedWithTimestamp`) y comprueba el JSON completo (incluida la cadena `UNTRUSTED_ROOT`, esperada porque la CA de prueba no está en el almacén de confianza real); `/v3/api-docs` responde con la ruta del *endpoint*, título y licencia correctos; solo `health`/`info` están expuestos en Actuator (regresión: ver texto de T09 sobre el `@RestControllerAdvice` sin acotar) |
 
-**Estado actual:** 175 tests, todos en verde (`./mvnw verify`).
+**Estado actual:** 202 tests, todos en verde (`./mvnw verify`).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado (actualización incremental), firmado y manipulado, doble firma, firmado con sello de tiempo RFC 3161 válido, firmado con sello de tiempo de imprint incorrecto, páginas rotadas (incluidos valores no normalizados como `-90` o `450`, y una rotación heredada del nodo `/Pages`), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF y con declaración PDF/A (XMP `pdfaid`). La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria independiente de la CA de firma, con un certificado que declara el uso extendido de clave `id-kp-timeStamping`.
 
@@ -379,8 +491,12 @@ Enlace público a las slides: ⏳ *(pendiente)*
 - **PDF/A-1b únicamente.** El módulo *preflight* de PDFBox solo valida PDF/A-1b. Para PDF/A-2/3 se informará de la declaración XMP, pero no se validará formalmente.
 - **Revocación opcional y acotada.** Las consultas OCSP/CRL dependen de la red, así que se activan con un parámetro, tienen un timeout de 2 s y, si fallan, el resultado es `UNKNOWN` sin bloquear el resto del análisis.
 - **Sin lista de confianza europea (TSL).** La cadena se valida contra un almacén de raíces configurable con las CA españolas.
-- **Documento cifrado (contraseña no vacía) o corrupto: se propaga, no se degrada a un informe parcial (T08).** `AnalyzePdfUseCase` deja que `EncryptedPdfException`/`InvalidPdfException` salgan de `analyze(...)` sin capturarlas: no hay un informe parcial razonable para un documento que ni siquiera se pudo abrir. La futura capa REST (T09) debe mapear ambas a `422`.
+- **Documento cifrado (contraseña no vacía) o corrupto: se propaga, no se degrada a un informe parcial (T08).** `AnalyzePdfUseCase` deja que `EncryptedPdfException`/`InvalidPdfException` salgan de `analyze(...)` sin capturarlas: no hay un informe parcial razonable para un documento que ni siquiera se pudo abrir. La capa REST (T09) mapea ambas a `422` (§2.11/§4).
 - **`NoOpRevocationChecker` como implementación provisional (T08, hasta T10).** Cuando se pide comprobar revocación (`checkRevocation=true`) pero el `RevocationChecker` real (OCSP/CRL) todavía no existe, se informa `NOT_CHECKED` con un detalle explícito ("revocation checking not available yet") en vez de fingir que se comprobó — deliberadamente distinto del `notChecked()` que se usa cuando el flag está desactivado.
+- **(T08b) Un resultado vacío nunca debe ser indistinguible de un fallo silencioso.** `PdfAnalysisReport` gana `sectionErrors()`: cuando `SignatureVerifier`/`PdfaConformanceValidator` fallan de forma inesperada, se añade una entrada explícita en vez de dejar que una lista de firmas vacía se confunda con "documento sin firmar".
+- **(T09) El cableado del caso de uso vive fuera de las cuatro capas, en el paquete raíz.** `ArchitectureTest` prohíbe que `infrastructure` dependa de `application`; como el `@Bean` de `AnalyzePdfUseCase` necesariamente depende de ambos, se cablea en `com.coam.pdfvalidator.UseCaseConfiguration` (junto a `PdfValidatorApplication`), la "raíz de composición" convencional de una arquitectura hexagonal, en vez de forzar esa dependencia dentro de `infrastructure.config`.
+- **(T09) DTOs explícitos, nunca el dominio serializado directamente; nunca la codificación DER de un certificado.** `PdfAnalysisReportMapper` traduce cada tipo de dominio a un DTO propio; los certificados se identifican por una huella SHA-256, no por sus bytes DER.
+- **(T09) `@RestControllerAdvice` acotado a `PdfAnalysisController`.** Sin `assignableTypes`, un `@ExceptionHandler(Exception.class)` genérico se aplica a toda la aplicación (incluidos Actuator, *springdoc* y cualquier recurso estático), pudiendo convertir un `404` legítimo de Spring en un `500` propio — detectado ejecutando la aplicación en local, no solo con tests de *slice* (§2.11).
 
 ## 11. Historial de cambios
 
@@ -396,6 +512,8 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-27 | (T05b) Un fallo al mapear el certificado de la TSA ya no descarta el resto del resultado del sello de tiempo; camino de resiliencia del mapeador de certificados probado directamente; test de rendimiento del contador de revisiones sustituido por una comprobación determinista (sin reloj de pared). (T06) Validación de cadena de confianza X.509 con la implementación PKIX de la JDK (`PkixCertificateChainValidator`), contra un almacén de confianza configurable (`TrustAnchorProvider`) con seis raíces españolas empaquetadas y verificadas de forma independiente (§2.7). |
 | 2026-09-27 | (T06b) `RevisionCounter` ya no guarda su diagnóstico de escaneo en un campo `static` (condición de carrera bajo concurrencia); `PkixCertificateChainValidator` informa un certificado no parseable como `INCOMPLETE_CHAIN` en vez de lanzar excepción; `TrustAnchorProvider` omite (sin abortar) un fichero inválido en el directorio externo, con tests nuevos para directorio externo y PKCS#12; la comprobación de vigencia de las raíces empaquetadas ya usa una fecha de referencia fija en vez de `Instant.now()` (§2.7). (T07) Validación formal PDF/A-1b con el módulo *preflight* de Apache PDFBox (`PreflightPdfaValidator`): `COMPLIANT`/`NON_COMPLIANT` con incidencias deduplicadas y acotadas, `NOT_VALIDATED` para cifrado o fallos internos sin lanzar excepción, `InvalidPdfException` solo para entradas sin cabecera `%PDF-` reconocible; documenta por qué solo se valida formalmente PDF/A-1b (§2.8). |
 | 2026-09-27 | (T07b) El fixture PDF/A-1b conforme usa ahora el perfil sRGB del propio JDK en vez del fichero de Windows, así que su test ya no se salta en CI; el sondeo previo de cifrado en `PreflightPdfaValidator` también captura una `RuntimeException` inesperada; nuevos tests para la rama de documento cifrado con contraseña vacía y para la truncación/deduplicación de incidencias a 200; `TrustAnchorProvider` ya no propaga una excepción si el directorio externo no se puede ni listar; el test de concurrencia de `RevisionCounter` se reforzó para detectar específicamente un contador de pasos compartido reintroducido (§2.8). (T08) `AnalyzePdfUseCase`: orquesta todos los puertos del dominio en un único análisis, decide `validationTime` para la cadena de confianza (sello de tiempo válido → fecha de firma auto-declarada → reloj), combina la validación PDF/A-1b formal con la declaración XMP real, resuelve el flag de revocación (con `NoOpRevocationChecker` como implementación provisional hasta T10) y aísla el fallo de una sección para no perder el resto del informe; reglas de arquitectura hexagonal comprobadas automáticamente con ArchUnit (§2.9, §2.10). |
+| 2026-09-27 | (T08b) `PdfAnalysisReport` gana `sectionErrors()`: un fallo inesperado de `SignatureVerifier`/`PdfaConformanceValidator` ya no es indistinguible de un resultado vacío legítimo. La validación PDF/A ahora comprueba la declaración XMP antes de invocar el validador formal (y lo omite del todo para PDF/A-2/3, evitando un parseo de más). Corregido el *timeout* ineficaz de los tests de concurrencia de `RevisionCounter` (acotando `executor.invokeAll(...)` en vez de solo el `future.get(...)` posterior). |
+| 2026-09-27 | (T09) API REST: `POST /api/v1/pdf/analyze` (multipart, `checkRevocation` opcional), DTOs explícitos sin exponer tipos de dominio ni bytes DER de certificados, errores RFC 9457 (`ProblemDetail`) con `type` estable por causa, Swagger UI/OpenAPI, Actuator limitado a `health`/`info`. Cableado de adaptadores con Spring (`infrastructure/config`) y del caso de uso en la raíz de composición (`UseCaseConfiguration`), fuera de las cuatro capas de la arquitectura. Corregido en local un `@RestControllerAdvice` sin acotar que convertía en `500` los `404` legítimos de Actuator/recursos estáticos (§2.11). |
 
 ## 12. Repositorio y licencia
 
