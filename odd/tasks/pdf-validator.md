@@ -31,7 +31,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - [x] T10 RevocationChecker OCSP/CRL (WireMock) — route: delegated direct (writer trigger: ~15 new/changed infrastructure/domain/application files + fixtures + new test files; broad reading across BC OCSP/CRL APIs and JDK HttpClient to design the SSRF-safe transport)
 - [ ] T11 Static UI — "Validar" screen (index.html, app.js, styles.css)
 - [x] T11b "Firmar" screen with AutoFirma (user decision 2026-09-27): upload PDF → AutoScript.js invokes the user's local AutoFirma via WebSocket (desktop only, no intermediate storage/retrieve server) → PAdES signature with the user's own certificate (private key never leaves the client) → download signed PDF → one-click "Validar este PDF" through our API. Clear message + official download link when AutoFirma is not installed/reachable. Before bundling AutoScript.js (ctt-gob-es/clienteafirma) verify its license is compatible with GPL-3.0. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/sign-ui`
-- [ ] T12 Dockerfile, docker-compose, memory check, VM deploy, Actuator
+- [~] T12 Dockerfile, docker-compose, memory check, VM deploy, Actuator — container files ✅ (branch `feat/docker`); real build/run + memory check ⏳ (Docker daemon not running); VM deploy ⏳ pending user authorization of a destination
 - [ ] T13 README (all TFM sections + slides URL), slides, JaCoCo
 
 ## Acceptance
@@ -851,5 +851,10 @@ Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished name
 - Manual (Playwright, port 8963, light+dark): EUPL PDF shows Spanish + English issues; "Cifrado: No" inline; "Permisos del documento" label; no console errors. Found and fixed long English text overflowing (commit 0d098c0).
 - README updated (2.8, 2.17, history 2026-09-29), commit abb3ced.
 
+- T12 (partial, 2026-09-29, route: direct inline single writer, branch `feat/docker`): `Dockerfile` (multi-stage; layered jar via `java -Djarmode=tools -jar app.jar extract --layers --launcher`, run with `JarLauncher`; JRE 25 Alpine; user `app` uid 10001; JAVA_TOOL_OPTIONS SerialGC/Xmx384m/MaxMetaspace128m/CompactObjectHeaders/ExitOnOOM; wget HEALTHCHECK), `.dockerignore`, `docker-compose.yml` (512m, read_only + tmpfs /tmp, no-new-privileges, cap_drop ALL, healthcheck, commented env overrides), CI job `docker` (build only, no push), `.gitattributes` LF for Docker files, README updated.
+  - Evidence: `docker compose config` OK; locally, jar built with `-DskipTests package`, layer extraction succeeded, merged layers run via `JarLauncher` with all four JVM flags (CompactObjectHeaders accepted by JDK 25.0.4) → `/actuator/health` UP. `docker info` → daemon unreachable (Docker Desktop not running), so image build, image size, read_only behavior and the memory check were NOT run. No Java code changed.
+  - To verify: `docker build -t pdf-validator:local .`; `docker image ls pdf-validator:local`; `docker compose up -d`; `docker inspect --format '{{.State.Health.Status}}' <container>`; `curl -s localhost:8963/actuator/health`; POST ~19 MB PDF and a signed fixture to `/api/v1/pdf/analyze` (with/without `checkRevocation`), 3-5 concurrent, `docker stats --no-stream`, `docker inspect --format '{{.RestartCount}}'`; `docker compose down`.
+  - Commits: 7789168 (Dockerfile + .dockerignore), e965da3 (compose), df0f302 (CI), plus the LF-attributes and README docs commits on the branch.
+
 ## Next step
-T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
+T12 remainder: run the Docker verification (commands below) and record results in README §4; VM deploy once the user authorizes a destination. Then T13 README/slides. Optional T14 TSL auto-load.
