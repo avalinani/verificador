@@ -20,3 +20,144 @@ jobs:
 
       - name: Build and verify
         run: ./mvnw -B verify
+
+  docker:
+    # Builds the image (never pushed) and smoke-tests it at runtime under the same
+    # limits as docker-compose.yml: 2 GB, read-only root filesystem, 256 MB /tmp,
+    # then load-tests it with concurrent ~79 MB PDFs (bulkhead + memory budget, T12c).
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image (no push)
+        run: docker build -t pdf-validator:ci .
+
+      - name: Smoke-test the container (health, UI, read-only, 2 GB)
+        run: |
+          docker run -d --name pdfv -p 8963:8963 --memory=2g \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            pdf-validator:ci
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fs http://localhost:8963/actuator/health | grep -q '"status":"UP"'; then ok=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' pdfv)" != "true" ]; then break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Container did not become healthy"
+            docker logs pdfv
+            docker stats --no-stream pdfv || true
+            docker rm -f pdfv
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8963/)
+          docker stats --no-stream pdfv
+          if [ "$code" != "200" ]; then
+            echo "GET / returned $code"
+            docker logs pdfv
+            docker rm -f pdfv
+            exit 1
+          fi
+          docker rm -f pdfv
+
+      # The PDF is generated with the runner's JDK (`java File.java`, no dependencies):
+      # a hand-written 776-page PDF, ~79 MB, valid for PDFBox. No extra tooling needed.
+      - name: Load-test the container (5 concurrent ~79 MB uploads, 2 GB)
+        run: |
+          java .github/scripts/LargePdfGenerator.java "$RUNNER_TEMP/large.pdf" 79
+          ls -l "$RUNNER_TEMP/large.pdf"
+
+          docker run -d --name pdfv-load -p 8963:8963 --memory=2g \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            pdf-validator:ci
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fs http://localhost:8963/actuator/health | grep -q '"status":"UP"'; then ok=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' pdfv-load)" != "true" ]; then break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Container did not become healthy"
+            docker logs pdfv-load
+            docker rm -f pdfv-load
+            exit 1
+          fi
+
+          # Sample container memory once per second while the load runs.
+          : > "$RUNNER_TEMP/mem.txt"
+          (while true; do
+             docker stats --no-stream --format '{{.MemUsage}}' pdfv-load >> "$RUNNER_TEMP/mem.txt" 2>/dev/null
+             sleep 1
+           done) &
+          sampler=$!
+
+          # Actions runs bash with -e: a failing `wait` would end the step before any HTTP code
+          # is printed, so every curl's exit status is collected explicitly and judged below.
+          for i in 1 2 3 4 5; do
+            curl -s -o "$RUNNER_TEMP/resp$i.json" -w '%{http_code}' --max-time 120 \
+              -F "file=@$RUNNER_TEMP/large.pdf;type=application/pdf" \
+              http://localhost:8963/api/v1/pdf/analyze > "$RUNNER_TEMP/code$i.txt" &
+            pid[$i]=$!
+          done
+          for i in 1 2 3 4 5; do
+            rc[$i]=0
+            wait "${pid[$i]}" || rc[$i]=$?
+          done
+          kill $sampler 2>/dev/null || true
+
+          fail=0
+          twohundreds=0
+          for i in 1 2 3 4 5; do
+            code=$(cat "$RUNNER_TEMP/code$i.txt")
+            echo "request $i -> HTTP $code (curl exit ${rc[$i]})"
+            [ "${rc[$i]}" = "0" ] || { echo "curl failed for request $i"; fail=1; }
+            case "$code" in
+              200) twohundreds=$((twohundreds + 1)) ;;
+              503) grep -q 'urn:pdfvalidator:error:busy' "$RUNNER_TEMP/resp$i.json" || { echo "503 without the busy problem type"; fail=1; } ;;
+              *) echo "unexpected status $code"; head -c 500 "$RUNNER_TEMP/resp$i.json"; echo; fail=1 ;;
+            esac
+          done
+          [ "$twohundreds" -ge 1 ] || { echo "no request succeeded"; fail=1; }
+
+          restarts=$(docker inspect -f '{{.RestartCount}}' pdfv-load)
+          oom=$(docker inspect -f '{{.State.OOMKilled}}' pdfv-load)
+          running=$(docker inspect -f '{{.State.Running}}' pdfv-load)
+          echo "running=$running restartCount=$restarts oomKilled=$oom"
+          if [ "$running" != "true" ] || [ "$restarts" != "0" ] || [ "$oom" != "false" ]; then fail=1; fi
+          # Match a real error, not the JVM banner echoing -XX:+ExitOnOutOfMemoryError.
+          if docker logs pdfv-load 2>&1 | grep -Eq 'java\.lang\.OutOfMemoryError'; then
+            echo "java.lang.OutOfMemoryError found in the container logs"; fail=1
+          fi
+
+          echo "--- memory samples (docker stats) ---"
+          sort -u "$RUNNER_TEMP/mem.txt"
+          awk '{ v=$1; u=v; gsub(/[0-9.]/, "", u); sub(/[A-Za-z]+$/, "", v);
+                 if (u=="GiB") v*=1024; else if (u=="KiB") v/=1024; else if (u=="B") v/=1048576;
+                 if (v>max) max=v }
+               END { printf "peak sampled memory: %.1f MiB (limit 2048)\n", max }' "$RUNNER_TEMP/mem.txt"
+          peak=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.peak 2>/dev/null || true)
+          limit=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+          if [ -n "$peak" ] && [ -n "$limit" ] && [ "$limit" != "max" ]; then
+            echo "$peak $limit" | awk '{ printf "cgroup memory.peak: %.1f MiB of %.1f MiB (%.1f%%)\n", $1/1048576, $2/1048576, 100*$1/$2 }'
+          else
+            echo "cgroup memory.peak/memory.max not readable"
+          fi
+          # memory.peak is informational only (it counts reclaimable page cache and tmpfs).
+          # The kernel oom_kill counter is the real signal that the limit was hit.
+          oomkills=$(docker exec pdfv-load sh -c "sed -n 's/^oom_kill //p' /sys/fs/cgroup/memory.events" 2>/dev/null || true)
+          echo "cgroup oom_kill count: ${oomkills:-unreadable}"
+          if [ -n "$oomkills" ] && [ "$oomkills" -gt 0 ]; then
+            echo "the kernel OOM killer acted inside the container"; fail=1
+          fi
+          docker stats --no-stream pdfv-load
+
+          if [ "$fail" != "0" ]; then
+            docker logs pdfv-load | tail -50
+            docker rm -f pdfv-load
+            exit 1
+          fi
+          docker rm -f pdfv-load

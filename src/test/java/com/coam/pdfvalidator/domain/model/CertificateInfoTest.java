@@ -14,6 +14,7 @@ class CertificateInfoTest {
     private static CertificateInfo certificateValidFor(Instant notBefore, Instant notAfter) {
         return new CertificateInfo(
                 "CN=Test Signer",
+                "Test Signer",
                 "CN=Test Root CA",
                 "01",
                 notBefore,
@@ -54,6 +55,7 @@ class CertificateInfoTest {
         List<String> mutableOcspUrls = new ArrayList<>(List.of("http://ocsp.example.org"));
         CertificateInfo certificate = new CertificateInfo(
                 "CN=Test Signer",
+                "Test Signer",
                 "CN=Test Root CA",
                 "01",
                 now.minus(1, ChronoUnit.DAYS),
@@ -74,6 +76,7 @@ class CertificateInfoTest {
         byte[] mutableEncoded = {1, 2, 3};
         CertificateInfo certificate = new CertificateInfo(
                 "CN=Test Signer",
+                "Test Signer",
                 "CN=Test Root CA",
                 "01",
                 now.minus(1, ChronoUnit.DAYS),
@@ -116,6 +119,7 @@ class CertificateInfoTest {
         CertificateInfo first = certificateValidFor(notBefore, notAfter);
         CertificateInfo second = new CertificateInfo(
                 "CN=Test Signer",
+                "Test Signer",
                 "CN=Test Root CA",
                 "01",
                 notBefore,

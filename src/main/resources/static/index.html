@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Validador de firmas PDF</title>
+  <meta name="description" content="Audita la firma electrónica, la integridad y la conformidad PDF/A de un documento PDF.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+            <path d="M14 2v6h6"></path>
+            <path d="m9 15 2 2 4-4"></path>
+          </svg>
+        </span>
+        <span class="brand-name">Validador PDF</span>
+      </div>
+
+      <nav class="tabs" aria-label="Secciones">
+        <button type="button" class="tab is-active" id="tab-validar" aria-current="page">Validar</button>
+        <button type="button" class="tab" id="tab-firmar">Firmar</button>
+      </nav>
+
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Cambiar a tema oscuro" aria-pressed="false">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <main class="app-main" id="main-content">
+      <section class="panel upload-panel" id="upload-panel" aria-labelledby="upload-heading">
+        <h1 id="upload-heading" class="panel-title">Validar un documento PDF</h1>
+        <p class="panel-subtitle">
+          Analiza la integridad de las firmas electrónicas, la cadena de confianza, la revocación (opcional),
+          la conformidad PDF/A y las propiedades del documento. El archivo no se almacena.
+        </p>
+
+        <div class="dropzone"
+             id="dropzone"
+             tabindex="0"
+             role="button"
+             aria-describedby="dropzone-hint"
+             aria-label="Zona para soltar o seleccionar un archivo PDF">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 16V4"></path>
+            <path d="m7 9 5-5 5 5"></path>
+            <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
+          </svg>
+          <p class="dropzone-text">
+            <span class="dropzone-text-main">Arrastra un PDF aquí</span>
+            <span class="dropzone-text-sub">o haz clic para seleccionarlo</span>
+          </p>
+          <p class="dropzone-hint" id="dropzone-hint">Solo archivos PDF, hasta 20&nbsp;MB.</p>
+          <input type="file" id="file-input" accept="application/pdf,.pdf" class="visually-hidden" aria-hidden="true" tabindex="-1">
+        </div>
+
+        <div class="file-chip" id="file-chip" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+            <path d="M14 2v6h6"></path>
+          </svg>
+          <span class="file-chip-name" id="file-chip-name"></span>
+          <span class="file-chip-size" id="file-chip-size"></span>
+          <button type="button" class="file-chip-remove" id="file-chip-remove" aria-label="Quitar archivo seleccionado">&times;</button>
+        </div>
+
+        <div class="option-row">
+          <label class="checkbox">
+            <input type="checkbox" id="check-revocation">
+            <span class="checkbox-box" aria-hidden="true"></span>
+            <span class="checkbox-label">
+              Comprobar revocación (OCSP/CRL)
+              <span class="checkbox-help">Requiere red y puede tardar unos segundos; solo se aplica a cadenas de confianza válidas.</span>
+            </span>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="button button-primary" id="analyze-button" disabled form="analyze-form">
+            <span class="button-label">Analizar PDF</span>
+            <svg class="spinner" id="analyze-spinner" viewBox="0 0 24 24" width="16" height="16" hidden aria-hidden="true">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="42 100"></circle>
+            </svg>
+          </button>
+        </div>
+        <form id="analyze-form"></form>
+
+        <p class="status-line" id="status-line" role="status" aria-live="polite"></p>
+        <div class="error-banner" id="error-banner" role="alert" aria-live="assertive" hidden></div>
+      </section>
+
+      <section class="panel results-panel" id="results-panel" aria-labelledby="results-heading" hidden>
+        <h2 id="results-heading" class="visually-hidden" tabindex="-1">Resultado del análisis</h2>
+
+        <div class="verdict-banner" id="verdict-banner" role="status" aria-live="polite"></div>
+
+        <div class="section-errors" id="section-errors" hidden></div>
+
+        <div class="results-grid">
+          <div class="signatures-column">
+            <h3 class="results-subheading" id="signatures-heading">Firmas</h3>
+            <div id="signatures-list" aria-labelledby="signatures-heading"></div>
+          </div>
+
+          <div class="document-column">
+            <h3 class="results-subheading">Documento</h3>
+            <div id="document-details"></div>
+          </div>
+        </div>
+
+        <div class="results-footer">
+          <button type="button" class="button button-secondary" id="download-json">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v12"></path>
+              <path d="m7 10 5 5 5-5"></path>
+              <path d="M4 19h16"></path>
+            </svg>
+            Descargar informe JSON
+          </button>
+        </div>
+      </section>
+
+      <section class="panel firmar-panel" id="firmar-panel" aria-labelledby="firmar-heading" hidden>
+        <h1 id="firmar-heading" class="panel-title">Firmar un documento PDF</h1>
+        <p class="panel-subtitle">
+          Firma electrónicamente un PDF con tu propio certificado (DNIe, FNMT, ...) usando
+          <strong>AutoFirma</strong>, la aplicación oficial de firma de escritorio. Solo funciona en equipos de
+          sobremesa con AutoFirma instalado.
+        </p>
+
+        <div class="privacy-note">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="10" width="16" height="10" rx="2"></rect>
+            <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+          </svg>
+          <span>
+            La clave privada de tu certificado <strong>nunca sale de tu equipo</strong>: AutoFirma firma el
+            documento localmente y este servicio no recibe el PDF sin firmar en ningún momento de este proceso.
+            El PDF firmado solo llega al servidor si tú decides pulsar «Validar este PDF» a continuación.
+            <a href="https://firmaelectronica.gob.es/Home/Descargas.html" target="_blank" rel="noopener noreferrer">¿No tienes AutoFirma? Descárgala aquí.</a>
+          </span>
+        </div>
+
+        <div class="dropzone"
+             id="firmar-dropzone"
+             tabindex="0"
+             role="button"
+             aria-describedby="firmar-dropzone-hint"
+             aria-label="Zona para soltar o seleccionar el PDF que quieres firmar">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 16V4"></path>
+            <path d="m7 9 5-5 5 5"></path>
+            <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
+          </svg>
+          <p class="dropzone-text">
+            <span class="dropzone-text-main">Arrastra un PDF aquí</span>
+            <span class="dropzone-text-sub">o haz clic para seleccionarlo</span>
+          </p>
+          <p class="dropzone-hint" id="firmar-dropzone-hint">Solo archivos PDF, hasta 20&nbsp;MB.</p>
+          <input type="file" id="firmar-file-input" accept="application/pdf,.pdf" class="visually-hidden" aria-hidden="true" tabindex="-1">
+        </div>
+
+        <div class="file-chip" id="firmar-file-chip" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+            <path d="M14 2v6h6"></path>
+          </svg>
+          <span class="file-chip-name" id="firmar-file-chip-name"></span>
+          <span class="file-chip-size" id="firmar-file-chip-size"></span>
+          <button type="button" class="file-chip-remove" id="firmar-file-chip-remove" aria-label="Quitar archivo seleccionado">&times;</button>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="firmar-reason">Motivo de la firma (opcional)</label>
+          <input type="text" id="firmar-reason" class="text-input" maxlength="200" autocomplete="off"
+                 placeholder="Por ejemplo: Conformidad con el documento">
+          <span class="field-help">La firma se aplicará de forma invisible; el motivo queda igualmente registrado dentro de la firma.</span>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="button button-primary" id="firmar-button" disabled form="firmar-form">
+            <span class="button-label">Firmar PDF</span>
+            <svg class="spinner" id="firmar-spinner" viewBox="0 0 24 24" width="16" height="16" hidden aria-hidden="true">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="42 100"></circle>
+            </svg>
+          </button>
+        </div>
+        <form id="firmar-form"></form>
+
+        <div class="waiting-panel" id="firmar-waiting" hidden role="status" aria-live="polite">
+          <svg class="spinner" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="42 100"></circle>
+          </svg>
+          <span id="firmar-waiting-text">Esperando a AutoFirma&hellip; elige tu certificado en la ventana de AutoFirma.</span>
+          <button type="button" class="button button-secondary" id="firmar-cancel-button">Cancelar</button>
+        </div>
+
+        <p class="status-line" id="firmar-status-line" role="status" aria-live="polite"></p>
+        <div class="error-banner" id="firmar-error-banner" role="alert" aria-live="assertive" hidden></div>
+
+        <div class="sign-result" id="firmar-result" hidden>
+          <p id="firmar-result-message">El documento se ha firmado correctamente.</p>
+          <div class="sign-result-actions">
+            <button type="button" class="button button-primary" id="firmar-download-button">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v12"></path>
+                <path d="m7 10 5 5 5-5"></path>
+                <path d="M4 19h16"></path>
+              </svg>
+              Descargar PDF firmado
+            </button>
+            <button type="button" class="button button-secondary" id="firmar-validate-button">Validar este PDF</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>
+        Validador de firmas PDF &middot; Trabajo Fin de Máster &middot; el documento no se almacena en el servidor
+        &middot; <a href="https://github.com/avalinani/verificador" target="_blank" rel="noopener noreferrer">código en GitHub</a>.
+      </p>
+    </footer>
+  </div>
+
+  <!-- Third-party AutoScript library (unmodified, GPL-2.0/EUPL-1.1) -- see
+       vendor/autofirma/NOTICE.md. Loaded as a classic (non-module) script,
+       before our own module script, so `window.AutoScript`/`SupportDialog`
+       are already defined by the time sign.js runs. -->
+  <script src="vendor/autofirma/autoscript.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

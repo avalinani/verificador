@@ -1,5 +1,7 @@
 package com.coam.pdfvalidator.domain.model;
 
+import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -40,5 +42,39 @@ public record PdfAnalysisReport(
         if (sizeBytes < 0) {
             throw new IllegalArgumentException("sizeBytes must be >= 0, got: " + sizeBytes);
         }
+    }
+
+    /**
+     * The document-level summary verdict (T11): the worst of every {@link
+     * SignatureReport#verdict()} in {@link #signatures()}, {@link
+     * OverallVerdict#NO_SIGNATURES} for a legitimately unsigned document, or
+     * (T11c) {@link OverallVerdict#ANALYSIS_INCOMPLETE} when the {@code
+     * SIGNATURES} section itself failed ({@link #sectionErrors()}) -- an
+     * empty {@link #signatures()} list caused by that failure must never be
+     * indistinguishable from "this document legitimately has no signatures",
+     * the same reasoning {@link SectionError} already exists for. Computed
+     * on demand rather than stored as its own record component -- unlike
+     * {@code pageCount} on {@link DocumentStructure}, this value is never
+     * independently constructed or deserialized, only ever derived from
+     * {@code signatures}/{@code sectionErrors}, so storing it separately
+     * would only add a way for the two to drift out of sync without ever
+     * needing to round-trip on its own.
+     */
+    public OverallVerdict overallVerdict() {
+        if (sectionErrors.stream().anyMatch(error -> error.section() == AnalysisSection.SIGNATURES)) {
+            return OverallVerdict.ANALYSIS_INCOMPLETE;
+        }
+        return SignatureVerdictPolicy.overallVerdict(signatures);
+    }
+
+    /**
+     * True when this document has at least one signature and none of them
+     * cover the file all the way to its true end -- see {@link
+     * SignatureVerdictPolicy#documentModifiedAfterLastSignature} for exactly
+     * what this does and does not prove. Computed on demand, same rationale
+     * as {@link #overallVerdict()}.
+     */
+    public boolean modifiedAfterLastSignature() {
+        return SignatureVerdictPolicy.documentModifiedAfterLastSignature(signatures);
     }
 }

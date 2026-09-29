@@ -54,8 +54,13 @@ class BcSignatureVerifierTest {
         CertificateInfo signerInfo = report.chain().get(0);
         CertificateInfo issuerInfo = report.chain().get(1);
 
-        assertThat(signerInfo.subject())
-                .isEqualTo(identity.endEntityCertificate().getSubjectX500Principal().getName());
+        // T11f: subject/issuer are rendered by X509CertificateInfoMapper's own
+        // BCStyle-based formatting (readable, decodes every attribute BCStyle
+        // recognizes), not by X500Principal#getName()'s JDK RFC 2253
+        // rendering -- for this fixture's plain CN/O/C subject, the two only
+        // ever differ in whether they happen to agree on attribute order.
+        assertThat(signerInfo.subject()).isEqualTo("CN=Spike Test Signer,O=COAM,C=ES");
+        assertThat(signerInfo.commonName()).isEqualTo("Spike Test Signer");
         assertThat(new BigInteger(signerInfo.serialNumberHex(), 16))
                 .isEqualTo(identity.endEntityCertificate().getSerialNumber());
         assertThat(signerInfo.notBefore()).isEqualTo(identity.endEntityCertificate().getNotBefore().toInstant());
@@ -63,7 +68,7 @@ class BcSignatureVerifierTest {
 
         assertThat(issuerInfo.subject())
                 .as("chain is ordered signer first, then issuer")
-                .isEqualTo(identity.rootCertificate().getSubjectX500Principal().getName());
+                .isEqualTo("CN=Spike Test Root CA,O=COAM,C=ES");
     }
 
     @Test
@@ -95,7 +100,14 @@ class BcSignatureVerifierTest {
         List<SignatureReport> reports = verifier.verify(pdf);
 
         assertThat(reports).hasSize(1);
-        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        assertThat(report.anomalyOptional())
+                .as("a tampered digest must still report a human-readable reason (T09c)")
+                .contains("messageDigest does not match the signed bytes");
+        assertThat(report.chain())
+                .as("the CMS itself parsed fine (only the digest mismatched), so the chain must still be extracted")
+                .hasSize(2);
     }
 
     @Test
@@ -121,6 +133,10 @@ class BcSignatureVerifierTest {
 
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        // T09d follow-up (review advisory): a structural /ByteRange failure
+        // must always carry a stable, non-null reason, never leave anomaly
+        // unset.
+        assertThat(reports.get(0).anomalyOptional()).isPresent();
     }
 
     @Test
@@ -131,6 +147,7 @@ class BcSignatureVerifierTest {
 
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+        assertThat(reports.get(0).anomalyOptional()).isPresent();
     }
 
     @Test
@@ -142,6 +159,9 @@ class BcSignatureVerifierTest {
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.UNSUPPORTED);
         assertThat(reports.get(0).subFilter()).isEqualTo("adbe.pkcs7.sha1");
+        assertThat(reports.get(0).anomalyOptional())
+                .as("UNSUPPORTED must also carry a human-readable reason (T09c)")
+                .isPresent();
     }
 
     @Test
@@ -235,6 +255,140 @@ class BcSignatureVerifierTest {
         assertThat(timestamp.signatureValid())
                 .as("the TSA's own CMS signature over the (wrongly-imprinted) token is still valid")
                 .isTrue();
+    }
+
+    /**
+     * T09c, real-world case 1 (Camerfirma): a signature whose signer
+     * certificate had already expired by the time the document was signed
+     * must still report cryptographic integrity independently of that fact.
+     * Bouncy Castle's own {@code SignerInformation#verify}, when built from
+     * an {@code X509CertificateHolder} rather than a bare public key, throws
+     * {@code CMSVerifierCertificateNotValidException} in exactly this case
+     * -- verified as genuine RED against the pre-fix code below.
+     */
+    @Test
+    void aCertificateExpiredAtSigningTimeIsIntactWithAnAnomalyNoteAndANonEmptyChain() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithCertificateExpiredAtSigningTime();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity())
+                .as("crypto integrity must not depend on the signer certificate's own validity")
+                .isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .as("the certificate's own invalidity at signing time must still be surfaced")
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("signer certificate was not valid at the declared signing time"));
+        assertThat(report.chain()).hasSize(2);
+    }
+
+    /**
+     * T09c, real-world case 2 (FNMT): a CMS whose {@code SignerInfo} encodes
+     * a SIGNATURE algorithm OID ({@code sha256WithRSAEncryption}) in its
+     * {@code digestAlgorithm} field instead of the plain digest OID -- a
+     * non-standard encoding Adobe accepts, which Bouncy Castle's default
+     * digest lookup otherwise rejects with {@code NoSuchAlgorithmException}
+     * -- verified as genuine RED against the pre-fix code below.
+     */
+    @Test
+    void aSignatureAlgorithmOidUsedAsDigestAlgorithmIsToleratedWithAnAnomalyNote() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOid();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("non-standard digestAlgorithm encoding"));
+    }
+
+    /**
+     * T09d follow-up (review advisory): the mislabeled-digest bypass in
+     * {@code CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}
+     * must not become a way to skip tamper detection -- a byte flipped
+     * after signing (same technique as {@link #aTamperedSignedByteIsAnInvalidSignature}
+     * above) must still be reported {@code INVALID_SIGNATURE}, exactly as
+     * it would be for a standard CMS.
+     */
+    @Test
+    void aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmIsInvalid() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidThenTampered();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
+    }
+
+    /**
+     * T09d follow-up (review advisory): the same mislabeled-{@code
+     * digestAlgorithm} case as {@link
+     * #aSignatureAlgorithmOidUsedAsDigestAlgorithmIsToleratedWithAnAnomalyNote},
+     * but with signed attributes present -- exercising {@code
+     * verifyWithMislabeledDigestAlgorithm}'s other branch (checking the
+     * signed {@code messageDigest} attribute first, then verifying over the
+     * signed attributes' DER encoding rather than the raw content).
+     */
+    @Test
+    void aSignatureAlgorithmOidUsedAsDigestAlgorithmWithSignedAttributesIsToleratedWithAnAnomalyNote()
+            throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        SignatureReport report = reports.get(0);
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.anomalyOptional())
+                .hasValueSatisfying(anomaly -> assertThat(anomaly)
+                        .contains("non-standard digestAlgorithm encoding"));
+    }
+
+    /**
+     * T10 follow-up (T09d review advisory): {@code
+     * BcSignatureVerifier#byteRangeFailureReason} is a package-private seam
+     * specifically so this fallback -- taken only when an {@code
+     * IllegalArgumentException} from {@code SignatureByteRange}/{@code
+     * ByteRangeCoverage} carries no message at all -- can be unit-tested
+     * directly. It is currently unreachable through any real PDF (every
+     * throw site in those two classes always supplies a message), so this
+     * test constructs the exception by hand rather than trying to drive a
+     * real file through it.
+     */
+    @Test
+    void theByteRangeFailureFallbackReasonIsUsedWhenTheExceptionCarriesNoMessage() {
+        assertThat(BcSignatureVerifier.byteRangeFailureReason(new IllegalArgumentException()))
+                .isEqualTo("invalid /ByteRange");
+    }
+
+    @Test
+    void theByteRangeFailureReasonIsTheExceptionsOwnMessageWhenPresent() {
+        assertThat(BcSignatureVerifier.byteRangeFailureReason(new IllegalArgumentException("ByteRange gap is out of bounds")))
+                .isEqualTo("ByteRange gap is out of bounds");
+    }
+
+    /**
+     * T09d review advisory: the mislabeled-digest bypass's signed-attributes
+     * branch ({@code
+     * CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}, the
+     * path that checks {@code messageDigest} first before verifying over
+     * the signed attributes) had a tampered-content negative only for the
+     * no-signed-attributes variant ({@code
+     * aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmIsInvalid} above).
+     * This covers the same tamper for the signed-attributes variant.
+     */
+    @Test
+    void aTamperedSignatureAlgorithmOidUsedAsDigestAlgorithmWithSignedAttributesIsInvalid() throws Exception {
+        byte[] pdf = TestPdfFactory.signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributesThenTampered();
+
+        List<SignatureReport> reports = verifier.verify(pdf);
+
+        assertThat(reports).hasSize(1);
+        assertThat(reports.get(0).integrity()).isEqualTo(IntegrityStatus.INVALID_SIGNATURE);
     }
 
     // A TSA certificate missing the timeStamping EKU is covered by

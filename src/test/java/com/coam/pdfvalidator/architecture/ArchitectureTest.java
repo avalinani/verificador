@@ -97,7 +97,7 @@ class ArchitectureTest {
     void apiDependsOnlyOnApplicationAndDomain() {
         ArchRule rule = classes().that().resideInAPackage(API)
                 .should().onlyDependOnClassesThat().resideInAnyPackage(
-                        API, APPLICATION, DOMAIN, "java..", "javax..", "org.springframework..", "io.swagger..")
+                        API, APPLICATION, DOMAIN, "java..", "javax..", "jakarta.servlet..", "org.springframework..", "io.swagger..")
                 .allowEmptyShould(true);
         rule.check(classes);
     }

@@ -1,0 +1,51 @@
+# Local / VM run of the PDF validator.
+#   docker compose up -d --build   # build and start
+#   docker compose logs -f         # follow logs
+#   docker compose down            # stop and remove
+services:
+  pdf-validator:
+    build: .
+    image: pdf-validator:local
+    ports:
+      # Loopback only: in production the public entry point is the Caddy HTTPS proxy
+      # (deploy/). Docker publishes ports bypassing ufw, so binding to 127.0.0.1 is what
+      # keeps plain HTTP on 8963 unreachable from outside. Locally: http://localhost:8963/
+      - "127.0.0.1:8963:8963"
+    mem_limit: 2g
+    restart: unless-stopped
+
+    # Hardening: the app only writes to /tmp (Tomcat work dir, multipart uploads,
+    # PDFBox temp files). The tmpfs is size-capped because its pages are charged
+    # to the 2 GB memory limit; see the budget in the Dockerfile.
+    # NOTE: `restart: unless-stopped` restarts crashed containers (e.g. after
+    # -XX:+ExitOnOutOfMemoryError) but NOT unhealthy ones; Docker only marks them
+    # "unhealthy". Use an external monitor or a watchdog such as autoheal if needed.
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8963/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    # Optional overrides (uncomment as needed).
+    # environment:
+    #   # Extra trusted roots, one certificate per file (additive to the bundled ones):
+    #   PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR: /truststore
+    #   # Simultaneous analyses (default 2, tuned for the 2 GB profile; use 1 on a small VM) and wait for a free slot before a 503 (default 30s).
+    #   # Raising max-concurrent raises worst-case memory: re-check the budget in the README.
+    #   PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT: "2"
+    #   PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT: 30s
+    #   # Revocation (OCSP/CRL) timeout, default 2s:
+    #   PDFVALIDATOR_REVOCATION_TIMEOUT: 2s
+    #   # Different port inside the container (update ports/healthcheck too):
+    #   SERVER_PORT: "8963"
+    # volumes:
+    #   - ./my-truststore:/truststore:ro

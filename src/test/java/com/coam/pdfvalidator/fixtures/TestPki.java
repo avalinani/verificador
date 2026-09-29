@@ -12,6 +12,7 @@ import org.bouncycastle.asn1.x509.GeneralName;
 import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.asn1.x509.KeyPurposeId;
 import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -90,6 +91,113 @@ public final class TestPki {
                     List.of(eeCertificate, rootCertificate));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build test PKI", e);
+        }
+    }
+
+    /**
+     * A signer certificate plus its issuer's certificate AND private key --
+     * unlike {@link IssuedIdentity} (which only exposes the end-entity's
+     * private key, since production code never needs to sign as a CA),
+     * T10's revocation-checking tests need the issuer's private key too, to
+     * play the role of a real OCSP responder/CRL issuer ({@code
+     * TestRevocationResponder}).
+     */
+    public record RevocationTestIdentity(
+            X509Certificate signerCertificate, X509Certificate issuerCertificate, PrivateKey issuerPrivateKey) {
+    }
+
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but with the end-entity
+     * certificate's AIA (OCSP)/CRL Distribution Point URLs set explicitly
+     * (either may be {@code null} to omit that extension entirely), and
+     * exposing the issuing root's own private key so a test can sign real
+     * OCSP responses/CRLs as that issuer -- used by T10's revocation-
+     * checking tests to point the certificate at a local test HTTP server
+     * instead of the hardcoded {@code ocsp.example.org}/{@code
+     * crl.example.org} placeholders {@link #issueSigningIdentity()} uses.
+     */
+    public static RevocationTestIdentity issueRevocationTestIdentity(String ocspUrl, String crlUrl) {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), notBefore, notAfter,
+                    ocspUrl, crlUrl);
+
+            return new RevocationTestIdentity(eeCertificate, rootCertificate, rootKeyPair.getPrivate());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with custom revocation URLs", e);
+        }
+    }
+
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but the end-entity
+     * certificate's own validity window ends well before "now" (and
+     * therefore before the signing time a fixture built with this identity
+     * signs at, which is also "now") -- while the root stays valid.
+     * Reproduces a real-world case: a qualified signature made a few months
+     * after its own signer certificate's {@code notAfter}. The root itself
+     * is unaffected, so a caller validating the chain at "now" sees an
+     * otherwise-trustable path whose leaf alone is expired.
+     */
+    public static IssuedIdentity issueSigningIdentityExpiredAtSigningTime() {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date rootNotBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date rootNotAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+            Date eeNotBefore = new Date(System.currentTimeMillis() - 400L * 24 * 60 * 60 * 1000);
+            Date eeNotAfter = new Date(System.currentTimeMillis() - 2L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, rootNotBefore, rootNotAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), eeNotBefore, eeNotAfter);
+
+            return new IssuedIdentity(
+                    rootCertificate,
+                    eeCertificate,
+                    eeKeyPair.getPrivate(),
+                    List.of(eeCertificate, rootCertificate));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with an end-entity expired at signing time", e);
+        }
+    }
+
+    /**
+     * Same shape as {@link #issueSigningIdentity()}, but the end-entity
+     * certificate's subject is the given {@code X500Name} instead of the
+     * fixed {@code "CN=Spike Test Signer,O=COAM,C=ES"} -- used by T11f's
+     * readable-DN test, which needs a subject carrying an {@code
+     * emailAddress} (OID 1.2.840.113549.1.9.1) attribute that a real,
+     * honestly-issued certificate (e.g. a Spanish DNIe/FNMT one) can also
+     * carry.
+     */
+    public static IssuedIdentity issueSigningIdentityWithSubject(X500Name subject) {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(), notBefore, notAfter,
+                    "http://ocsp.example.org/ee", "http://crl.example.org/ee.crl", subject);
+
+            return new IssuedIdentity(
+                    rootCertificate,
+                    eeCertificate,
+                    eeKeyPair.getPrivate(),
+                    List.of(eeCertificate, rootCertificate));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with a custom subject", e);
         }
     }
 
@@ -363,10 +471,35 @@ public final class TestPki {
             java.security.PublicKey eePublicKey,
             Date notBefore,
             Date notAfter) throws Exception {
+        return buildEndEntityCertificate(rootCertificate, rootPrivateKey, eePublicKey, notBefore, notAfter,
+                "http://ocsp.example.org/ee", "http://crl.example.org/ee.crl");
+    }
+
+    /** Same as the 5-argument overload, but with explicit (possibly {@code null}, to omit the extension) AIA/CDP URLs. */
+    private static X509Certificate buildEndEntityCertificate(
+            X509Certificate rootCertificate,
+            PrivateKey rootPrivateKey,
+            java.security.PublicKey eePublicKey,
+            Date notBefore,
+            Date notAfter,
+            String ocspUrl,
+            String crlUrl) throws Exception {
+        return buildEndEntityCertificate(rootCertificate, rootPrivateKey, eePublicKey, notBefore, notAfter,
+                ocspUrl, crlUrl, new X500Name("CN=Spike Test Signer,O=COAM,C=ES"));
+    }
+
+    /** Same as the 7-argument overload, but with an explicit subject {@code X500Name}. */
+    private static X509Certificate buildEndEntityCertificate(
+            X509Certificate rootCertificate,
+            PrivateKey rootPrivateKey,
+            java.security.PublicKey eePublicKey,
+            Date notBefore,
+            Date notAfter,
+            String ocspUrl,
+            String crlUrl,
+            X500Name subject) throws Exception {
 
         org.bouncycastle.asn1.x500.X500Name issuer = subjectName(rootCertificate);
-        org.bouncycastle.asn1.x500.X500Name subject =
-                new org.bouncycastle.asn1.x500.X500Name("CN=Spike Test Signer,O=COAM,C=ES");
 
         X509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(
                 issuer,
@@ -379,18 +512,21 @@ public final class TestPki {
         certBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
         certBuilder.addExtension(Extension.keyUsage, true,
                 new KeyUsage(KeyUsage.digitalSignature | KeyUsage.nonRepudiation));
-        certBuilder.addExtension(Extension.authorityInfoAccess, false,
-                new AuthorityInformationAccess(
-                        AccessDescription.id_ad_ocsp,
-                        new GeneralName(GeneralName.uniformResourceIdentifier, "http://ocsp.example.org/ee")));
-        certBuilder.addExtension(Extension.cRLDistributionPoints, false,
-                new CRLDistPoint(new DistributionPoint[] {
-                        new DistributionPoint(
-                                new DistributionPointName(new GeneralNames(
-                                        new GeneralName(GeneralName.uniformResourceIdentifier,
-                                                "http://crl.example.org/ee.crl"))),
-                                null, null)
-                }));
+        if (ocspUrl != null) {
+            certBuilder.addExtension(Extension.authorityInfoAccess, false,
+                    new AuthorityInformationAccess(
+                            AccessDescription.id_ad_ocsp,
+                            new GeneralName(GeneralName.uniformResourceIdentifier, ocspUrl)));
+        }
+        if (crlUrl != null) {
+            certBuilder.addExtension(Extension.cRLDistributionPoints, false,
+                    new CRLDistPoint(new DistributionPoint[] {
+                            new DistributionPoint(
+                                    new DistributionPointName(new GeneralNames(
+                                            new GeneralName(GeneralName.uniformResourceIdentifier, crlUrl))),
+                                    null, null)
+                    }));
+        }
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)

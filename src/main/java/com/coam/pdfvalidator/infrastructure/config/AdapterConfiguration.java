@@ -4,6 +4,7 @@ import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
 import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
+import com.coam.pdfvalidator.domain.port.RevocationChecker;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
@@ -11,6 +12,7 @@ import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
 import com.coam.pdfvalidator.infrastructure.pki.PkixCertificateChainValidator;
 import com.coam.pdfvalidator.infrastructure.pki.TrustAnchorProvider;
 import com.coam.pdfvalidator.infrastructure.preflight.PreflightPdfaValidator;
+import com.coam.pdfvalidator.infrastructure.revocation.CompositeRevocationChecker;
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -39,7 +41,7 @@ import java.time.Clock;
  * "composition root" for a hexagonal application.
  */
 @Configuration
-@EnableConfigurationProperties(TrustStoreProperties.class)
+@EnableConfigurationProperties({TrustStoreProperties.class, RevocationProperties.class})
 public class AdapterConfiguration {
 
     @Bean
@@ -86,5 +88,18 @@ public class AdapterConfiguration {
     @Bean
     public CertificateChainValidator certificateChainValidator(TrustAnchorProvider trustAnchorProvider) {
         return new PkixCertificateChainValidator(trustAnchorProvider);
+    }
+
+    /**
+     * Real OCSP/CRL revocation checker (T10), replacing the temporary {@code
+     * NoOpRevocationChecker} that used to be wired here by {@code
+     * UseCaseConfiguration}. Configured via {@link RevocationProperties}
+     * ({@code pdfvalidator.revocation.*}); the SSRF guard against
+     * private/loopback AIA/CDP addresses is always enabled in this
+     * production wiring (see {@link CompositeRevocationChecker}'s Javadoc).
+     */
+    @Bean
+    public RevocationChecker revocationChecker(RevocationProperties properties) {
+        return new CompositeRevocationChecker(properties.timeout(), properties.maxResponseBytes().toBytes());
     }
 }

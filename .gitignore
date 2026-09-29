@@ -42,6 +42,12 @@ Thumbs.db
 .atl/
 .codegraph/
 
+# Impeccable design-detector session cache (local paths + session IDs,
+# not reviewable/portable); the shared ignore config (config.json) is
+# committed on purpose (T11e).
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+
 # From GitHub Java template
 *.class
 *.ctxt

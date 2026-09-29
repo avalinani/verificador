@@ -40,7 +40,16 @@ class TrustAnchorProviderTest {
             "9A6EC012E1A7DA9DBE34194D478AD7C0DB1822FB071DF12981496ED104384113",
             "57DE0583EFD2B26E0361DA99DA9DF4648DEF7EE8441C3B728AFA9BCDE0F9B26A",
             "2530CC8E98321502BAD96F9B1FBA1B099E2D299E0F4548BB914F363BC0D4531F",
-            "C5C380EB9240FB36A16E15F5D6BAD0BF611F6D03F0EF24229919E7D2D8126C11");
+            "C5C380EB9240FB36A16E15F5D6BAD0BF611F6D03F0EF24229919E7D2D8126C11",
+            // AC CAMERFIRMA FOR LEGAL PERSONS - 2016: a non-self-signed
+            // anchor (its own issuer, CHAMBERS OF COMMERCE ROOT - 2016, is
+            // not itself published in the Spanish TSL) -- see SOURCES.md.
+            "3A8066266D28BD28CCD0F564C8FBC1219B4FFAE403E01E5039D30F2400F0EB09",
+            // T09d: FNMT qualified issuing CAs (also non-self-signed
+            // anchors, both issued by the already-bundled AC RAIZ FNMT-RCM
+            // root) -- see SOURCES.md.
+            "601293CA20B09A03295D196256C6953FF9EBA811DB8E3CE140413C1BFFE9A869",
+            "F038421F07F20D63A20D3691E5A178AB8459EBE570C1647B7690554EF23876AB");
 
     @Test
     void theBundledTrustStoreLoadsExactlyTheDocumentedRoots() throws Exception {
@@ -106,7 +115,7 @@ class TrustAnchorProviderTest {
 
         Set<String> fingerprints = fingerprintsOf(provider);
         assertThat(fingerprints).contains(sha256Fingerprint(externalRoot));
-        // Bundled roots (6) + the external root loaded twice (once from its
+        // Bundled anchors + the external root loaded twice (once from its
         // PEM file, once from its DER file -- java.security.cert.TrustAnchor
         // has no value-based equals/hashCode, so these remain two distinct
         // TrustAnchor instances even though they wrap the same certificate)

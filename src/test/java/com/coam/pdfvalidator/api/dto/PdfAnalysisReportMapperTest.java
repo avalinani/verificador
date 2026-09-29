@@ -13,6 +13,7 @@ import com.coam.pdfvalidator.domain.model.PageInfo;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaIssueCatalog;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.model.Permission;
@@ -22,6 +23,7 @@ import com.coam.pdfvalidator.domain.model.Rotation;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +46,7 @@ class PdfAnalysisReportMapperTest {
         Instant notBefore = Instant.parse("2020-01-01T00:00:00Z");
         Instant notAfter = Instant.parse("2030-01-01T00:00:00Z");
         CertificateInfo certificate = new CertificateInfo(
-                "CN=signer", "CN=issuer", "01", notBefore, notAfter, "SHA256withRSA",
+                "CN=signer", "signer", "CN=issuer", "01", notBefore, notAfter, "SHA256withRSA",
                 List.of("http://ocsp.example.org"), List.of("http://crl.example.org"), encoded);
 
         Box box = new Box(0, 0, 200, 100);
@@ -61,7 +63,7 @@ class PdfAnalysisReportMapperTest {
                 "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 15),
                 IntegrityStatus.INTACT, claimedSigningTime, timestamp, List.of(certificate),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "http://ocsp.example.org", null),
-                "an anomaly");
+                "an anomaly").withVerdict(SignatureVerdict.VALID, List.of());
 
         Instant analyzedAt = Instant.parse("2026-09-27T10:00:00Z");
         PdfAnalysisReport report = new PdfAnalysisReport(
@@ -117,6 +119,7 @@ class PdfAnalysisReportMapperTest {
 
         CertificateInfoDto signerDto = signatureDto.chain().get(0);
         assertThat(signerDto.subject()).isEqualTo("CN=signer");
+        assertThat(signerDto.commonName()).isEqualTo("signer");
         assertThat(signerDto.issuer()).isEqualTo("CN=issuer");
         assertThat(signerDto.serialNumberHex()).isEqualTo("01");
         assertThat(signerDto.notBefore()).isEqualTo(notBefore);
@@ -131,6 +134,27 @@ class PdfAnalysisReportMapperTest {
         assertThat(dto.sectionErrors()).hasSize(1);
         assertThat(dto.sectionErrors().get(0).section()).isEqualTo("PDFA");
         assertThat(dto.sectionErrors().get(0).message()).isEqualTo("boom");
+
+        assertThat(signatureDto.verdict()).isEqualTo("VALID");
+        assertThat(signatureDto.verdictReasons()).isEmpty();
+        assertThat(dto.overallVerdict()).isEqualTo("VALID");
+        assertThat(dto.modifiedAfterLastSignature()).isFalse();
+    }
+
+    @Test
+    void anUnsignedDocumentMapsToTheNoSignaturesOverallVerdict() {
+        DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
+        SecurityInfo security = new SecurityInfo(false, EnumSet.noneOf(Permission.class));
+        PdfaReport pdfa = new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of());
+        PdfAnalysisReport report = new PdfAnalysisReport(
+                "unsigned.pdf", 10, new DocumentHashes("a".repeat(64), "b".repeat(128)), structure, security, pdfa,
+                List.of(), Instant.EPOCH, List.of());
+
+        PdfAnalysisReportDto dto = mapper.toDto(report);
+
+        assertThat(dto.overallVerdict()).isEqualTo("NO_SIGNATURES");
+        assertThat(dto.modifiedAfterLastSignature()).isFalse();
+        assertThat(dto.signatures()).isEmpty();
     }
 
     @Test
@@ -140,6 +164,26 @@ class PdfAnalysisReportMapperTest {
         assertThat(CertificateInfoDto.class.getRecordComponents())
                 .extracting(java.lang.reflect.RecordComponent::getType)
                 .noneMatch(type -> type.equals(byte[].class));
+    }
+
+    @Test
+    void aPdfaIssueWithAKnownPreflightCodeAlsoGetsItsSpanishTranslation() {
+        // 7.1 = ERROR_METADATA_FORMAT (PdfaIssueCatalogTest, T11g): a real
+        // code PDFBox's own preflight reports, e.g. "Metadata is not a stream".
+        DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
+        SecurityInfo security = new SecurityInfo(false, EnumSet.noneOf(Permission.class));
+        PdfaReport pdfa = new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of(
+                new PdfaIssue("7.1", "Metadata is not a stream")));
+        PdfAnalysisReport report = new PdfAnalysisReport(
+                "unsigned.pdf", 10, new DocumentHashes("a".repeat(64), "b".repeat(128)), structure, security, pdfa,
+                List.of(), Instant.EPOCH, List.of());
+
+        PdfAnalysisReportDto dto = mapper.toDto(report);
+
+        PdfaIssueDto issueDto = dto.pdfa().issues().get(0);
+        assertThat(issueDto.code()).isEqualTo("7.1");
+        assertThat(issueDto.message()).isEqualTo("Metadata is not a stream");
+        assertThat(issueDto.messageEs()).isEqualTo(PdfaIssueCatalog.spanishMessage("7.1").orElseThrow());
     }
 
     @Test
@@ -164,7 +208,14 @@ class PdfAnalysisReportMapperTest {
         assertThat(dto.signatures().get(0).anomaly()).isNull();
         assertThat(dto.pdfa().declaration().declared()).isFalse();
         assertThat(dto.pdfa().issues()).hasSize(1);
+        // "CODE" is not a real PDFBox preflight code (T11g): the UI must show
+        // only the original English message for it, never a fabricated translation.
+        assertThat(dto.pdfa().issues().get(0).messageEs()).isNull();
         assertThat(dto.sectionErrors()).isEmpty();
+        // Built with the pre-T11 10-arg SignatureReport constructor: verdict
+        // defaults to its safe NOT_ADMITTED placeholder (never computed here).
+        assertThat(dto.signatures().get(0).verdict()).isEqualTo("NOT_ADMITTED");
+        assertThat(dto.signatures().get(0).verdictReasons()).isEmpty();
     }
 
     private static String sha256Hex(byte[] bytes) throws Exception {

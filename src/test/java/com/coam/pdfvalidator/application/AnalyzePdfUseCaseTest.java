@@ -9,6 +9,7 @@ import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.DocumentHashes;
 import com.coam.pdfvalidator.domain.model.DocumentStructure;
 import com.coam.pdfvalidator.domain.model.IntegrityStatus;
+import com.coam.pdfvalidator.domain.model.OverallVerdict;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
@@ -20,6 +21,7 @@ import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
+import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
@@ -137,6 +139,7 @@ class AnalyzePdfUseCaseTest {
         private final ChainStatus status;
         private final RuntimeException toThrow;
         private final List<Instant> capturedValidationTimes = new ArrayList<>();
+        private List<CertificateInfo> validatedPathOverride;
 
         FakeCertificateChainValidator(ChainStatus status) {
             this(status, null);
@@ -151,6 +154,11 @@ class AnalyzePdfUseCaseTest {
             this.toThrow = toThrow;
         }
 
+        /** Simulates a real {@code PkixCertificateChainValidator} narrowing the presented chain (T10 security decision). */
+        void overrideValidatedPath(List<CertificateInfo> validatedPath) {
+            this.validatedPathOverride = validatedPath;
+        }
+
         @Override
         public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
             capturedValidationTimes.add(validationTime);
@@ -158,6 +166,11 @@ class AnalyzePdfUseCaseTest {
                 throw toThrow;
             }
             return status;
+        }
+
+        @Override
+        public List<CertificateInfo> validatedPath(List<CertificateInfo> chain, Instant validationTime) {
+            return validatedPathOverride != null ? validatedPathOverride : chain;
         }
     }
 
@@ -211,7 +224,7 @@ class AnalyzePdfUseCaseTest {
     // ---- test data builders ----
 
     private static CertificateInfo certificate(String subject) {
-        return new CertificateInfo(subject, "CN=issuer-of-" + subject, "01",
+        return new CertificateInfo(subject, null, "CN=issuer-of-" + subject, "01",
                 Instant.parse("2020-01-01T00:00:00Z"), Instant.parse("2030-01-01T00:00:00Z"),
                 "SHA256withRSA", List.of(), List.of(), new byte[] {1, 2, 3});
     }
@@ -354,18 +367,177 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.signatures().get(0).revocation()).isEqualTo(good);
     }
 
+    /**
+     * Security decision (T10): the signer/issuer passed to the revocation
+     * checker come from {@link CertificateChainValidator#validatedPath},
+     * not from {@code signature.chain()} directly -- a real {@code
+     * PkixCertificateChainValidator} narrows the presented (attacker-
+     * controlled) CMS chain down to only the certificates PKIX actually
+     * used, so an extra/unrelated certificate the chain also carries
+     * (which {@code chain()} would still include) is never consulted.
+     */
+    @Test
+    void revocationUsesTheValidatedPathRatherThanTheRawPresentedChain() {
+        CertificateInfo signer = certificate("signer");
+        CertificateInfo impostorExtraCertificate = certificate("impostor-embedded-in-cms");
+        CertificateInfo realIssuer = certificate("ca");
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(signer, impostorExtraCertificate, realIssuer));
+        RevocationStatus good = new RevocationStatus(RevocationState.GOOD, "OCSP", null);
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(good);
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.overrideValidatedPath(List.of(signer, realIssuer));
+
+        AnalyzePdfUseCase useCase =
+                happyPathUseCaseWithSignatures(List.of(signature), chainValidator, revocationChecker);
+        useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.lastCertificate).isEqualTo(signer);
+        assertThat(revocationChecker.lastIssuer).isEqualTo(realIssuer);
+    }
+
+    /**
+     * T10b: a {@code TRUSTED} chain whose {@code validatedPath} is
+     * (unexpectedly) empty must still surface an explicit reason, never the
+     * bare {@link RevocationStatus#notChecked()} placeholder that silently
+     * looks the same as "revocation was simply not requested".
+     */
+    @Test
+    void revocationSurfacesAnExplicitReasonWhenTheTrustedChainsValidatedPathIsEmpty() {
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.overrideValidatedPath(List.of());
+
+        AnalyzePdfUseCase useCase =
+                happyPathUseCaseWithSignatures(List.of(signature), chainValidator, revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount).isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "validated certification path unavailable"));
+    }
+
     @Test
     void revocationIsNotCheckedWhenTheSignatureHasNoCertificateChainEvenIfTheOptionIsEnabled() {
         SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of());
         FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
                 new RevocationStatus(RevocationState.GOOD, "OCSP", null));
 
+        // An empty chain can never validate as TRUSTED (PkixCertificateChainValidator
+        // itself returns NOT_CHECKED for it), so this exercises the same
+        // trust gate as the dedicated untrusted/incomplete/expired tests below.
         AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
                 List.of(signature), new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED), revocationChecker);
         PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
 
         assertThat(revocationChecker.callCount).isZero();
-        assertThat(report.signatures().get(0).revocation()).isEqualTo(RevocationStatus.notChecked());
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted"));
+    }
+
+    /**
+     * Security decision (T10): revocation is only ever attempted for a
+     * {@code TRUSTED} chain -- see {@code AnalyzePdfUseCase#resolveRevocation}'s
+     * Javadoc for why (an untrusted chain's AIA/CDP URLs are not
+     * necessarily written by a real CA). Covers the three other {@link
+     * ChainStatus} values a real {@code PkixCertificateChainValidator} can
+     * report; {@code NOT_CHECKED} itself is covered by the test above.
+     */
+    @Test
+    void revocationIsNotCheckedForAnUntrustedRootEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.UNTRUSTED_ROOT);
+    }
+
+    @Test
+    void revocationIsNotCheckedForAnIncompleteChainEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.INCOMPLETE_CHAIN);
+    }
+
+    @Test
+    void revocationIsNotCheckedForAnExpiredChainEvenIfTheOptionIsEnabled() {
+        assertRevocationSkippedForChainStatus(ChainStatus.EXPIRED);
+    }
+
+    private void assertRevocationSkippedForChainStatus(ChainStatus status) {
+        SignatureReport signature = signatureWith(
+                TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(status), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(revocationChecker.callCount)
+                .as("chainStatus=%s must never invoke the revocation checker", status)
+                .isZero();
+        assertThat(report.signatures().get(0).revocation()).isEqualTo(new RevocationStatus(
+                RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted"));
+    }
+
+    // ---- T11: overall verdict wiring ----
+
+    /**
+     * {@code SignatureVerdictPolicy} itself is exhaustively unit-tested
+     * (every decision-table row); this only proves {@code AnalyzePdfUseCase}
+     * actually wires it in -- the final assembled report's per-signature
+     * {@code verdict} and document-level {@code overallVerdict} reflect a
+     * real end-to-end TRUSTED/GOOD signature.
+     */
+    @Test
+    void assembledReportCarriesTheComputedOverallVerdict() {
+        SignatureReport signature =
+                signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+        FakeRevocationChecker revocationChecker = new FakeRevocationChecker(
+                new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(signature), new FakeCertificateChainValidator(ChainStatus.TRUSTED), revocationChecker);
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.VALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.VALID);
+        assertThat(report.modifiedAfterLastSignature()).isFalse();
+    }
+
+    @Test
+    void anUnsignedDocumentHasTheNoSignaturesOverallVerdict() {
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(), new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.NO_SIGNATURES);
+        assertThat(report.modifiedAfterLastSignature()).isFalse();
+    }
+
+    /**
+     * A signature whose coverage does not reach the end of file, with no
+     * other signature that does, is exposed both as an {@code INVALID}
+     * per-signature verdict and as the document-level {@code
+     * modifiedAfterLastSignature} flag -- the user's own example of content
+     * appended after the last (only) signature with nothing re-signing it.
+     */
+    @Test
+    void aDocumentModifiedAfterItsOnlySignatureIsFlaggedBothWays() {
+        SignatureReport modified = new SignatureReport(
+                "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 100),
+                IntegrityStatus.MODIFIED_AFTER_SIGNING, FIXED_NOW, TimestampInfo.absent(),
+                List.of(certificate("signer"), certificate("ca")), ChainStatus.NOT_CHECKED,
+                RevocationStatus.notChecked(), null);
+
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(
+                List.of(modified), new FakeCertificateChainValidator(ChainStatus.TRUSTED),
+                new FakeRevocationChecker(RevocationStatus.notChecked()));
+        PdfAnalysisReport report = useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.INVALID);
+        assertThat(report.modifiedAfterLastSignature()).isTrue();
     }
 
     // ---- PDF/A-2/3 declaration ----
@@ -438,7 +610,10 @@ class AnalyzePdfUseCaseTest {
         // T08b: the failure must also be explicit, not just a degraded status.
         assertThat(report.sectionErrors()).hasSize(1);
         assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.PDFA);
-        assertThat(report.sectionErrors().get(0).message()).contains("preflight blew up");
+        // T09b: the raw exception message must never reach the client.
+        assertThat(report.sectionErrors().get(0).message())
+                .doesNotContain("preflight blew up")
+                .contains("PDF/A-1b validation failed unexpectedly");
     }
 
     @Test
@@ -459,7 +634,15 @@ class AnalyzePdfUseCaseTest {
         // not be silently indistinguishable from "this document is unsigned".
         assertThat(report.sectionErrors()).hasSize(1);
         assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.SIGNATURES);
-        assertThat(report.sectionErrors().get(0).message()).contains("BC blew up");
+        // T09b: the raw exception message must never reach the client.
+        assertThat(report.sectionErrors().get(0).message())
+                .doesNotContain("BC blew up")
+                .contains("signature verification failed unexpectedly");
+        // T11c: an empty signatures list caused by the verifier itself
+        // blowing up must not look like a legitimately unsigned document
+        // (OverallVerdict.NO_SIGNATURES) -- the analysis is incomplete, not
+        // conclusively "no signatures".
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.ANALYSIS_INCOMPLETE);
     }
 
     @Test

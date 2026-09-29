@@ -10,11 +10,13 @@ import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
+import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
@@ -107,6 +109,8 @@ import java.util.Objects;
  * behavior already described above.
  */
 public final class AnalyzePdfUseCase {
+
+    private static final System.Logger LOGGER = System.getLogger(AnalyzePdfUseCase.class.getName());
 
     private final HashCalculator hashCalculator;
     private final PdfDocumentReader pdfDocumentReader;
@@ -201,7 +205,11 @@ public final class AnalyzePdfUseCase {
         try {
             formal = pdfaConformanceValidator.validate(content);
         } catch (RuntimeException e) {
-            String message = "PDF/A-1b validation failed unexpectedly: " + e;
+            // T09b: the exception's own message must never reach the client
+            // (it can carry internal detail unrelated to the PDF itself);
+            // log it server-side and report a stable, non-sensitive message.
+            LOGGER.log(System.Logger.Level.WARNING, "PDF/A-1b validation failed unexpectedly", e);
+            String message = "PDF/A-1b validation failed unexpectedly";
             sectionErrors.add(new SectionError(AnalysisSection.PDFA, message));
             return new PdfaReport(declaration, PdfaValidationStatus.NOT_VALIDATED,
                     List.of(new PdfaIssue("NOT_VALIDATED", message)));
@@ -216,8 +224,9 @@ public final class AnalyzePdfUseCase {
         try {
             extracted = signatureVerifier.verify(content);
         } catch (RuntimeException e) {
+            LOGGER.log(System.Logger.Level.WARNING, "Signature verification failed unexpectedly", e);
             sectionErrors.add(new SectionError(
-                    AnalysisSection.SIGNATURES, "signature verification failed unexpectedly: " + e));
+                    AnalysisSection.SIGNATURES, "signature verification failed unexpectedly"));
             return List.of();
         }
 
@@ -225,7 +234,10 @@ public final class AnalyzePdfUseCase {
         for (SignatureReport signature : extracted) {
             enriched.add(enrich(signature, options));
         }
-        return enriched;
+        // T11: the overall per-signature verdict is computed last, once every
+        // signature's integrity/chain/revocation is known -- multi-signature
+        // coverage needs to see all of them together (SignatureVerdictPolicy).
+        return SignatureVerdictPolicy.evaluateAll(enriched, options.checkRevocation());
     }
 
     /**
@@ -244,10 +256,13 @@ public final class AnalyzePdfUseCase {
         try {
             Instant validationTime = resolveValidationTime(signature);
             ChainStatus chainStatus = certificateChainValidator.validate(signature.chain(), validationTime);
-            RevocationStatus revocation = resolveRevocation(signature, options);
+            RevocationStatus revocation = resolveRevocation(signature, chainStatus, validationTime, options);
             return signature.withChainAndRevocation(chainStatus, revocation);
         } catch (RuntimeException e) {
-            return withAppendedAnomaly(signature, "chain/revocation enrichment failed: " + e);
+            // T09b: never surface the raw exception to the client -- log it
+            // server-side, report a stable, non-sensitive anomaly note.
+            LOGGER.log(System.Logger.Level.WARNING, "Chain/revocation enrichment failed unexpectedly", e);
+            return withAppendedAnomaly(signature, "chain/revocation enrichment failed unexpectedly");
         }
     }
 
@@ -270,23 +285,55 @@ public final class AnalyzePdfUseCase {
 
     /**
      * {@link RevocationStatus#notChecked()} when {@link
-     * AnalysisOptions#checkRevocation()} is {@code false}, or when the
-     * signature carries no certificate chain to check at all (nothing to
-     * ask a revocation checker about). Otherwise delegates to the injected
-     * {@link RevocationChecker} for the signer certificate (chain's first
-     * entry) and its immediate issuer (chain's second entry, or {@code
-     * null} when the chain has only the signer certificate itself).
+     * AnalysisOptions#checkRevocation()} is {@code false}.
+     *
+     * <h2>Trust gate (security decision, see the class Javadoc's "Resilience"
+     * section for the general enrichment guard this sits inside)</h2>
+     * Otherwise, revocation is checked <em>only when {@code chainStatus} is
+     * already {@link ChainStatus#TRUSTED}</em> -- reported as {@code
+     * NOT_CHECKED} with an explanatory detail for {@code UNTRUSTED_ROOT},
+     * {@code INCOMPLETE_CHAIN}, {@code EXPIRED} or {@code NOT_CHECKED}
+     * itself, even when the flag is on. This is not just an optimization:
+     * the AIA/CDP URLs a revocation check would contact live inside
+     * certificates a hostile CMS {@code SignedData} controls. For a
+     * {@code TRUSTED} chain those certificates were written by a real,
+     * trusted CA (the whole point of the chain being trusted), which closes
+     * the main SSRF vector -- an uploader-crafted, self-signed "certificate"
+     * declaring an internal OCSP URL never reaches a {@code TRUSTED}
+     * verdict in the first place. The network-level SSRF guard ({@code
+     * infrastructure.revocation.RevocationUrlGuard}/{@code
+     * PinnedHttpClient}) is kept as defense in depth on top of this, not
+     * instead of it.
+     *
+     * <p>When the gate passes, the signer certificate and its immediate
+     * issuer are taken from {@link CertificateChainValidator#validatedPath}
+     * -- the certificates PKIX itself used to reach that {@code TRUSTED}
+     * verdict -- rather than from {@code signature.chain()} directly:
+     * {@code chain()} is exactly what {@code SignatureVerifier} extracted
+     * from the (attacker-controlled) CMS, which can carry extra or
+     * unrelated certificates alongside a genuine path; {@code
+     * validatedPath} narrows that down to only the certificates a trust
+     * decision was actually made about.
      */
-    private RevocationStatus resolveRevocation(SignatureReport signature, AnalysisOptions options) {
+    private RevocationStatus resolveRevocation(
+            SignatureReport signature, ChainStatus chainStatus, Instant validationTime, AnalysisOptions options) {
         if (!options.checkRevocation()) {
             return RevocationStatus.notChecked();
         }
-        List<CertificateInfo> chain = signature.chain();
-        if (chain.isEmpty()) {
-            return RevocationStatus.notChecked();
+        if (chainStatus != ChainStatus.TRUSTED) {
+            return new RevocationStatus(
+                    RevocationState.NOT_CHECKED, null, "revocation not checked: certificate chain is not trusted");
         }
-        CertificateInfo certificate = chain.get(0);
-        CertificateInfo issuer = chain.size() > 1 ? chain.get(1) : null;
+        List<CertificateInfo> validatedPath = certificateChainValidator.validatedPath(signature.chain(), validationTime);
+        if (validatedPath.isEmpty()) {
+            // T10b: a TRUSTED chain reaching here with an empty validatedPath would
+            // otherwise be indistinguishable from "revocation simply was not
+            // requested" -- surface an explicit reason instead of silently skipping.
+            return new RevocationStatus(
+                    RevocationState.NOT_CHECKED, null, "validated certification path unavailable");
+        }
+        CertificateInfo certificate = validatedPath.get(0);
+        CertificateInfo issuer = validatedPath.size() > 1 ? validatedPath.get(1) : null;
         return revocationChecker.check(certificate, issuer);
     }
 

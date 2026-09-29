@@ -9,6 +9,7 @@ import com.coam.pdfvalidator.domain.model.PageInfo;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaIssueCatalog;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.Permission;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
@@ -46,7 +47,9 @@ public class PdfAnalysisReportMapper {
                 toDto(report.pdfa()),
                 report.signatures().stream().map(this::toDto).collect(Collectors.toList()),
                 report.analyzedAt(),
-                report.sectionErrors().stream().map(PdfAnalysisReportMapper::toDto).collect(Collectors.toList()));
+                report.sectionErrors().stream().map(PdfAnalysisReportMapper::toDto).collect(Collectors.toList()),
+                report.overallVerdict().name(),
+                report.modifiedAfterLastSignature());
     }
 
     private static DocumentHashesDto toDto(DocumentHashes hashes) {
@@ -91,7 +94,8 @@ public class PdfAnalysisReportMapper {
     }
 
     private static PdfaIssueDto toDto(PdfaIssue issue) {
-        return new PdfaIssueDto(issue.code(), issue.message());
+        return new PdfaIssueDto(
+                issue.code(), issue.message(), PdfaIssueCatalog.spanishMessage(issue.code()).orElse(null));
     }
 
     private static SectionErrorDto toDto(SectionError error) {
@@ -112,7 +116,9 @@ public class PdfAnalysisReportMapper {
                 chain,
                 signature.chainStatus().name(),
                 toDto(signature.revocation()),
-                signature.anomaly());
+                signature.anomaly(),
+                signature.verdict().name(),
+                signature.verdictReasons());
     }
 
     private static ByteRangeCoverageDto toDto(ByteRangeCoverage coverage) {
@@ -128,9 +134,9 @@ public class PdfAnalysisReportMapper {
 
     private CertificateInfoDto toDto(CertificateInfo certificate) {
         return new CertificateInfoDto(
-                certificate.subject(), certificate.issuer(), certificate.serialNumberHex(), certificate.notBefore(),
-                certificate.notAfter(), certificate.signatureAlgorithm(), certificate.ocspUrls(),
-                certificate.crlUrls(), sha256Fingerprint(certificate.encoded()));
+                certificate.subject(), certificate.commonName(), certificate.issuer(), certificate.serialNumberHex(),
+                certificate.notBefore(), certificate.notAfter(), certificate.signatureAlgorithm(),
+                certificate.ocspUrls(), certificate.crlUrls(), sha256Fingerprint(certificate.encoded()));
     }
 
     private static RevocationStatusDto toDto(RevocationStatus revocation) {

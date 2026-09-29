@@ -89,6 +89,8 @@
   </dependencies>
 
   <build>
+    <!-- Deterministic artifact name (target/pdf-validator.jar), used by the Dockerfile. -->
+    <finalName>${project.artifactId}</finalName>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

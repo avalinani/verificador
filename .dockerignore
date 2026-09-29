@@ -1,0 +1,30 @@
+# Build output and VCS
+target/
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Local tooling and project notes
+.codegraph/
+.atl/
+.impeccable/
+.claude/
+odd/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Not needed to build the image
+Dockerfile
+docker-compose.yml
+.dockerignore
+*.md
+!README.md
+*.log
+*.pdf
+deploy/

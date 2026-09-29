@@ -23,6 +23,21 @@ import java.util.Optional;
  *                            {@link CertificateInfo}, leaving it empty or
  *                            partial), or {@code null} when there is none
  *                            — see {@link #anomalyOptional()}
+ * @param verdict             the overall per-signature admissibility verdict
+ *                            (T11), computed by {@code
+ *                            com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy}
+ *                            once integrity/chain/revocation are all known.
+ *                            Starts out at the safe {@link
+ *                            SignatureVerdict#NOT_ADMITTED} placeholder (see
+ *                            the 10-arg constructor below) until that final
+ *                            pass runs, the same placeholder-then-enrich
+ *                            convention already used for {@code chainStatus}/
+ *                            {@code revocation}
+ * @param verdictReasons      stable, non-sensitive reason codes explaining
+ *                            {@code verdict} (e.g. {@code "CHAIN_EXPIRED"},
+ *                            {@code "REVOCATION_UNKNOWN"}), translated to
+ *                            user-facing text by the frontend, never empty
+ *                            prose here
  */
 public record SignatureReport(
         String fieldName,
@@ -34,7 +49,9 @@ public record SignatureReport(
         List<CertificateInfo> chain,
         ChainStatus chainStatus,
         RevocationStatus revocation,
-        String anomaly) {
+        String anomaly,
+        SignatureVerdict verdict,
+        List<String> verdictReasons) {
 
     public SignatureReport {
         Objects.requireNonNull(fieldName, "fieldName");
@@ -45,7 +62,36 @@ public record SignatureReport(
         Objects.requireNonNull(chain, "chain");
         Objects.requireNonNull(chainStatus, "chainStatus");
         Objects.requireNonNull(revocation, "revocation");
+        Objects.requireNonNull(verdict, "verdict");
+        Objects.requireNonNull(verdictReasons, "verdictReasons");
         chain = List.copyOf(chain);
+        verdictReasons = List.copyOf(verdictReasons);
+    }
+
+    /**
+     * Convenience constructor matching this record's original (pre-T11)
+     * shape, used by every {@code SignatureVerifier} adapter and every
+     * pre-T11 test fixture: defaults {@code verdict} to the safe {@link
+     * SignatureVerdict#NOT_ADMITTED} placeholder with no reasons, exactly
+     * mirroring how {@code chainStatus}/{@code revocation} already start at
+     * their own {@code NOT_CHECKED} placeholders before the use case
+     * enriches them. Superseded by {@link #withVerdict} once the final
+     * verdict pass (over every signature in the report, since it needs to
+     * see all of them together -- see {@code SignatureVerdictPolicy}) runs.
+     */
+    public SignatureReport(
+            String fieldName,
+            String subFilter,
+            ByteRangeCoverage coverage,
+            IntegrityStatus integrity,
+            Instant claimedSigningTime,
+            TimestampInfo timestamp,
+            List<CertificateInfo> chain,
+            ChainStatus chainStatus,
+            RevocationStatus revocation,
+            String anomaly) {
+        this(fieldName, subFilter, coverage, integrity, claimedSigningTime, timestamp, chain,
+                chainStatus, revocation, anomaly, SignatureVerdict.NOT_ADMITTED, List.of());
     }
 
     public Optional<Instant> claimedSigningTimeOptional() {
@@ -60,6 +106,13 @@ public record SignatureReport(
     public SignatureReport withChainAndRevocation(ChainStatus newChainStatus, RevocationStatus newRevocation) {
         return new SignatureReport(
                 fieldName, subFilter, coverage, integrity, claimedSigningTime, timestamp, chain,
-                newChainStatus, newRevocation, anomaly);
+                newChainStatus, newRevocation, anomaly, verdict, verdictReasons);
+    }
+
+    /** Returns a copy of this report with its final verdict (T11), computed by {@code SignatureVerdictPolicy}. */
+    public SignatureReport withVerdict(SignatureVerdict newVerdict, List<String> newVerdictReasons) {
+        return new SignatureReport(
+                fieldName, subFilter, coverage, integrity, claimedSigningTime, timestamp, chain,
+                chainStatus, revocation, anomaly, newVerdict, newVerdictReasons);
     }
 }

@@ -1,10 +1,35 @@
+# Default HTTP port. 8080 is avoided on purpose because it often collides with
+# other local servers (e.g. WildFly). Override with SERVER_PORT or --server.port.
+server:
+  port: 8963
+  tomcat:
+    # Bounded concurrency keeps thread stacks, per-request heap and /tmp usage
+    # inside the container memory budget (see Dockerfile). Override with
+    # SERVER_TOMCAT_THREADS_MAX / SERVER_TOMCAT_ACCEPT_COUNT.
+    threads:
+      max: 20
+    accept-count: 20
+
 spring:
   application:
     name: pdf-validator
   servlet:
     multipart:
-      max-file-size: 20MB
-      max-request-size: 20MB
+      max-file-size: 80MB
+      max-request-size: 81MB
+      # Uploads are buffered on disk (tmpfs /tmp in the container), never in the heap:
+      # threshold 0 = every part goes straight to a temp file. The bulkhead below admits
+      # at most `max-concurrent` uploads at once, which bounds /tmp use (numbers in the
+      # README memory budget table). Location is explicit so it is obvious what must
+      # stay writable.
+      file-size-threshold: 0B
+      location: ${java.io.tmpdir}
+
+# PDFBox logs a WARN per text run when a standard font (e.g. Helvetica) is not embedded and it
+# substitutes one; PDFs like that are common and it floods the log, so only errors are shown.
+logging:
+  level:
+    org.apache.pdfbox.pdmodel.font: ERROR
 
 management:
   endpoints:
@@ -13,6 +38,17 @@ management:
         # Only health and info are exposed; every other actuator endpoint
         # (env, beans, threaddump, ...) stays off by default.
         include: health,info
+
+# Bulkhead (T12c): limits simultaneous PDF analyses (upload buffering + analysis) so
+# worst-case memory stays inside the 512 MB container budget. A request waits up to
+# acquire-timeout for a slot, otherwise the API answers 503 (urn:pdfvalidator:error:busy)
+# with a Retry-After header. Tomcat threads.max/accept-count (above) only queue requests;
+# this is what actually bounds memory. Override with PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT
+# and PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT.
+pdfvalidator:
+  analysis:
+    max-concurrent: 2
+    acquire-timeout: 30s
 
 # Trust store used by CertificateChainValidator (PkixCertificateChainValidator)
 # to validate a signer's certificate chain. All properties are optional: the
@@ -25,3 +61,12 @@ management:
 #    external-dir: /path/to/a/directory/with/one-certificate-per-file
 #    pkcs12-path: /path/to/truststore.p12
 #    pkcs12-password: change-me
+
+# Optional revocation checking (OCSP/CRL, CompositeRevocationChecker), only
+# used when a request sets checkRevocation=true. Both defaults already match
+# the task's requirements; uncomment only to change them -- see README
+# section on revocation checking/4.
+#pdfvalidator:
+#  revocation:
+#    timeout: 2s
+#    max-response-bytes: 10MB

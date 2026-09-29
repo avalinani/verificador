@@ -2,6 +2,13 @@ package com.coam.pdfvalidator.infrastructure.bouncycastle;
 
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.fixtures.TestPki;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.DERUTF8String;
+import org.bouncycastle.asn1.x500.AttributeTypeAndValue;
+import org.bouncycastle.asn1.x500.RDN;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x509.Extension;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +44,111 @@ class X509CertificateInfoMapperTest {
         // extension must be readable without needing the malformed-extension fallback below.
         assertThat(info.ocspUrls()).isNotEmpty();
         assertThat(info.crlUrls()).isNotEmpty();
+    }
+
+    /**
+     * T11f: a real signer's subject can declare {@code emailAddress} (OID
+     * 1.2.840.113549.1.9.1). The JDK's own {@code X500Principal} RFC 2253
+     * formatting doesn't know that OID and falls back to a hex-encoded
+     * {@code "#16<hex>"} dump of the raw DER value -- unreadable in the web
+     * UI. The mapper must instead produce a human-readable DN (decoded
+     * string value, {@code E=...} label) and expose the subject's {@code CN}
+     * separately via {@link CertificateInfo#commonName()}.
+     */
+    @Test
+    void aReadableSubjectDecodesTheEmailAddressAttributeAndExposesTheCommonNameSeparately() {
+        X500NameBuilder builder = new X500NameBuilder(BCStyle.INSTANCE);
+        builder.addRDN(BCStyle.C, "ES");
+        builder.addRDN(BCStyle.O, "COAM");
+        builder.addRDN(BCStyle.OU, "Certificado de pruebas T11f");
+        builder.addRDN(BCStyle.SERIALNUMBER, "12345678A");
+        builder.addRDN(BCStyle.GIVENNAME, "MARIA");
+        builder.addRDN(BCStyle.SURNAME, "GARCIA LOPEZ");
+        builder.addRDN(BCStyle.E, "maria.garcia@example.org");
+        builder.addRDN(BCStyle.CN, "GARCIA LOPEZ MARIA - 12345678A");
+        X500Name subjectWithEmail = builder.build();
+
+        X509Certificate certificate =
+                TestPki.issueSigningIdentityWithSubject(subjectWithEmail).endEntityCertificate();
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.subject()).doesNotContain("#16");
+        assertThat(info.subject()).containsAnyOf(
+                "E=maria.garcia@example.org", "EMAILADDRESS=maria.garcia@example.org");
+        assertThat(info.commonName()).isEqualTo("GARCIA LOPEZ MARIA - 12345678A");
+    }
+
+    /**
+     * R3-cn-escaped: {@code commonName} is the attribute's own value, not a
+     * piece of an RFC 2253 string: a comma or plus sign inside the CN must
+     * come back unescaped ({@code \,} / {@code \+} would be display noise).
+     */
+    @Test
+    void theCommonNameIsTheUnescapedAttributeValue() {
+        X509Certificate certificate = certificateWithSubject(new X500NameBuilder(BCStyle.INSTANCE)
+                .addRDN(BCStyle.C, "ES")
+                .addRDN(BCStyle.CN, "PEREZ, JUAN + SOCIOS \"SL\"")
+                .build());
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.commonName()).isEqualTo("PEREZ, JUAN + SOCIOS \"SL\"");
+    }
+
+    @Test
+    void aSubjectWithoutACommonNameHasANullCommonName() {
+        X509Certificate certificate = certificateWithSubject(new X500NameBuilder(BCStyle.INSTANCE)
+                .addRDN(BCStyle.C, "ES")
+                .addRDN(BCStyle.O, "Sin CN")
+                .build());
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.commonName()).isNull();
+        assertThat(info.subject()).contains("Sin CN");
+    }
+
+    @Test
+    void theCommonNameIsFoundInsideAMultiValuedRdn() {
+        RDN multiValued = new RDN(new AttributeTypeAndValue[] {
+            new AttributeTypeAndValue(BCStyle.OU, new DERUTF8String("Departamento")),
+            new AttributeTypeAndValue(BCStyle.CN, new DERUTF8String("Nombre Compuesto")),
+        });
+        X509Certificate certificate = certificateWithSubject(new X500Name(new RDN[] {
+            new RDN(BCStyle.C, new DERUTF8String("ES")), multiValued}));
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.commonName()).isEqualTo("Nombre Compuesto");
+    }
+
+    @Test
+    void aCommonNameThatIsNotAStringTypeYieldsANullCommonName() {
+        X509Certificate certificate = certificateWithSubject(new X500Name(new RDN[] {
+            new RDN(BCStyle.CN, new ASN1Integer(42))}));
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.commonName()).isNull();
+    }
+
+    @Test
+    void aPrincipalWhoseDerCannotBeReparsedFallsBackToItsRfc2253NameWithoutACommonName() {
+        X509Certificate certificate = certificateWithExtension(Extension.authorityInfoAccess.getId());
+        X500Principal unparseable = mock(X500Principal.class);
+        when(unparseable.getEncoded()).thenReturn(new byte[] {0x00, 0x01});
+        when(unparseable.getName()).thenReturn("CN=Fallback");
+        when(certificate.getSubjectX500Principal()).thenReturn(unparseable);
+
+        CertificateInfo info = X509CertificateInfoMapper.toDomain(certificate);
+
+        assertThat(info.subject()).isEqualTo("CN=Fallback");
+        assertThat(info.commonName()).isNull();
+    }
+
+    private static X509Certificate certificateWithSubject(X500Name subject) {
+        return TestPki.issueSigningIdentityWithSubject(subject).endEntityCertificate();
     }
 
     @Test

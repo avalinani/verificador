@@ -106,6 +106,86 @@ public final class TestPdfFactory {
     }
 
     /**
+     * A one-page PDF signed once by an end-entity certificate whose own
+     * validity window had already ended before the signing time -- a
+     * real-world case (T09c): the cryptographic signature itself must still
+     * verify (integrity is independent of certificate validity), while a
+     * caller validating the chain at the signing time reports it {@code
+     * EXPIRED}.
+     */
+    public static byte[] signedWithCertificateExpiredAtSigningTime() throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentityExpiredAtSigningTime();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.sign(unsigned, identity);
+    }
+
+    /**
+     * A one-page PDF signed once whose CMS {@code SignerInfo} encodes its
+     * {@code digestAlgorithm} field as the SIGNATURE algorithm OID ({@code
+     * sha256WithRSAEncryption}) instead of the plain digest OID -- a
+     * non-standard encoding real-world signing tools sometimes produce and
+     * Adobe accepts (T09c).
+     */
+    public static byte[] signedWithSignatureAlgorithmOidAsDigestOid() throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.signWithSignatureAlgorithmOidAsDigestOid(unsigned, identity);
+    }
+
+    /**
+     * T09d follow-up (negative test): same non-standard {@code
+     * digestAlgorithm} encoding as {@link #signedWithSignatureAlgorithmOidAsDigestOid()},
+     * but a byte inside the first signed range was flipped after signing --
+     * same technique as {@link #signedThenTampered()}. Since this CMS has no
+     * signed attributes, {@code CmsSignatureVerification}'s bypass for the
+     * OID-mislabeling bug verifies directly over the actual signed bytes; it
+     * must not become a bypass for tamper detection too.
+     */
+    public static byte[] signedWithSignatureAlgorithmOidAsDigestOidThenTampered() throws IOException {
+        byte[] pdf = signedWithSignatureAlgorithmOidAsDigestOid();
+        int[] byteRange = firstByteRange(pdf);
+        byte[] tampered = pdf.clone();
+        int tamperOffset = byteRange[0] + 10;
+        tampered[tamperOffset] = (byte) (tampered[tamperOffset] ^ 0xFF);
+        return tampered;
+    }
+
+    /**
+     * T09d follow-up: same non-standard {@code digestAlgorithm} encoding as
+     * {@link #signedWithSignatureAlgorithmOidAsDigestOid()}, but with signed
+     * attributes present (see {@link
+     * TestPdfSigner#signWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes}).
+     */
+    public static byte[] signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes() throws IOException {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        byte[] unsigned = TestPdfSigner.createSimplePdf();
+        return TestPdfSigner.signWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes(unsigned, identity);
+    }
+
+    /**
+     * T10 follow-up (T09d review advisory): the tampered-content negative
+     * {@link #signedWithSignatureAlgorithmOidAsDigestOidThenTampered()}
+     * only covers the no-signed-attributes variant of the mislabeled-digest
+     * bypass. This is the same tamper (a byte flipped
+     * inside the first signed range, after signing) applied to the
+     * signed-attributes variant instead, exercising {@code
+     * CmsSignatureVerification#verifyWithMislabeledDigestAlgorithm}'s other
+     * branch (checks {@code messageDigest} first, then verifies over the
+     * signed attributes): tampering the actual content must still be
+     * caught via the {@code messageDigest} mismatch, even though the
+     * signature itself covers the signed attributes, not the raw content
+     * directly.
+     */
+    public static byte[] signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributesThenTampered() throws IOException {
+        byte[] pdf = signedWithSignatureAlgorithmOidAsDigestOidAndSignedAttributes();
+        int[] byteRange = firstByteRange(pdf);
+        byte[] tampered = pdf.clone();
+        int tamperOffset = byteRange[0] + 10;
+        tampered[tamperOffset] = (byte) (tampered[tamperOffset] ^ 0xFF);
+        return tampered;
+    }
+
+    /**
      * A signed PDF whose raw {@code /ByteRange} array text has been
      * byte-patched in place (keeping the file's total length, and every
      * other byte offset, unchanged) so its last number ({@code len2})

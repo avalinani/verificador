@@ -35,6 +35,11 @@ import java.nio.charset.StandardCharsets;
 @RestController
 public class PdfAnalysisController {
 
+    /** The single upload route; the one place that spells it (tests build their URLs from it). */
+    public static final String ANALYZE_PATH = "/api/v1/pdf/analyze";
+
+    private static final System.Logger LOGGER = System.getLogger(PdfAnalysisController.class.getName());
+
     /** Matches {@code PdfBoxDocumentReader}'s own header search window (README section 2.4). */
     private static final int HEADER_SEARCH_WINDOW = 1024;
     private static final byte[] PDF_HEADER = "%PDF-".getBytes(StandardCharsets.US_ASCII);
@@ -67,7 +72,7 @@ public class PdfAnalysisController {
             @ApiResponse(responseCode = "500", description = "Unexpected server error",
                     content = @Content(schema = @Schema(implementation = ProblemDetail.class))),
     })
-    @PostMapping(path = "/api/v1/pdf/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+    @PostMapping(path = ANALYZE_PATH, consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public PdfAnalysisReportDto analyze(
             @Parameter(description = "The PDF file to analyze (multipart/form-data field 'file').")
@@ -86,14 +91,36 @@ public class PdfAnalysisController {
         return mapper.toDto(report);
     }
 
-    private static byte[] readContent(MultipartFile file) {
+    /**
+     * @throws MissingFileException if the {@code file} part is absent or
+     *                              empty -- a client-input problem (400)
+     * @throws UploadReadException if the part is present but its bytes could
+     *                              not be read (T09b): unlike a missing/empty
+     *                              part, this is not a client-input problem
+     *                              (the client did upload a file part; this
+     *                              server could not read the bytes back from
+     *                              its own temporary multipart storage), so
+     *                              it is reported as an unexpected failure
+     *                              (500) via {@code
+     *                              PdfAnalysisExceptionHandler#handleUnexpected}
+     *                              rather than misclassified as a missing file
+     */
+    static byte[] readContent(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new MissingFileException("The 'file' part is missing or empty.");
         }
         try {
             return file.getBytes();
         } catch (IOException e) {
-            throw new MissingFileException("The 'file' part could not be read: " + e.getMessage());
+            LOGGER.log(System.Logger.Level.WARNING, "Failed to read the uploaded file's bytes", e);
+            throw new UploadReadException("The uploaded file's part could not be read", e);
+        }
+    }
+
+    /** See {@link #readContent}'s Javadoc for why this is 500, not 400. */
+    static final class UploadReadException extends RuntimeException {
+        UploadReadException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

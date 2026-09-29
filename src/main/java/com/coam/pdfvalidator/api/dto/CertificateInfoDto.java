@@ -11,6 +11,7 @@ import java.util.List;
  */
 public record CertificateInfoDto(
         String subject,
+        String commonName,
         String issuer,
         String serialNumberHex,
         Instant notBefore,
