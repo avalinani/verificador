@@ -9,6 +9,7 @@ import com.coam.pdfvalidator.domain.model.PageInfo;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaIssueCatalog;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.Permission;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
@@ -93,7 +94,8 @@ public class PdfAnalysisReportMapper {
     }
 
     private static PdfaIssueDto toDto(PdfaIssue issue) {
-        return new PdfaIssueDto(issue.code(), issue.message());
+        return new PdfaIssueDto(
+                issue.code(), issue.message(), PdfaIssueCatalog.spanishMessage(issue.code()).orElse(null));
     }
 
     private static SectionErrorDto toDto(SectionError error) {

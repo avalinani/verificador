@@ -452,7 +452,22 @@ function renderPdfaCard(pdfa) {
     list.className = "pdfa-issue-list";
     for (const issue of pdfa.issues) {
       const li = document.createElement("li");
-      li.textContent = `${issue.code}: ${issue.message}`;
+      // Spanish first (primary), PDFBox's original English message below it
+      // (secondary). `messageEs` is null for a code the backend catalog does
+      // not recognize: then only the English message is shown. textContent
+      // only -- both strings come from the server.
+      if (issue.messageEs) {
+        const es = document.createElement("span");
+        es.className = "pdfa-issue-es";
+        es.textContent = `${issue.code}: ${issue.messageEs}`;
+        const en = document.createElement("span");
+        en.className = "pdfa-issue-en";
+        en.lang = "en";
+        en.textContent = issue.message;
+        li.append(es, en);
+      } else {
+        li.textContent = `${issue.code}: ${issue.message}`;
+      }
       list.appendChild(li);
     }
     card.appendChild(list);

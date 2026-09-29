@@ -13,6 +13,7 @@ import com.coam.pdfvalidator.domain.model.PageInfo;
 import com.coam.pdfvalidator.domain.model.PdfAnalysisReport;
 import com.coam.pdfvalidator.domain.model.PdfaDeclaration;
 import com.coam.pdfvalidator.domain.model.PdfaIssue;
+import com.coam.pdfvalidator.domain.model.PdfaIssueCatalog;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.model.Permission;
@@ -166,6 +167,26 @@ class PdfAnalysisReportMapperTest {
     }
 
     @Test
+    void aPdfaIssueWithAKnownPreflightCodeAlsoGetsItsSpanishTranslation() {
+        // 7.1 = ERROR_METADATA_FORMAT (PdfaIssueCatalogTest, T11g): a real
+        // code PDFBox's own preflight reports, e.g. "Metadata is not a stream".
+        DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
+        SecurityInfo security = new SecurityInfo(false, EnumSet.noneOf(Permission.class));
+        PdfaReport pdfa = new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.NOT_VALIDATED, List.of(
+                new PdfaIssue("7.1", "Metadata is not a stream")));
+        PdfAnalysisReport report = new PdfAnalysisReport(
+                "unsigned.pdf", 10, new DocumentHashes("a".repeat(64), "b".repeat(128)), structure, security, pdfa,
+                List.of(), Instant.EPOCH, List.of());
+
+        PdfAnalysisReportDto dto = mapper.toDto(report);
+
+        PdfaIssueDto issueDto = dto.pdfa().issues().get(0);
+        assertThat(issueDto.code()).isEqualTo("7.1");
+        assertThat(issueDto.message()).isEqualTo("Metadata is not a stream");
+        assertThat(issueDto.messageEs()).isEqualTo(PdfaIssueCatalog.spanishMessage("7.1").orElseThrow());
+    }
+
+    @Test
     void absentTimestampMapsToPresentFalseWithNoCertificate() {
         DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
         SecurityInfo security = new SecurityInfo(false, EnumSet.noneOf(Permission.class));
@@ -187,6 +208,9 @@ class PdfAnalysisReportMapperTest {
         assertThat(dto.signatures().get(0).anomaly()).isNull();
         assertThat(dto.pdfa().declaration().declared()).isFalse();
         assertThat(dto.pdfa().issues()).hasSize(1);
+        // "CODE" is not a real PDFBox preflight code (T11g): the UI must show
+        // only the original English message for it, never a fabricated translation.
+        assertThat(dto.pdfa().issues().get(0).messageEs()).isNull();
         assertThat(dto.sectionErrors()).isEmpty();
         // Built with the pre-T11 10-arg SignatureReport constructor: verdict
         // defaults to its safe NOT_ADMITTED placeholder (never computed here).
