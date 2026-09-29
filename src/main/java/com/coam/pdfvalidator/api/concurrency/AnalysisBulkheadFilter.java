@@ -31,7 +31,10 @@ import java.util.Locale;
  *
  * <p>A saturated bulkhead is reported through the {@link
  * HandlerExceptionResolver} chain so the same {@code @RestControllerAdvice}
- * machinery that formats every other API error produces the 503 body.
+ * machinery that formats every other API error produces the 503 body. The
+ * rejected request's body is never read, so the response carries {@code
+ * Connection: close}: the container then drops the connection instead of
+ * trying to drain up to 20 MB the client may still be sending.
  */
 public class AnalysisBulkheadFilter extends OncePerRequestFilter {
 
@@ -56,6 +59,7 @@ public class AnalysisBulkheadFilter extends OncePerRequestFilter {
         try {
             permit = bulkhead.acquire();
         } catch (AnalysisBusyException busy) {
+            response.setHeader("Connection", "close");
             exceptionResolver.resolveException(request, response, null, busy);
             return;
         }

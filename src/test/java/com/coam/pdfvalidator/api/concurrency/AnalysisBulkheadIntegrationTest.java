@@ -20,6 +20,9 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -29,6 +32,7 @@ import java.time.Instant;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -174,6 +178,104 @@ class AnalysisBulkheadIntegrationTest {
                 .containsEntry("/API/v1/pdf/analyze", 404)
                 .containsEntry("/api/v1/pdf/./analyze", 404)
                 .containsEntry("/api/v1/pdf/x/../analyze", 404);
+    }
+
+    /**
+     * The rejected upload's body is never read, so the 503 must tell the
+     * container to drop the connection instead of draining it. A raw socket
+     * announces a 20 MB body, sends a fraction of it and must still get the
+     * 503 and an end of stream promptly.
+     */
+    @Test
+    void aRejectedUploadIsAnsweredWithConnectionCloseWithoutWaitingForTheBody() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenAnswer(invocation -> {
+                    entered.countDown();
+                    if (!release.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test latch never released");
+                    }
+                    return report();
+                });
+        CompletableFuture<HttpResponse<String>> first =
+                client.sendAsync(request(), HttpResponse.BodyHandlers.ofString());
+        assertThat(entered.await(10, TimeUnit.SECONDS)).as("first analysis started").isTrue();
+
+        long announced = 20L * 1024 * 1024;
+        try (Socket socket = new Socket("localhost", port)) {
+            socket.setSoTimeout(8_000);
+            OutputStream out = socket.getOutputStream();
+            out.write(("POST " + ANALYZE + " HTTP/1.1\r\nHost: localhost\r\n"
+                    + "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
+                    + "Content-Length: " + announced + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            // A real client keeps streaming its 20 MB body while it waits for the answer.
+            Thread uploader = Thread.startVirtualThread(() -> {
+                try {
+                    byte[] chunk = new byte[64 * 1024];
+                    for (long sent = 0; sent < announced; sent += chunk.length) {
+                        out.write(chunk);
+                        out.flush();
+                    }
+                } catch (java.io.IOException closedByServer) {
+                    // expected: the server drops the connection instead of draining the body
+                }
+            });
+
+            long start = System.nanoTime();
+            InputStream in = socket.getInputStream();
+            String response = new String(in.readAllBytes(), StandardCharsets.ISO_8859_1);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            uploader.interrupt();
+            assertThat(response).startsWith("HTTP/1.1 503");
+            assertThat(response.toLowerCase(Locale.ROOT)).contains("connection: close");
+            assertThat(elapsedMs).as("connection closed promptly, body not drained").isLessThan(3_000);
+        } finally {
+            release.countDown();
+            first.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * A small unread body would let Tomcat keep the connection alive and drain
+     * it; the 503 must ask for the connection to be closed explicitly, not
+     * only rely on Tomcat's swallow limit for large bodies.
+     */
+    @Test
+    void aRejectedSmallUploadAlsoAsksForTheConnectionToBeClosed() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenAnswer(invocation -> {
+                    entered.countDown();
+                    if (!release.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test latch never released");
+                    }
+                    return report();
+                });
+        CompletableFuture<HttpResponse<String>> first =
+                client.sendAsync(request(), HttpResponse.BodyHandlers.ofString());
+        assertThat(entered.await(10, TimeUnit.SECONDS)).as("first analysis started").isTrue();
+
+        try (Socket socket = new Socket("localhost", port)) {
+            socket.setSoTimeout(5_000);
+            byte[] body = new byte[1024];
+            OutputStream out = socket.getOutputStream();
+            out.write(("POST " + ANALYZE + " HTTP/1.1\r\nHost: localhost\r\n"
+                    + "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
+                    + "Content-Length: " + body.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            out.write(body);
+            out.flush();
+
+            String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.ISO_8859_1);
+
+            assertThat(response).startsWith("HTTP/1.1 503");
+            assertThat(response.toLowerCase(Locale.ROOT)).contains("connection: close");
+        } finally {
+            release.countDown();
+            first.get(10, TimeUnit.SECONDS);
+        }
     }
 
     private HttpRequest request() {
