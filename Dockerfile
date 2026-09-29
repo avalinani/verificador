@@ -30,23 +30,24 @@ COPY --from=build --chown=app:app /workspace/extracted/spring-boot-loader/ ./
 COPY --from=build --chown=app:app /workspace/extracted/snapshot-dependencies/ ./
 COPY --from=build --chown=app:app /workspace/extracted/application/ ./
 
-# Memory budget for the 512 MB container limit (worst case, everything at its cap):
-#   heap            240 MB  (-Xmx240m)
-#   metaspace        80 MB  (-XX:MaxMetaspaceSize=80m)
-#   code cache       32 MB  (-XX:ReservedCodeCacheSize=32m)
-#   direct buffers   24 MB  (-XX:MaxDirectMemorySize=24m)
+# Memory budget for the 2 GB container limit (worst case, everything at its cap):
+#   heap           1024 MB  (-Xmx1024m; one 80 MB analysis needs ~5x its size, see README)
+#   metaspace        96 MB  (-XX:MaxMetaspaceSize=96m)
+#   code cache       48 MB  (-XX:ReservedCodeCacheSize=48m)
+#   direct buffers   32 MB  (-XX:MaxDirectMemorySize=32m)
 #   thread stacks    20 MB  (~40 threads: 20 Tomcat + JIT/VM/misc, x 512 KB via -Xss512k)
-#   other native     32 MB  (malloc arenas, GC structures, CDS, libc)
-#   --------------- 428 MB
-#   tmpfs /tmp       64 MB  (compose/CI; counted against the cgroup when full; in practice
-#                            at most 2 uploads x 20 MB = 40 MB thanks to the bulkhead)
-#   --------------- 492 MB  -> ~20 MB of headroom under 512 MB.
+#   other native     64 MB  (malloc arenas, GC structures, CDS, libc)
+#   --------------- 1284 MB
+#   tmpfs /tmp      160 MB  (compose/CI; counted against the cgroup when full: at most
+#                            2 uploads x 80 MB, the bulkhead admits max-concurrent uploads)
+#   --------------- 1444 MB -> ~600 MB of headroom under 2048 MB.
 # SerialGC = no GC worker threads / lowest footprint. Compact object headers are
 # stable in Java 25 and shrink every object. Request concurrency is bounded in
 # application.yml (server.tomcat.threads.max / accept-count) so the thread term holds, and
-# simultaneous analyses by the bulkhead (pdfvalidator.analysis.max-concurrent=2), which is
-# what keeps the heap term realistic (2 analyses x ~100 MB worst case < 240 MB).
-ENV JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xms64m -Xmx240m -XX:MaxMetaspaceSize=80m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=24m -Xss512k -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"
+# simultaneous analyses by the bulkhead (pdfvalidator.analysis.max-concurrent), which is
+# what keeps the heap term realistic. For a smaller VM override JAVA_TOOL_OPTIONS,
+# mem_limit and the tmpfs size together (and lower the upload limit).
+ENV JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xms64m -Xmx1024m -XX:MaxMetaspaceSize=96m -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=32m -Xss512k -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"
 
 USER app:app
 EXPOSE 8963
