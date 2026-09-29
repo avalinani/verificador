@@ -424,7 +424,7 @@ Cuatro correcciones de pulido tras una **firma real con AutoFirma** (captura de 
 | Cobertura | JaCoCo | — |
 | Build | Maven (wrapper incluido) | 3.9.9 |
 | CI | GitHub Actions (Temurin 25) | — |
-| Contenedor | Docker, `eclipse-temurin:25-jre-alpine` | ⏳ |
+| Contenedor | Docker multi-etapa (`eclipse-temurin:25-jdk-alpine` para compilar, `eclipse-temurin:25-jre-alpine` para ejecutar), Docker Compose | ✅ (T12; verificación en un daemon real pendiente, ver §4) |
 | Frontend | HTML + CSS + JavaScript nativo (módulos ES, sin frameworks, sin CDNs) | ✅ (pantallas "Validar" y "Firmar") |
 | Firma de escritorio | AutoScript (Cliente @firma / AutoFirma), vendida como componente de terceros sin modificar | 1.10.1 (T11b, §13) |
 
@@ -467,7 +467,38 @@ Con la configuración por defecto (`application.yml`), una vez arrancada:
 - Swagger UI: <http://localhost:8963/swagger-ui.html> ✅
 - Especificación OpenAPI: <http://localhost:8963/v3/api-docs> ✅
 - Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8963/actuator/health>, <http://localhost:8963/actuator/info>
-- Docker / Docker Compose: ⏳
+- Docker / Docker Compose: ✅ -- ver «Ejecución con Docker» más abajo
+
+### Ejecución con Docker
+
+Requiere Docker con el daemon en marcha (no hace falta JDK ni Maven en el equipo).
+
+```bash
+docker build -t pdf-validator:local .   # construir la imagen (los tests se ejecutan en CI, no aquí)
+docker compose up -d --build            # arrancar (http://localhost:8963/)
+docker compose ps                       # el estado pasa a "healthy" en menos de ~60 s
+curl -s localhost:8963/actuator/health  # {"status":"UP",...}
+docker compose logs -f                  # seguir los logs
+docker compose down                     # parar y eliminar el contenedor
+```
+
+**Imagen.** `Dockerfile` multi-etapa: la etapa de compilación usa el wrapper de Maven (la caché de dependencias solo se invalida si cambia `pom.xml`) y divide el jar con el *jarmode* `tools` de Spring Boot (`extract --layers --launcher`, sintaxis comprobada con Boot 4.1.1); la etapa de ejecución es un JRE 25 Alpine con solo las capas extraídas, arrancadas con `JarLauncher`. El `.dockerignore` deja fuera `target/`, `.git`, ficheros de herramientas locales, `odd/` y los PDF.
+
+**Perfil de recursos.** La imagen fija `JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xmx384m -XX:MaxMetaspaceSize=128m -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"` y Compose limita el contenedor a **512 MB** (`mem_limit`):
+
+| Opción | Por qué |
+|---|---|
+| `-XX:+UseSerialGC` | Sin hilos de GC paralelos: menor consumo en una VM de 1 vCPU/1 GB. |
+| `-Xmx384m` | Deja ~128 MB del límite para *metaspace*, pilas de hilos y *buffers* directos; un PDF de 20 MB (límite de subida) se analiza dos veces (lectura + *preflight*). |
+| `-XX:MaxMetaspaceSize=128m` | Acota la memoria de clases. |
+| `-XX:+UseCompactObjectHeaders` | Cabeceras de objeto compactas (estable en Java 25): menos memoria por objeto. |
+| `-XX:+ExitOnOutOfMemoryError` | Ante un `OutOfMemoryError` la JVM termina y `restart: unless-stopped` la levanta, en vez de quedar en un estado degradado. |
+
+**Endurecimiento.** Usuario no root (`app`, uid 10001); `read_only: true` con `/tmp` como `tmpfs` (única ruta escribible: directorio de trabajo de Tomcat y ficheros temporales de PDFBox); `security_opt: no-new-privileges:true`; `cap_drop: [ALL]`; `HEALTHCHECK` con `wget` sobre `/actuator/health`; Actuator solo expone `health` e `info`.
+
+**Configuración por variables de entorno** (bloque `environment` de `docker-compose.yml`, comentado por defecto): `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR`, `PDFVALIDATOR_REVOCATION_TIMEOUT`, `SERVER_PORT`. Para añadir raíces de confianza propias, monta un directorio de solo lectura con un certificado por fichero (`volumes: ["./mi-truststore:/truststore:ro"]`) y apunta `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR=/truststore`; se suman a las raíces españolas empaquetadas (§2.7).
+
+**Estado de la verificación (2026-09-29).** Los ficheros están validados estáticamente (`docker compose config`, y el arranque del jar por capas con las mismas opciones de JVM y `JarLauncher` en local: `/actuator/health` → `UP`), pero **el daemon de Docker no estaba en marcha en la máquina de desarrollo**, así que la construcción real de la imagen, el tamaño de imagen, el arranque en modo `read_only` y la **medición de memoria (PDF de ~19 MB, peticiones concurrentes, `docker stats`) están pendientes** de ejecutarse; sus resultados se anotarán aquí. El despliegue en una VM de bajo consumo sigue ⏳ pendiente de autorización de un destino.
 
 ### Ejemplo de uso de la API
 
@@ -635,7 +666,8 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Veredicto general por firma (✅/⚠️/❌) y a nivel de documento, con motivos explícitos (§2.13) | ✅ |
 | Interfaz web con arrastrar y soltar (pantalla **Validar**), tema claro/oscuro, cabecera CSP | ✅ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ✅ |
-| Despliegue Docker en VM de bajo consumo | ⏳ |
+| Imagen Docker multi-etapa y `docker compose` con perfil de memoria acotado y endurecimiento (T12) | ✅ (medición de memoria en daemon real ⏳) |
+| Despliegue en VM de bajo consumo | ⏳ pendiente de autorización de un destino |
 
 ## 7. Tests y calidad
 
@@ -784,6 +816,7 @@ Enlace público a las slides: ⏳ *(pendiente)*
 | 2026-09-28 | **(T11e)** Ritmo de espaciado deliberado en toda la interfaz web (§2.15), reutilizando la escala `--space-*` existente, sin ningún *token* nuevo; excepción de diseño acotada a `index.html` documentada en `.impeccable/config.json` para el aviso `monotonous-spacing` (falso positivo confiado, ver §10). Robustez de `sign.js`: contador de generación por intento verificado de nuevo en el navegador (una respuesta tardía de AutoFirma tras cancelar o tras un intento posterior se ignora), decodificación `base64` de una respuesta de éxito protegida con `try`/`catch` (mensaje en español en vez de una excepción sin capturar), "motivo de la firma" con tildes/ñ verificado contra el propio `_utf8_encode`/`Base64.encode` de `autoscript.js` vendido, y "Validar este PDF" ahora cambia a la pestaña "Validar" (`switchTab`, movida a `dom.js`, §10) y mueve el foco a `#results-heading` con *scroll*, respetando `prefers-reduced-motion`. **(T11d)** Javadoc de `SignatureVerdictPolicy.laterSignatureCoverage` corregido para describir el mecanismo real (verificación por veredicto ya calculado, no por `ByteRangeCoverage` directo); nuevos tests de regresión confirmando que la coincidencia de ruta de `CspHeaderFilter` ya era exacta (nunca por subcadena) y que el *charset* `UTF-8` ya se forzaba correctamente en las cuatro rutas estáticas, sin que ninguno de los dos avisos exigiera cambios de comportamiento. 308 → 320 tests. |
 | 2026-09-28 | **(T11f)** Correcciones tras una firma real con AutoFirma (§2.16): DN legible (Bouncy Castle `X500Name`/`BCStyle` en vez del RFC 2253 de la JDK, que volcaba `emailAddress` como `#16<hex>`; TDD con RED genuino), `commonName` propio en `CertificateInfo`/`CertificateInfoDto`; la cadena de certificados ya no se desborda de su tarjeta (`overflow-wrap`/`min-width: 0`) y muestra el CN en negrita con el DN completo como texto secundario; permisos PDF traducidos al español en la interfaz (`PERMISSION_TEXT`, códigos de la API sin cambios); footer sin ninguna referencia a "COAM", sustituido por un pie neutro con enlace al repositorio. Verificación manual real con Playwright (puerto 8081, el 8963 por defecto estaba ocupado): escritorio y 375&nbsp;px, claro y oscuro, sin errores de consola. 320 → 321 tests. |
 | 2026-09-29 | **(T11g, T11h)** Incidencias PDF/A con descripción en español bajo el mensaje original en inglés (`PdfaIssueCatalog`, §2.8), tarjeta "Cifrado y permisos" con cifrado en una línea y etiqueta "Permisos del documento", CN de certificado sin escapes RFC 2253, ayudante de tests PKIX alineado con el formateador de producción y guarda frente a la validación tardía tras una nueva firma (§2.17). |
+| 2026-09-29 | **(T12)** Contenedor: `Dockerfile` multi-etapa (capas de Spring Boot, JRE 25 Alpine, usuario no root, `HEALTHCHECK`), `docker-compose.yml` (512 MB, `read_only` + `tmpfs /tmp`, `no-new-privileges`, `cap_drop: ALL`) y perfil de JVM de bajo consumo (SerialGC, `-Xmx384m`, cabeceras compactas, salida ante OOM); job de CI que construye la imagen sin publicarla (§4). Verificación en daemon real y despliegue en VM pendientes. |
 
 ## 12. Repositorio y licencia
 
