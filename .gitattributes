@@ -7,3 +7,8 @@ mvnw text eol=lf
 # and size), so it must never be subject to line-ending normalization on
 # any machine or platform.
 src/main/resources/static/vendor/autofirma/* -text
+
+# Docker build inputs must stay LF (they run on Linux).
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf
