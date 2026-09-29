@@ -8,7 +8,7 @@ import java.time.Duration;
 /**
  * Concurrency limit for PDF analyses (T12c bulkhead).
  *
- * @param maxConcurrent  maximum analyses running at once (default 1, sized for a 512 MB VM)
+ * @param maxConcurrent  maximum analyses running at once (default 1, sized for a small VM; see the README memory budget)
  * @param acquireTimeout how long a request waits for a slot before a 503 (default 5 s)
  */
 @ConfigurationProperties(prefix = "pdfvalidator.analysis")

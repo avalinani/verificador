@@ -123,7 +123,7 @@ async function setSelectedFile(file) {
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
     clearSelectedFile();
-    showError(`El archivo supera el tamaño máximo permitido (20 MB). Tamaño actual: ${formatBytes(file.size)}.`);
+    showError(`El archivo supera el tamaño máximo permitido (80 MB). Tamaño actual: ${formatBytes(file.size)}.`);
     return;
   }
   if (!(await hasPdfMagicBytes(file))) {

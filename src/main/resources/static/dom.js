@@ -8,7 +8,7 @@
 // see render.js. The only innerHTML use anywhere in these modules is the
 // fixed, developer-authored SVG icon table below, never server data.
 
-export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // must match spring.servlet.multipart.max-file-size
+export const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024; // must match spring.servlet.multipart.max-file-size
 const THEME_STORAGE_KEY = "pdfvalidator.theme";
 
 // ---------------------------------------------------------------------

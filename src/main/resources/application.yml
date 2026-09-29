@@ -4,7 +4,7 @@ server:
   port: 8963
   tomcat:
     # Bounded concurrency keeps thread stacks, per-request heap and /tmp usage
-    # inside the 512 MB container budget (see Dockerfile). Override with
+    # inside the container memory budget (see Dockerfile). Override with
     # SERVER_TOMCAT_THREADS_MAX / SERVER_TOMCAT_ACCEPT_COUNT.
     threads:
       max: 20
@@ -15,8 +15,8 @@ spring:
     name: pdf-validator
   servlet:
     multipart:
-      max-file-size: 20MB
-      max-request-size: 20MB
+      max-file-size: 80MB
+      max-request-size: 81MB
       # Uploads are buffered on disk (tmpfs /tmp in the container), never in the heap:
       # threshold 0 = every part goes straight to a temp file. The bulkhead below admits
       # at most `max-concurrent` uploads at once, which bounds /tmp use (numbers in the

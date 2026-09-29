@@ -45,7 +45,7 @@ function setSelectedFile(file) {
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
     clearSelectedFile();
-    showError(`El archivo supera el tamaño máximo permitido (20 MB). Tamaño actual: ${formatBytes(file.size)}.`);
+    showError(`El archivo supera el tamaño máximo permitido (80 MB). Tamaño actual: ${formatBytes(file.size)}.`);
     return;
   }
   selectedFile = file;
@@ -219,7 +219,7 @@ function describeError(status, problem) {
   if (type.endsWith("not-a-pdf")) return "El contenido subido no es un PDF válido.";
   if (type.endsWith("corrupt-pdf")) return "El PDF está dañado y no se pudo analizar.";
   if (type.endsWith("encrypted-pdf")) return "El PDF está cifrado con contraseña y no se puede analizar.";
-  if (type.endsWith("file-too-large") || status === 413) return "El archivo supera el tamaño máximo permitido (20 MB).";
+  if (type.endsWith("file-too-large") || status === 413) return "El archivo supera el tamaño máximo permitido (80 MB).";
   if (type === "urn:pdfvalidator:error:busy") {
     return "El servicio está ocupado analizando otros documentos. Inténtalo de nuevo en unos segundos.";
   }
