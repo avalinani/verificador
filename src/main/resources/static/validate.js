@@ -220,9 +220,10 @@ function describeError(status, problem) {
   if (type.endsWith("corrupt-pdf")) return "El PDF está dañado y no se pudo analizar.";
   if (type.endsWith("encrypted-pdf")) return "El PDF está cifrado con contraseña y no se puede analizar.";
   if (type.endsWith("file-too-large") || status === 413) return "El archivo supera el tamaño máximo permitido (20 MB).";
-  if (type.endsWith("busy") || status === 503) {
+  if (type === "urn:pdfvalidator:error:busy") {
     return "El servicio está ocupado analizando otros documentos. Inténtalo de nuevo en unos segundos.";
   }
+  if (status === 503) return "El servicio no está disponible en este momento. Inténtalo de nuevo más tarde.";
   if (status === 500) return "Se produjo un error inesperado en el servidor. Inténtalo de nuevo más tarde.";
   return problem?.detail || "No se pudo completar el análisis. Inténtalo de nuevo.";
 }
