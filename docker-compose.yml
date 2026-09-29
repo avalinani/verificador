@@ -11,10 +11,15 @@ services:
     mem_limit: 512m
     restart: unless-stopped
 
-    # Hardening: the app only writes to /tmp.
+    # Hardening: the app only writes to /tmp (Tomcat work dir, multipart uploads,
+    # PDFBox temp files). The tmpfs is size-capped because its pages are charged
+    # to the 512 MB memory limit; see the budget in the Dockerfile.
+    # NOTE: `restart: unless-stopped` restarts crashed containers (e.g. after
+    # -XX:+ExitOnOutOfMemoryError) but NOT unhealthy ones; Docker only marks them
+    # "unhealthy". Use an external monitor or a watchdog such as autoheal if needed.
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:

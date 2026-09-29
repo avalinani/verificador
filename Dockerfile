@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage: compile and split the Spring Boot jar into layers ----
+# Base images are pinned by tag (the patch level floats). For reproducible builds pin
+# by digest: run `docker buildx imagetools inspect eclipse-temurin:25-jdk-alpine`
+# and use `FROM eclipse-temurin:25-jdk-alpine@sha256:<digest>` (same for the JRE image).
 FROM eclipse-temurin:25-jdk-alpine AS build
 WORKDIR /workspace
 
@@ -13,7 +16,7 @@ RUN sed -i 's/\r$//' mvnw && chmod +x mvnw \
 # Sources: tests run in CI (./mvnw verify), not in the image build.
 COPY src src
 RUN ./mvnw -B -DskipTests package \
-    && java -Djarmode=tools -jar target/pdf-validator-*.jar \
+    && java -Djarmode=tools -jar target/pdf-validator.jar \
         extract --layers --launcher --destination /workspace/extracted
 
 # ---- Runtime stage: JRE only, non-root ----
@@ -27,11 +30,20 @@ COPY --from=build --chown=app:app /workspace/extracted/spring-boot-loader/ ./
 COPY --from=build --chown=app:app /workspace/extracted/snapshot-dependencies/ ./
 COPY --from=build --chown=app:app /workspace/extracted/application/ ./
 
-# Constrained JVM profile for a small VM (container limit: 512 MB):
-# SerialGC = no GC worker threads / lowest footprint; heap capped at 384 MB,
-# metaspace at 128 MB, leaving headroom for thread stacks and direct buffers.
-# Compact object headers are stable in Java 25 and shrink every object.
-ENV JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xmx384m -XX:MaxMetaspaceSize=128m -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"
+# Memory budget for the 512 MB container limit (worst case, everything at its cap):
+#   heap            240 MB  (-Xmx240m)
+#   metaspace        80 MB  (-XX:MaxMetaspaceSize=80m)
+#   code cache       32 MB  (-XX:ReservedCodeCacheSize=32m)
+#   direct buffers   24 MB  (-XX:MaxDirectMemorySize=24m)
+#   thread stacks    20 MB  (~40 threads: 20 Tomcat + JIT/VM/misc, x 512 KB via -Xss512k)
+#   other native     32 MB  (malloc arenas, GC structures, CDS, libc)
+#   --------------- 428 MB
+#   tmpfs /tmp       64 MB  (compose/CI; counted against the cgroup when full)
+#   --------------- 492 MB  -> ~20 MB of headroom under 512 MB.
+# SerialGC = no GC worker threads / lowest footprint. Compact object headers are
+# stable in Java 25 and shrink every object. Request concurrency is bounded in
+# application.yml (server.tomcat.threads.max / accept-count) so the thread term holds.
+ENV JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xms64m -Xmx240m -XX:MaxMetaspaceSize=80m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=24m -Xss512k -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"
 
 USER app:app
 EXPOSE 8963

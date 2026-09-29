@@ -2,6 +2,13 @@
 # other local servers (e.g. WildFly). Override with SERVER_PORT or --server.port.
 server:
   port: 8963
+  tomcat:
+    # Bounded concurrency keeps thread stacks, per-request heap and /tmp usage
+    # inside the 512 MB container budget (see Dockerfile). Override with
+    # SERVER_TOMCAT_THREADS_MAX / SERVER_TOMCAT_ACCEPT_COUNT.
+    threads:
+      max: 20
+    accept-count: 20
 
 spring:
   application:
