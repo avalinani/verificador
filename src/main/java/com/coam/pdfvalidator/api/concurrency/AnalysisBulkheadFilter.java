@@ -9,23 +9,31 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.servlet.HandlerExceptionResolver;
 
 import java.io.IOException;
+import java.util.Locale;
 
 /**
- * Applies {@link AnalysisBulkhead} to {@code POST /api/v1/pdf/analyze} as a
- * servlet filter rather than inside the controller: Spring parses (and
- * buffers) the multipart body <em>before</em> the controller runs, so a permit
- * taken in the controller would leave up to {@code threads.max} uploads
- * buffered at once. The filter takes the permit first, so upload buffering and
- * analysis are both bounded, and releases it in {@code finally} when the
- * request completes (normally, by exception, or after a client disconnect).
+ * Applies {@link AnalysisBulkhead} to every multipart request, as a servlet
+ * filter rather than inside the controller: Spring parses (and buffers) the
+ * multipart body <em>before</em> the controller runs, so a permit taken in the
+ * controller would leave up to {@code threads.max} uploads buffered at once.
+ * The filter takes the permit first, so upload buffering and analysis are both
+ * bounded, and releases it in {@code finally} when the request completes
+ * (normally, by exception, or after a client disconnect).
+ *
+ * <p><b>Scope is the content type, not the path.</b> Matching the upload URL
+ * would be a bypass waiting to happen: the servlet container and Spring MVC
+ * accept many spellings of one route (path parameters {@code ;x=y},
+ * percent-encoding, duplicate or dot segments, trailing slash, context path),
+ * and any spelling missed here would buffer and analyze without a permit.
+ * Deciding on {@code multipart/*} instead fails safe: whatever path a
+ * multipart body is sent to, it is counted. The only multipart endpoint is the
+ * analysis upload, so nothing else is affected.
  *
  * <p>A saturated bulkhead is reported through the {@link
  * HandlerExceptionResolver} chain so the same {@code @RestControllerAdvice}
  * machinery that formats every other API error produces the 503 body.
  */
 public class AnalysisBulkheadFilter extends OncePerRequestFilter {
-
-    static final String ANALYZE_PATH = "/api/v1/pdf/analyze";
 
     private final AnalysisBulkhead bulkhead;
     private final HandlerExceptionResolver exceptionResolver;
@@ -37,7 +45,8 @@ public class AnalysisBulkheadFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !"POST".equalsIgnoreCase(request.getMethod()) || !ANALYZE_PATH.equals(request.getRequestURI());
+        String contentType = request.getContentType();
+        return contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("multipart/");
     }
 
     @Override

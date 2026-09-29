@@ -109,7 +109,7 @@ class AnalysisBulkheadTest {
     }
 
     @Test
-    void rejectsNonPositiveConfiguration() {
+    void rejectsZeroMaxConcurrentAndNegativeAcquireTimeout() {
         assertThatThrownBy(() -> new AnalysisBulkhead(0, Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new AnalysisBulkhead(1, Duration.ofSeconds(-1)))

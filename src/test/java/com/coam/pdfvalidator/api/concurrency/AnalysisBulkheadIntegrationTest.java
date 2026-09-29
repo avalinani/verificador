@@ -11,6 +11,8 @@ import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.model.Permission;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 
+import com.coam.pdfvalidator.api.PdfAnalysisController;
+
 import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.test.context.SpringBootTest;
@@ -25,7 +27,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +54,7 @@ import static org.mockito.Mockito.when;
 class AnalysisBulkheadIntegrationTest {
 
     private static final String BOUNDARY = "----bulkheadBoundary";
+    private static final String ANALYZE = PdfAnalysisController.ANALYZE_PATH;
 
     @LocalServerPort
     private int port;
@@ -102,7 +107,80 @@ class AnalysisBulkheadIntegrationTest {
         }
     }
 
+    /** Spellings that could reach the controller (or be routed elsewhere) and must not bypass the limit. */
+    private static final List<String> VARIANTS = List.of(
+            ANALYZE,
+            ANALYZE + "/",
+            ANALYZE + ";jsessionid=x",
+            "/" + ANALYZE,
+            "/api/v1/pdf/%61nalyze",
+            "/API/v1/pdf/analyze",
+            "/api/v1/pdf/./analyze",
+            "/api/v1/pdf/x/../analyze");
+
+    /**
+     * Every spelling of the upload path that the servlet container or Spring
+     * MVC might route to the controller must be limited too. With the only
+     * permit held, each variant must be answered 503 by the bulkhead: never
+     * reach the controller, never 200.
+     */
+    @Test
+    void everyUriVariantOfTheUploadEndpointIsLimitedWhileThePermitIsHeld() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenAnswer(invocation -> {
+                    entered.countDown();
+                    if (!release.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test latch never released");
+                    }
+                    return report();
+                });
+        CompletableFuture<HttpResponse<String>> first =
+                client.sendAsync(request(), HttpResponse.BodyHandlers.ofString());
+        assertThat(entered.await(10, TimeUnit.SECONDS)).as("first analysis started").isTrue();
+
+        Map<String, Integer> statuses = new LinkedHashMap<>();
+        for (String variant : VARIANTS) {
+            statuses.put(variant, client.send(request(variant), HttpResponse.BodyHandlers.ofString()).statusCode());
+        }
+        release.countDown();
+        first.get(10, TimeUnit.SECONDS);
+
+        assertThat(statuses).as("status per URI variant while the only permit is held")
+                .allSatisfy((variant, status) -> assertThat(status).as(variant).isEqualTo(503));
+    }
+
+    /**
+     * Without contention, shows where each variant ends up: served by the
+     * controller (200) or rejected before it (404). The test above
+     * proves both classes are limited.
+     */
+    @Test
+    void whenIdleEachUriVariantIsEitherServedByTheControllerOrRejectedBySpring() throws Exception {
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenReturn(report());
+
+        Map<String, Integer> statuses = new LinkedHashMap<>();
+        for (String variant : VARIANTS) {
+            statuses.put(variant, client.send(request(variant), HttpResponse.BodyHandlers.ofString()).statusCode());
+        }
+
+        assertThat(statuses).containsEntry(ANALYZE, 200)
+                .containsEntry(ANALYZE + "/", 404)
+                .containsEntry(ANALYZE + ";jsessionid=x", 200)
+                .containsEntry("/" + ANALYZE, 404)
+                .containsEntry("/api/v1/pdf/%61nalyze", 200)
+                .containsEntry("/API/v1/pdf/analyze", 404)
+                .containsEntry("/api/v1/pdf/./analyze", 404)
+                .containsEntry("/api/v1/pdf/x/../analyze", 404);
+    }
+
     private HttpRequest request() {
+        return request(ANALYZE);
+    }
+
+    private HttpRequest request(String path) {
         byte[] head = ("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.pdf\"\r\n"
                 + "Content-Type: application/pdf\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
         byte[] pdf = "%PDF-1.7\n...".getBytes(StandardCharsets.US_ASCII);
@@ -112,7 +190,7 @@ class AnalysisBulkheadIntegrationTest {
         System.arraycopy(pdf, 0, body, head.length, pdf.length);
         System.arraycopy(tail, 0, body, head.length + pdf.length, tail.length);
         return HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + port + "/api/v1/pdf/analyze"))
+                .uri(URI.create("http://localhost:" + port + path))
                 .header("Content-Type", "multipart/form-data; boundary=" + BOUNDARY)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();

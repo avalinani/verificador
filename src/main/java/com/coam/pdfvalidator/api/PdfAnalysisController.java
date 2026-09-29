@@ -35,6 +35,9 @@ import java.nio.charset.StandardCharsets;
 @RestController
 public class PdfAnalysisController {
 
+    /** The single upload route; the one place that spells it (tests build their URLs from it). */
+    public static final String ANALYZE_PATH = "/api/v1/pdf/analyze";
+
     private static final System.Logger LOGGER = System.getLogger(PdfAnalysisController.class.getName());
 
     /** Matches {@code PdfBoxDocumentReader}'s own header search window (README section 2.4). */
@@ -69,7 +72,7 @@ public class PdfAnalysisController {
             @ApiResponse(responseCode = "500", description = "Unexpected server error",
                     content = @Content(schema = @Schema(implementation = ProblemDetail.class))),
     })
-    @PostMapping(path = "/api/v1/pdf/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+    @PostMapping(path = ANALYZE_PATH, consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public PdfAnalysisReportDto analyze(
             @Parameter(description = "The PDF file to analyze (multipart/form-data field 'file').")

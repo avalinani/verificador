@@ -19,9 +19,9 @@ spring:
       max-request-size: 20MB
       # Uploads are buffered on disk (tmpfs /tmp in the container), never in the heap:
       # threshold 0 = every part goes straight to a temp file. The bulkhead below admits
-      # at most `max-concurrent` uploads, so /tmp holds at most 2 x 20 MB = 40 MB of the
-      # 64 MB tmpfs. A heap-buffered upload would add 20 MB per analysis to the scarce
-      # 240 MB heap. Location is explicit so it is obvious what must stay writable.
+      # at most `max-concurrent` uploads at once, which bounds /tmp use (numbers in the
+      # README memory budget table). Location is explicit so it is obvious what must
+      # stay writable.
       file-size-threshold: 0B
       location: ${java.io.tmpdir}
 

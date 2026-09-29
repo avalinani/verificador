@@ -34,7 +34,11 @@ public class ConcurrencyConfiguration {
             @Qualifier("handlerExceptionResolver") HandlerExceptionResolver exceptionResolver) {
         FilterRegistrationBean<AnalysisBulkheadFilter> registration =
                 new FilterRegistrationBean<>(new AnalysisBulkheadFilter(bulkhead, exceptionResolver));
-        registration.addUrlPatterns("/api/v1/pdf/analyze");
+        // Every path: the filter itself selects multipart requests (see its Javadoc).
+        registration.addUrlPatterns("/*");
+        // Early, so a rejection costs almost nothing, but after HIGHEST_PRECEDENCE itself so
+        // any filter that must run first can be ordered ahead of it. It must stay before
+        // Spring's multipart handling, which happens in the dispatcher servlet.
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
         return registration;
     }
