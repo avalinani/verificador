@@ -23,7 +23,7 @@ jobs:
 
   docker:
     # Builds the image (never pushed) and smoke-tests it at runtime under the same
-    # limits as docker-compose.yml: 2 GB, read-only root filesystem, 160 MB /tmp,
+    # limits as docker-compose.yml: 2 GB, read-only root filesystem, 256 MB /tmp,
     # then load-tests it with concurrent ~79 MB PDFs (bulkhead + memory budget, T12c).
     runs-on: ubuntu-latest
     needs: build
@@ -37,7 +37,7 @@ jobs:
       - name: Smoke-test the container (health, UI, read-only, 2 GB)
         run: |
           docker run -d --name pdfv -p 8963:8963 --memory=2g \
-            --read-only --tmpfs /tmp:size=160m,mode=1777 \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 \
             --security-opt no-new-privileges:true --cap-drop ALL \
             pdf-validator:ci
           ok=0
@@ -71,7 +71,7 @@ jobs:
           ls -l "$RUNNER_TEMP/large.pdf"
 
           docker run -d --name pdfv-load -p 8963:8963 --memory=2g \
-            --read-only --tmpfs /tmp:size=160m,mode=1777 \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 \
             --security-opt no-new-privileges:true --cap-drop ALL \
             pdf-validator:ci
           ok=0

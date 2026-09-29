@@ -38,9 +38,9 @@ COPY --from=build --chown=app:app /workspace/extracted/application/ ./
 #   thread stacks    20 MB  (~40 threads: 20 Tomcat + JIT/VM/misc, x 512 KB via -Xss512k)
 #   other native     64 MB  (malloc arenas, GC structures, CDS, libc)
 #   --------------- 1284 MB
-#   tmpfs /tmp      160 MB  (compose/CI; counted against the cgroup when full: at most
-#                            2 uploads x 80 MB, the bulkhead admits max-concurrent uploads)
-#   --------------- 1444 MB -> ~600 MB of headroom under 2048 MB.
+#   tmpfs /tmp      256 MB  (compose/CI; counted against the cgroup when full: at most
+#                            max-concurrent (2) uploads x 81 MB = 162 MB + ~90 MB spare)
+#   --------------- 1540 MB -> ~500 MB of headroom under 2048 MB.
 # SerialGC = no GC worker threads / lowest footprint. Compact object headers are
 # stable in Java 25 and shrink every object. Request concurrency is bounded in
 # application.yml (server.tomcat.threads.max / accept-count) so the thread term holds, and
