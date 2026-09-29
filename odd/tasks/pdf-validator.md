@@ -872,6 +872,7 @@ Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished name
   - Measured (CI run 36530307714, ubuntu runner, 19.9 MB PDF, 5 concurrent, max-concurrent=2): 5x HTTP 200, restart 0, OOMKilled false, peak sampled 439.9 MiB, cgroup memory.peak 502.3 of 512 MiB -> headroom ~10 MB. Failure cause was the JVM banner matching `OutOfMemoryError` (fixed). Options for the user (not applied): max-concurrent=1 on 512 MB, or 768 MB/1 GB VM with 2.
   - Verify: `./mvnw -B verify` BUILD SUCCESS, 351 tests (347 + 4); `docker compose config -q` OK; `bash -n` on the extracted CI step OK, `wait` loop exercised under `bash -e`; no short-circuit in src/main/java.
   - Commits: 4ffab5d (URI variants), c8dba8f (Connection: close), 5583895 (ci), 4cad3f7 (busy-only UI), 0362cf1 (pdfbox log level), plus the docs commit.
+- T12e (2026-09-29, route: direct inline, correction of review finding R3-headroom-guard-already-tripped): user decision = default `max-concurrent=1` (512 MB VM; 2 via env on >=1 GB). RED: `AnalysisPropertiesTest` default failed (2 != 1); GREEN after changing `AnalysisProperties`/`application.yml`/`docker-compose.yml`. CI no longer fails on `memory.peak` % (informational); fails on `oom_kill`>0 (memory.events), OOMKilled, RestartCount, not running, OutOfMemoryError. README budget section and history updated.
 
 ## Next step
 T13 README/slides. Pending: VM deploy (needs user authorization of a destination); first real CI run of the `docker` job (smoke + load test) to record the measured peak memory in the README (no local Docker daemon).
