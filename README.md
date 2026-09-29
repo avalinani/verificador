@@ -832,6 +832,8 @@ Enlace público a las slides: ⏳ *(pendiente)*
 
 > **Medición con max-concurrent=1** (CI, 29/09/2026, PDF sintético de 19,9 MB, 5 peticiones simultáneas, contenedor de 512 MB): 5 × 200, pico muestreado 287,6 MiB, `memory.peak` del cgroup 474,9/512 MiB (incluye caché recuperable y las subidas en `/tmp`), 0 `oom_kill`, 0 reinicios.
 
+> **Medición en CI con el perfil de 2 GB** (29/09/2026, PDF sintético de 79 MB, 5 peticiones simultáneas, `max-concurrent=2`): 5 × 200, pico muestreado 669,4 MiB, `memory.peak` del cgroup 1256,7/2048 MiB (61,4 %), 0 `oom_kill`, 0 reinicios.
+
 ## 11. Historial de cambios
 
 | Fecha | Cambio |
