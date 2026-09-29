@@ -9,7 +9,7 @@ import java.util.List;
 
 /**
  * Writes a valid, dependency-free multi-page PDF of roughly the requested size,
- * used by the CI "docker" job to load-test the 512 MB container (T12c).
+ * used by the CI "docker" job to load-test the 2 GB container (T12c).
  *
  * <p>Run with the JDK's source launcher, no build needed:
  * {@code java .github/scripts/LargePdfGenerator.java /tmp/large.pdf 19}

@@ -23,8 +23,8 @@ jobs:
 
   docker:
     # Builds the image (never pushed) and smoke-tests it at runtime under the same
-    # limits as docker-compose.yml: 512 MB, read-only root filesystem, 64 MB /tmp,
-    # then load-tests it with concurrent ~19 MB PDFs (bulkhead + memory budget, T12c).
+    # limits as docker-compose.yml: 2 GB, read-only root filesystem, 160 MB /tmp,
+    # then load-tests it with concurrent ~79 MB PDFs (bulkhead + memory budget, T12c).
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -34,10 +34,10 @@ jobs:
       - name: Build Docker image (no push)
         run: docker build -t pdf-validator:ci .
 
-      - name: Smoke-test the container (health, UI, read-only, 512 MB)
+      - name: Smoke-test the container (health, UI, read-only, 2 GB)
         run: |
-          docker run -d --name pdfv -p 8963:8963 --memory=512m \
-            --read-only --tmpfs /tmp:size=64m,mode=1777 \
+          docker run -d --name pdfv -p 8963:8963 --memory=2g \
+            --read-only --tmpfs /tmp:size=160m,mode=1777 \
             --security-opt no-new-privileges:true --cap-drop ALL \
             pdf-validator:ci
           ok=0
@@ -64,14 +64,14 @@ jobs:
           docker rm -f pdfv
 
       # The PDF is generated with the runner's JDK (`java File.java`, no dependencies):
-      # a hand-written 194-page PDF, ~19 MB, valid for PDFBox. No extra tooling needed.
-      - name: Load-test the container (5 concurrent ~19 MB uploads, 512 MB)
+      # a hand-written 776-page PDF, ~79 MB, valid for PDFBox. No extra tooling needed.
+      - name: Load-test the container (5 concurrent ~79 MB uploads, 2 GB)
         run: |
-          java .github/scripts/LargePdfGenerator.java "$RUNNER_TEMP/large.pdf" 19
+          java .github/scripts/LargePdfGenerator.java "$RUNNER_TEMP/large.pdf" 79
           ls -l "$RUNNER_TEMP/large.pdf"
 
-          docker run -d --name pdfv-load -p 8963:8963 --memory=512m \
-            --read-only --tmpfs /tmp:size=64m,mode=1777 \
+          docker run -d --name pdfv-load -p 8963:8963 --memory=2g \
+            --read-only --tmpfs /tmp:size=160m,mode=1777 \
             --security-opt no-new-privileges:true --cap-drop ALL \
             pdf-validator:ci
           ok=0
@@ -138,7 +138,7 @@ jobs:
           awk '{ v=$1; u=v; gsub(/[0-9.]/, "", u); sub(/[A-Za-z]+$/, "", v);
                  if (u=="GiB") v*=1024; else if (u=="KiB") v/=1024; else if (u=="B") v/=1048576;
                  if (v>max) max=v }
-               END { printf "peak sampled memory: %.1f MiB (limit 512)\n", max }' "$RUNNER_TEMP/mem.txt"
+               END { printf "peak sampled memory: %.1f MiB (limit 2048)\n", max }' "$RUNNER_TEMP/mem.txt"
           peak=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.peak 2>/dev/null || true)
           limit=$(docker exec pdfv-load cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
           if [ -n "$peak" ] && [ -n "$limit" ] && [ "$limit" != "max" ]; then
