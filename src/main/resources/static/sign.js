@@ -75,6 +75,12 @@ let inFlightGeneration = null;
 let nextGeneration = 1;
 let autoScriptInitialized = false;
 
+// Bumped whenever the signed-PDF state this screen shows is discarded (a new
+// signing attempt starts, or the user cancels): a "Validar este PDF" request
+// still in flight then sees a stale token and must not move focus or scroll
+// the page on behalf of a signing state that no longer exists (T11h).
+let validationToken = 0;
+
 function isSigning() {
   return inFlightGeneration !== null;
 }
@@ -198,6 +204,7 @@ cancelButton.addEventListener("click", () => {
   // means this page stops waiting for it: bumping the generation makes the
   // eventual success/error callback (if AutoFirma ever answers) a no-op.
   inFlightGeneration = null;
+  validationToken += 1;
   setWaiting(false);
   showError("Has cancelado la operación de firma.");
 });
@@ -371,7 +378,11 @@ validateButton.addEventListener("click", () => {
   // `aria-live="polite"` (index.html) announces the actual result text once
   // renderReport() fills it in.
   switchTab("validar");
+  const token = validationToken;
   void analyzeFile(signedFile, false).then(() => {
+    // A new signing attempt (or a cancel) happened while this validation was
+    // in flight: leave focus and scroll to whatever the user is doing now.
+    if (token !== validationToken) return;
     // On failure resultsPanel stays hidden (analyzeFile's own error path);
     // the now-visible Validar error banner (role="alert", aria-live) already
     // announces itself, so there is nothing focusable to move to here.
@@ -398,6 +409,7 @@ function setWaiting(waiting) {
 }
 
 function hideResult() {
+  validationToken += 1;
   resultPanel.hidden = true;
   signedBlob = null;
   signedFileName = null;
