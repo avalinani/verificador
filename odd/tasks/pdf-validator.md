@@ -762,6 +762,8 @@ Commits (`feat/sign-ui`): `a93a704` build: vendor the official AutoScript librar
 - Parent verification (T11b): `./mvnw -B verify` → 308/308; vendored `autoscript.js` blob sha `dc9401987c4cd6834cefbb68ec1adee038557f5b` = official 1.10.1 (unmodified); no short-circuits; CSP adds only `connect-src wss://127.0.0.1:* https://127.0.0.1:*` and `frame-src afirma:` (no unsafe-eval/unsafe-inline). Review: the vendored third-party commit (a93a704, 6,595 unmodified lines verified by hash) was excluded from line review; the rest (base a93a704, 2,520 lines) auto-granted and **approved**.
 - [x] T11e UI polish + review follow-ups: impeccable "monotonous spacing" hint (clear rhythm: tight within groups, generous between sections); sign.js advisories — a late response after cancel could be routed to a new signing attempt (use a per-attempt token), non-ASCII "motivo" handling in extraParams, guard base64 decode of the success payload, make "Validar este PDF" feedback visible (switch to the Validar view/scroll and announce via aria-live); plus T11d minor test/doc advisories. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/ui-polish`
 - [x] T11f UI fixes after a real AutoFirma signature test: certificate chain overflowing its card (long DNs/fingerprints); unreadable DN (`emailAddress` OID shown as hex); PDF permissions shown as raw codes instead of Spanish labels; footer referencing "COAM" by name. User confirmed a real AutoFirma signature works end to end on 2026-09-28. — route: direct inline (single-writer, per this task's explicit instruction), branch `feat/ui-polish`
+- [x] T11g Bilingual PDF/A issues: `PdfaIssueCatalog` (domain, pure data; every ERROR_* code of PreflightConstants 3.0.8 verified with javap, category-prefix fallback, unknown -> null), DTO `messageEs`, UI Spanish + English original. Commits f0b146c, 0d098c0 (wrap fix).
+- [x] T11h "Cifrado: No" inline + labelled permissions list; CN unescaped from ASN.1 value (also multi-valued RDN), mapper branch tests, PKIX test helper reuses production mapper, validation-token guard in sign.js. Commits 9685b00, 1d1ab80, 49d59e8.
 
 ## Progress / Evidence (T11e, T11d)
 
@@ -841,6 +843,13 @@ Executed directly by a single writer agent (no sub-delegation), per this task's 
 Living README updated (`README.md`): new §2.16 (DN readability decision incl. why `commonName` landed on the domain, chain overflow fix, permission translation, footer); §6 feature rows for certificate data/permissions; §7 `X509CertificateInfoMapperTest` row; §11 change history entry (2026-09-28).
 
 Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished names readably; `ad9b6f6` fix: keep certificate details inside their cards and translate permission labels; `e242733` chore: remove institutional references from the web interface footer; `a394857` docs: note readable DNs and neutral footer.
+
+## Progress / Evidence (T11g, T11h)
+- RED T11g: stashing catalog/mapper/DTO -> test compilation errors (missing symbols); GREEN after restore. RED T11h: 3 new mapper tests failed (escaped CN, multi-valued RDN picked wrong attribute, non-string CN "#02012a"), GREEN after fix.
+- `./mvnw -B verify` -> BUILD SUCCESS, Tests run: 336, Failures: 0 (ArchitectureTest included).
+- Short-circuit grep on src/main/java -> no output; vendor and TestPki diff -> empty.
+- Manual (Playwright, port 8963, light+dark): EUPL PDF shows Spanish + English issues; "Cifrado: No" inline; "Permisos del documento" label; no console errors. Found and fixed long English text overflowing (commit 0d098c0).
+- README updated (2.8, 2.17, history 2026-09-29), commit abb3ced.
 
 ## Next step
 T12 Docker/deploy, T13 README/slides. Optional T14 TSL auto-load.
