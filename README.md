@@ -816,7 +816,7 @@ PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmad
 
 ## 9. Presentación
 
-Enlace público a las slides: ⏳ *(pendiente: aún no se han creado)*
+Diapositivas (PDF): [`docs/PDF-Inspector-TFM.pdf`](docs/PDF-Inspector-TFM.pdf) — <https://github.com/avalinani/verificador/blob/master/docs/PDF-Inspector-TFM.pdf>
 
 Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 
