@@ -405,6 +405,13 @@ function renderStructureCard(structure) {
   return card;
 }
 
+function permissionChip(text) {
+  const chip = document.createElement("li");
+  chip.className = "permission-chip";
+  chip.textContent = text;
+  return chip;
+}
+
 function renderSecurityCard(security) {
   const card = document.createElement("div");
   card.className = "detail-card";
@@ -412,22 +419,37 @@ function renderSecurityCard(security) {
   heading.textContent = "Cifrado y permisos";
   card.appendChild(heading);
 
-  card.appendChild(fact("Cifrado", security.encrypted ? "Sí" : "No"));
+  // Label and value share one line ("Cifrado: No"), unlike the stacked
+  // fact() rows used elsewhere (T11h).
+  const encryption = document.createElement("p");
+  encryption.className = "inline-fact";
+  const encryptionLabel = document.createElement("span");
+  encryptionLabel.className = "fact-label";
+  encryptionLabel.textContent = "Cifrado:";
+  const encryptionValue = document.createElement("span");
+  encryptionValue.className = "fact-value";
+  encryptionValue.textContent = security.encrypted ? "Sí" : "No";
+  encryption.append(encryptionLabel, " ", encryptionValue);
+  card.appendChild(encryption);
 
-  const permissions = document.createElement("div");
+  const permissionsLabel = document.createElement("div");
+  permissionsLabel.className = "fact-label permission-label";
+  permissionsLabel.id = "permission-list-label";
+  permissionsLabel.textContent = "Permisos del documento";
+  card.appendChild(permissionsLabel);
+
+  // A real list (role="list" kept explicit: list-style is not reset here, but
+  // flex layout can drop list semantics in some browsers) named by the label.
+  const permissions = document.createElement("ul");
   permissions.className = "permission-list";
+  permissions.setAttribute("role", "list");
+  permissions.setAttribute("aria-labelledby", permissionsLabel.id);
   const list = security.permissions && security.permissions.length > 0 ? security.permissions : [];
   if (list.length === 0) {
-    const chip = document.createElement("span");
-    chip.className = "permission-chip";
-    chip.textContent = "Sin permisos concedidos";
-    permissions.appendChild(chip);
+    permissions.appendChild(permissionChip("Sin permisos concedidos"));
   } else {
     for (const permission of list) {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip";
-      chip.textContent = PERMISSION_TEXT[permission] || permission;
-      permissions.appendChild(chip);
+      permissions.appendChild(permissionChip(PERMISSION_TEXT[permission] || permission));
     }
   }
   card.appendChild(permissions);
