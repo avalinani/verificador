@@ -874,5 +874,9 @@ Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished name
   - Commits: 4ffab5d (URI variants), c8dba8f (Connection: close), 5583895 (ci), 4cad3f7 (busy-only UI), 0362cf1 (pdfbox log level), plus the docs commit.
 - T12e (2026-09-29, route: direct inline, correction of review finding R3-headroom-guard-already-tripped): user decision = default `max-concurrent=1` (512 MB VM; 2 via env on >=1 GB). RED: `AnalysisPropertiesTest` default failed (2 != 1); GREEN after changing `AnalysisProperties`/`application.yml`/`docker-compose.yml`. CI no longer fails on `memory.peak` % (informational); fails on `oom_kill`>0 (memory.events), OOMKilled, RestartCount, not running, OutOfMemoryError. README budget section and history updated.
 
+- CI load test at the new default max-concurrent=1 (run 36538898835, 2026-09-29, 16e8728): 5×200, sampled peak 287.6 MiB, cgroup memory.peak 474.9/512 MiB (92.8%, includes reclaimable cache + tmpfs uploads), oom_kill 0, restarts 0. PRs opened: #13 feat/docker (T12–T12b), #14 feat/bounded-concurrency (T12c–T12e).
+- [ ] T12f follow-ups: bound slow uploads holding the single permit (Tomcat connection/upload timeout); fix stale README history row (95% guard) and tmp budget default; test Javadoc accuracy; prove the non-multipart exemption.
+- VM target (user, in progress): Oracle Cloud Always Free. Ampere A1 hit "Out of capacity"; fallback VM.Standard.E2.1.Micro (x86, 1 GB, add swap). Remote deploy needs explicit authorization (IP, operation, SSH key location).
+
 ## Next step
 T13 README/slides. Pending: VM deploy (needs user authorization of a destination); first real CI run of the `docker` job (smoke + load test) to record the measured peak memory in the README (no local Docker daemon).

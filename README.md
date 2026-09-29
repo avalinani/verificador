@@ -827,6 +827,8 @@ Enlace público a las slides: ⏳ *(pendiente)*
 - **(T11e) `switchTab` compartida en `dom.js`, no duplicada entre `app.js` y `sign.js`.** El botón "Validar este PDF" necesitaba cambiar a la pestaña "Validar" antes de mostrar el resultado. Mover la función a `dom.js` (en vez de importarla de `app.js` a `sign.js`, o de `sign.js` a `app.js`) evita un ciclo de importación entre ES *modules*: `dom.js` es deliberadamente el módulo hoja del que dependen tanto `app.js` como `sign.js`, nunca al revés.
 - **(⏳ mejora futura, T14) Carga automática de anclas desde la Lista de Confianza española.** En vez de curar manualmente cada ancla (como se hace hoy), una tarea futura opcional podría descargar y verificar `https://tsl.digital.gob.es/TSL.xml` (resuelta a través de la LOTL de la UE), interpretar los `TSPService` de tipo CA/QC con su estado (`granted`/`withdrawn` con semántica de vigencia por fecha), verificar la firma XML de la propia TSL contra los certificados firmantes publicados por la LOTL, y cachear el resultado con una vuelta al almacén empaquetado si la red no está disponible — cubriendo así todas las CA cualificadas españolas sin mantenerlas a mano. No implementado; ver la tarea T14 en `odd/tasks/pdf-validator.md`.
 
+> **Medición con max-concurrent=1** (CI, 29/09/2026, PDF sintético de 19,9 MB, 5 peticiones simultáneas, contenedor de 512 MB): 5 × 200, pico muestreado 287,6 MiB, `memory.peak` del cgroup 474,9/512 MiB (incluye caché recuperable y las subidas en `/tmp`), 0 `oom_kill`, 0 reinicios.
+
 ## 11. Historial de cambios
 
 | Fecha | Cambio |
