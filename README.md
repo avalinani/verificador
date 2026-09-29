@@ -542,15 +542,15 @@ Otras opciones: `-XX:+UseSerialGC` (sin hilos de GC paralelos: menor consumo en 
 
 ### Despliegue en un VPS
 
-La aplicación está desplegada y accesible en **<https://vps-651608c6.vps.ovh.net/>** (interfaz "Validar"; Swagger UI en `/swagger-ui.html`, salud en `/actuator/health`), con certificado TLS de Let's Encrypt. El acceso directo sin TLS por el puerto 8963 sigue abierto (<http://vps-651608c6.vps.ovh.net:8963/>).
+La aplicación está desplegada y accesible en **<https://vps-651608c6.vps.ovh.net/>** (interfaz "Validar"; Swagger UI en `/swagger-ui.html`, salud en `/actuator/health`), con certificado TLS de Let's Encrypt. El puerto 8963 de la aplicación solo escucha en `127.0.0.1`, así que desde fuera únicamente se accede por HTTPS.
 
 | Elemento | Valor |
 |---|---|
 | Proveedor / plan | OVHcloud VPS-1 (2 vCore, 4 GB, 40 GB NVMe, Gravelines, ~5,43 €/mes con IVA) |
 | Sistema | Ubuntu 24.04 LTS, x86_64 |
 | Software | Docker (`docker.io`) y Docker Compose v2 desde los paquetes de Ubuntu |
-| Firewall | `ufw`: `22/tcp` (SSH), `80/tcp` y `443/tcp` (HTTPS) y `8963/tcp` (aplicación, sin TLS) |
-| HTTPS | Contenedor `caddy:2` (proxy inverso en modo red del host, en `~/https` del servidor, fuera de `~/pdf-validator`) que obtiene y renueva solo el certificado de Let's Encrypt para `vps-651608c6.vps.ovh.net` y reenvía a `localhost:8963`; redirige HTTP a HTTPS (308) y admite cuerpos de hasta 82 MB |
+| Firewall | `ufw`: `22/tcp` (SSH), `80/tcp` y `443/tcp` (HTTPS). La aplicación publica `8963` solo en `127.0.0.1` (Docker se salta `ufw`, por eso el cierre se hace en `docker-compose.yml`) |
+| HTTPS | Contenedor `caddy:2` (proxy inverso en modo red del host; configuración versionada en `deploy/Caddyfile` y `deploy/docker-compose.caddy.yml`) que obtiene y renueva solo el certificado de Let's Encrypt para `vps-651608c6.vps.ovh.net` y reenvía a `localhost:8963`; redirige HTTP a HTTPS (308), envía `Strict-Transport-Security` (HSTS, 1 año) y admite cuerpos de hasta 82 MB |
 | Acceso SSH | Solo con clave pública; el acceso por contraseña está desactivado |
 | Contenedor | `docker compose up -d --build` con el `docker-compose.yml` del repositorio: 2 GB, sistema de ficheros de solo lectura, `/tmp` de 256 MB, `restart: unless-stopped` |
 
@@ -563,7 +563,7 @@ sudo docker compose ps              # debe indicar "healthy"
 curl -s http://localhost:8963/actuator/health
 ```
 
-**Limitaciones conocidas.** Sin login: cualquiera con la URL puede usarla, así que no debe usarse con documentos confidenciales. Docker publica el puerto 8963 saltándose `ufw`, por lo que el acceso HTTP directo sigue disponible además del HTTPS; para cerrarlo bastaría publicar el puerto solo en `127.0.0.1` en `docker-compose.yml` cuando se use el proxy. La configuración de Caddy (`Caddyfile` de 10 líneas y un `docker-compose.yml`) vive solo en el servidor, no en el repositorio. El contenedor se reinicia si termina, pero Docker no reinicia uno `unhealthy` por sí solo.
+**Limitaciones conocidas.** Sin login: cualquiera con la URL puede usarla, así que no debe usarse con documentos confidenciales. El acceso HTTP directo al puerto 8963 está cerrado (publicado solo en `127.0.0.1`); el proxy Caddy es el único punto de entrada, con TLS y HSTS. La configuración de Caddy está en `deploy/` y se levanta con `docker compose -f deploy/docker-compose.caddy.yml up -d`.
 
 **Uso real medido:** PDF de 83 MB y hasta 5 subidas simultáneas sin fallos (pico del contenedor 1013 MiB de 2048, ver «Medición real»); 4 PDFs de 19 a 50 MB subidos a la vez desde el navegador: 871 MiB de pico, sin reinicios ni OOM.
 
@@ -900,6 +900,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-09-29 | **(T12g)** Despliegue en un VPS de OVHcloud (Ubuntu 24.04, Docker, `ufw`, SSH solo con clave) con HTTPS (Caddy + Let's Encrypt), accesible en <https://vps-651608c6.vps.ovh.net/>; README adaptado (§1, §3, §4 «Despliegue en un VPS», §6, §8, §9). |
 | 2026-09-29 | **(T12c)** *Bulkhead* de análisis simultáneos (`AnalysisBulkhead` + `AnalysisBulkheadFilter`, `pdfvalidator.analysis.max-concurrent=2`, `acquire-timeout=5s`): al saturarse, `503` `urn:pdfvalidator:error:busy` con `Retry-After`; la interfaz muestra el mensaje en español. Subidas siempre a `/tmp` (`file-size-threshold=0B`, ≤ 40 MB de los 64 MB del `tmpfs`), presupuesto de 492 MB sin cambios. Decisión del usuario: limitar la concurrencia en vez de usar ficheros temporales de PDFBox. Prueba de carga en el job `docker` de CI (5 subidas concurrentes de ~19 MB a un contenedor de 512 MB). 336 → 347 tests (§4). |
 | 2026-09-29 | **(T12d)** Seguimiento de la revisión de T12c. El filtro del *bulkhead* ya no compara la URL exacta (se evadía con `;jsessionid=x` o `%61nalyze`): se aplica a toda petición `multipart/*` en cualquier ruta, con una tabla de variantes comprobada contra el servidor real; el `503` lleva `Connection: close` porque no se lee el cuerpo rechazado; la interfaz solo muestra "ocupado" para el tipo `urn:pdfvalidator:error:busy` (otro 503 → "no disponible"). CI: los resultados de cada `curl` en segundo plano se recogen explícitamente, la búsqueda de `OutOfMemoryError` ya no acierta con el *banner* de la JVM, y falla si `memory.peak` ≥ 95 % del límite. Primera medición real: `memory.peak` 502,3 de 512 MiB (margen ~10 MB con 2 análisis; opciones en §4). *Logger* de fuentes de PDFBox a `ERROR`. Sin Docker local, la comprobación de CI sigue siendo la del *runner* (§4). |
+| 2026-09-29 | **(T12h)** HTTPS con Caddy y Let's Encrypt versionado en `deploy/` (`Caddyfile` con HSTS y `docker-compose.caddy.yml` en red del host); la aplicación publica el 8963 solo en `127.0.0.1`, de modo que el único acceso externo es <https://vps-651608c6.vps.ovh.net/>. |
 
 ## 12. Repositorio y licencia
 

@@ -7,7 +7,10 @@ services:
     build: .
     image: pdf-validator:local
     ports:
-      - "8963:8963"
+      # Loopback only: in production the public entry point is the Caddy HTTPS proxy
+      # (deploy/). Docker publishes ports bypassing ufw, so binding to 127.0.0.1 is what
+      # keeps plain HTTP on 8963 unreachable from outside. Locally: http://localhost:8963/
+      - "127.0.0.1:8963:8963"
     mem_limit: 2g
     restart: unless-stopped
 
