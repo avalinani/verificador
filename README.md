@@ -2,7 +2,7 @@
 
 > Trabajo Fin de Máster · Servicio web para la auditoría técnica y forense de documentos PDF.
 >
-> **Estado:** desplegado en <http://vps-651608c6.vps.ovh.net:8963/> (§4); pendiente la presentación (§9). Este README es un documento vivo: se actualiza con cada tarea completada.
+> **Estado:** desplegado en <https://vps-651608c6.vps.ovh.net/> (§4); pendiente la presentación (§9). Este README es un documento vivo: se actualiza con cada tarea completada.
 > Las funcionalidades marcadas como ⏳ están planificadas pero aún no implementadas.
 
 ## Índice
@@ -34,7 +34,7 @@
 - **Propiedades físicas**: versión, número de páginas, rotación y dimensiones por página, cifrado y permisos.
 - **Veredicto general por firma** (✅/⚠️/❌) que resume integridad + cadena + revocación en una sola conclusión, con sus motivos explícitos (§2.13).
 
-**Demo en línea:** <http://vps-651608c6.vps.ovh.net:8963/> (HTTP, sin login; sube PDFs de hasta 80 MB).
+**Demo en línea:** <https://vps-651608c6.vps.ovh.net/> (HTTPS, sin login; sube PDFs de hasta 80 MB).
 
 El servicio no guarda los documentos analizados: es **sin estado** y sin base de datos. Además de la API REST/Swagger UI, incluye una interfaz web estática ("Validar", §2.13) sin frameworks ni dependencias externas.
 
@@ -542,14 +542,15 @@ Otras opciones: `-XX:+UseSerialGC` (sin hilos de GC paralelos: menor consumo en 
 
 ### Despliegue en un VPS
 
-La aplicación está desplegada y accesible en **<http://vps-651608c6.vps.ovh.net:8963/>** (interfaz "Validar"; Swagger UI en `/swagger-ui.html`, salud en `/actuator/health`).
+La aplicación está desplegada y accesible en **<https://vps-651608c6.vps.ovh.net/>** (interfaz "Validar"; Swagger UI en `/swagger-ui.html`, salud en `/actuator/health`), con certificado TLS de Let's Encrypt. El acceso directo sin TLS por el puerto 8963 sigue abierto (<http://vps-651608c6.vps.ovh.net:8963/>).
 
 | Elemento | Valor |
 |---|---|
 | Proveedor / plan | OVHcloud VPS-1 (2 vCore, 4 GB, 40 GB NVMe, Gravelines, ~5,43 €/mes con IVA) |
 | Sistema | Ubuntu 24.04 LTS, x86_64 |
 | Software | Docker (`docker.io`) y Docker Compose v2 desde los paquetes de Ubuntu |
-| Firewall | `ufw`: solo `22/tcp` (SSH) y `8963/tcp` (aplicación) |
+| Firewall | `ufw`: `22/tcp` (SSH), `80/tcp` y `443/tcp` (HTTPS) y `8963/tcp` (aplicación, sin TLS) |
+| HTTPS | Contenedor `caddy:2` (proxy inverso en modo red del host, en `~/https` del servidor, fuera de `~/pdf-validator`) que obtiene y renueva solo el certificado de Let's Encrypt para `vps-651608c6.vps.ovh.net` y reenvía a `localhost:8963`; redirige HTTP a HTTPS (308) y admite cuerpos de hasta 82 MB |
 | Acceso SSH | Solo con clave pública; el acceso por contraseña está desactivado |
 | Contenedor | `docker compose up -d --build` con el `docker-compose.yml` del repositorio: 2 GB, sistema de ficheros de solo lectura, `/tmp` de 256 MB, `restart: unless-stopped` |
 
@@ -562,7 +563,7 @@ sudo docker compose ps              # debe indicar "healthy"
 curl -s http://localhost:8963/actuator/health
 ```
 
-**Limitaciones conocidas.** Solo HTTP (sin TLS) y sin login: sirve para probar la aplicación, pero no debe usarse con documentos confidenciales. Para HTTPS habría que poner un proxy inverso con certificado (por ejemplo Caddy o Nginx con Let's Encrypt) delante del contenedor; queda fuera del alcance del TFM. El contenedor se reinicia si termina, pero Docker no reinicia uno `unhealthy` por sí solo.
+**Limitaciones conocidas.** Sin login: cualquiera con la URL puede usarla, así que no debe usarse con documentos confidenciales. Docker publica el puerto 8963 saltándose `ufw`, por lo que el acceso HTTP directo sigue disponible además del HTTPS; para cerrarlo bastaría publicar el puerto solo en `127.0.0.1` en `docker-compose.yml` cuando se use el proxy. La configuración de Caddy (`Caddyfile` de 10 líneas y un `docker-compose.yml`) vive solo en el servidor, no en el repositorio. El contenedor se reinicia si termina, pero Docker no reinicia uno `unhealthy` por sí solo.
 
 **Uso real medido:** PDF de 83 MB y hasta 5 subidas simultáneas sin fallos (pico del contenedor 1013 MiB de 2048, ver «Medición real»); 4 PDFs de 19 a 50 MB subidos a la vez desde el navegador: 871 MiB de pico, sin reinicios ni OOM.
 
@@ -737,7 +738,7 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Interfaz web con arrastrar y soltar (pantalla **Validar**), tema claro/oscuro, cabecera CSP | ✅ |
 | Pantalla **Firmar**: firma PAdES con AutoFirma en el equipo del usuario (la clave privada nunca sale de su equipo) y validación del resultado con un clic | ✅ |
 | Imagen Docker multi-etapa y `docker compose` con perfil de memoria acotado y endurecimiento (T12) | ✅ (medido en CI y en el VPS) |
-| Despliegue en un VPS de bajo coste (OVHcloud, HTTP) | ✅ <http://vps-651608c6.vps.ovh.net:8963/> (TLS ⏳ opcional) |
+| Despliegue en un VPS de bajo coste (OVHcloud, HTTPS) | ✅ <https://vps-651608c6.vps.ovh.net/> (HTTPS con Let's Encrypt) |
 
 ## 7. Tests y calidad
 
@@ -808,7 +809,7 @@ PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmad
 
 Enlace público a las slides: ⏳ *(pendiente: aún no se han creado)*
 
-Demostración en vivo: <http://vps-651608c6.vps.ovh.net:8963/>
+Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 
 ## 10. Decisiones técnicas
 
@@ -896,7 +897,7 @@ Demostración en vivo: <http://vps-651608c6.vps.ovh.net:8963/>
 | 2026-09-29 | **(T12)** Contenedor: `Dockerfile` multi-etapa (capas de Spring Boot, JRE 25 Alpine, usuario no root, `HEALTHCHECK`), `docker-compose.yml` (512 MB, `read_only` + `tmpfs /tmp`, `no-new-privileges`, `cap_drop: ALL`) y perfil de JVM de bajo consumo (SerialGC, presupuesto explícito de memoria bajo 512 MB, cabeceras compactas, salida ante OOM; Tomcat acotado a 20 hilos); job de CI que construye la imagen sin publicarla y la prueba en ejecución (§4). Verificación en daemon real y despliegue en VM pendientes. |
 | 2026-09-29 | **(T12e)** `max-concurrent` por defecto pasa de 2 a **1** (VM de 512 MB; 2 con ≥ 1 GB por variable de entorno) y la prueba de carga de CI deja de fallar por `memory.peak` (≥ 95 %, medido 502,3/512 MiB con 2) para vigilar solo señales reales de OOM (`oom_kill`, `OOMKilled`, reinicios, `OutOfMemoryError`). Decisión del usuario. 351 → 353 tests. |
 | 2026-09-29 | **(T12f)** Límite de subida de 20 a **80 MB** (`application.yml`, cliente web y mensajes), contenedor de **2 GB** (`-Xmx1024m`, `tmpfs` de 160 MB), `max-concurrent=2` y `acquire-timeout=30s` por defecto tras medir en el VPS de OVHcloud (5 subidas de 83 MB: 5 × 200, pico 1013 MiB de 2048); el job de CI usa PDF de 79 MB con los nuevos límites. |
-| 2026-09-29 | **(T12g)** Despliegue en un VPS de OVHcloud (Ubuntu 24.04, Docker, `ufw`, SSH solo con clave), accesible en <http://vps-651608c6.vps.ovh.net:8963/>; README adaptado (§1, §3, §4 «Despliegue en un VPS», §6, §8, §9). |
+| 2026-09-29 | **(T12g)** Despliegue en un VPS de OVHcloud (Ubuntu 24.04, Docker, `ufw`, SSH solo con clave) con HTTPS (Caddy + Let's Encrypt), accesible en <https://vps-651608c6.vps.ovh.net/>; README adaptado (§1, §3, §4 «Despliegue en un VPS», §6, §8, §9). |
 | 2026-09-29 | **(T12c)** *Bulkhead* de análisis simultáneos (`AnalysisBulkhead` + `AnalysisBulkheadFilter`, `pdfvalidator.analysis.max-concurrent=2`, `acquire-timeout=5s`): al saturarse, `503` `urn:pdfvalidator:error:busy` con `Retry-After`; la interfaz muestra el mensaje en español. Subidas siempre a `/tmp` (`file-size-threshold=0B`, ≤ 40 MB de los 64 MB del `tmpfs`), presupuesto de 492 MB sin cambios. Decisión del usuario: limitar la concurrencia en vez de usar ficheros temporales de PDFBox. Prueba de carga en el job `docker` de CI (5 subidas concurrentes de ~19 MB a un contenedor de 512 MB). 336 → 347 tests (§4). |
 | 2026-09-29 | **(T12d)** Seguimiento de la revisión de T12c. El filtro del *bulkhead* ya no compara la URL exacta (se evadía con `;jsessionid=x` o `%61nalyze`): se aplica a toda petición `multipart/*` en cualquier ruta, con una tabla de variantes comprobada contra el servidor real; el `503` lleva `Connection: close` porque no se lee el cuerpo rechazado; la interfaz solo muestra "ocupado" para el tipo `urn:pdfvalidator:error:busy` (otro 503 → "no disponible"). CI: los resultados de cada `curl` en segundo plano se recogen explícitamente, la búsqueda de `OutOfMemoryError` ya no acierta con el *banner* de la JVM, y falla si `memory.peak` ≥ 95 % del límite. Primera medición real: `memory.peak` 502,3 de 512 MiB (margen ~10 MB con 2 análisis; opciones en §4). *Logger* de fuentes de PDFBox a `ERROR`. Sin Docker local, la comprobación de CI sigue siendo la del *runner* (§4). |
 
