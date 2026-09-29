@@ -25,6 +25,12 @@ spring:
       file-size-threshold: 0B
       location: ${java.io.tmpdir}
 
+# PDFBox logs a WARN per text run when a standard font (e.g. Helvetica) is not embedded and it
+# substitutes one; PDFs like that are common and it floods the log, so only errors are shown.
+logging:
+  level:
+    org.apache.pdfbox.pdmodel.font: ERROR
+
 management:
   endpoints:
     web:
