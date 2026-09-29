@@ -3,6 +3,10 @@
 # Needs ports 80 and 443 open (HTTP-01 challenge + HTTPS). It runs on the host
 # network so `localhost:8963` in the Caddyfile reaches the app even when the app
 # publishes its port on 127.0.0.1 only. Certificates persist in caddy_data.
+# Keep the same Compose project name on every deploy (the directory name by default,
+# or -p <name>): the certificates live in the <project>_caddy_data volume, and a new
+# project name means a new empty volume and a fresh Let's Encrypt issuance (rate-limited).
+# The reference VPS runs it from ~/https (project "https", volume https_caddy_data).
 services:
   caddy:
     image: caddy:2

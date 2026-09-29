@@ -563,7 +563,7 @@ sudo docker compose ps              # debe indicar "healthy"
 curl -s http://localhost:8963/actuator/health
 ```
 
-**Limitaciones conocidas.** Sin login: cualquiera con la URL puede usarla, así que no debe usarse con documentos confidenciales. El acceso HTTP directo al puerto 8963 está cerrado (publicado solo en `127.0.0.1`); el proxy Caddy es el único punto de entrada, con TLS y HSTS. La configuración de Caddy está en `deploy/` y se levanta con `docker compose -f deploy/docker-compose.caddy.yml up -d`.
+**Limitaciones conocidas.** Sin login: cualquiera con la URL puede usarla, así que no debe usarse con documentos confidenciales. El acceso HTTP directo al puerto 8963 está cerrado (publicado solo en `127.0.0.1`); el proxy Caddy es el único punto de entrada, con TLS y HSTS. La configuración de Caddy está en `deploy/` y se levanta con `docker compose -f deploy/docker-compose.caddy.yml up -d`. Conviene lanzarlo siempre con el mismo nombre de proyecto de Compose (en el VPS, desde `~/https`, con el volumen `https_caddy_data`): con otro nombre se crearía un volumen vacío y Let's Encrypt emitiría un certificado nuevo, con límites de emisión.
 
 **Uso real medido:** PDF de 83 MB y hasta 5 subidas simultáneas sin fallos (pico del contenedor 1013 MiB de 2048, ver «Medición real»); 4 PDFs de 19 a 50 MB subidos a la vez desde el navegador: 871 MiB de pico, sin reinicios ni OOM.
 
