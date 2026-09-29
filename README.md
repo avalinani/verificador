@@ -58,7 +58,16 @@ api ──► application: AnalyzePdfUseCase                           ✅
    ◄── PdfAnalysisReportDto (JSON) / ProblemDetail (error)
 ```
 
-La capa `api` (controlador REST, DTOs explícitos, mapeador, gestión de errores con `ProblemDetail`) ya existe (T09), cableada sobre `AnalyzePdfUseCase` mediante Spring (`infrastructure/config` + la raíz `com.coam.pdfvalidator`, ver §2.11); `AnalyzePdfUseCase` está cubierto por tests de unidad, un test de integración con adaptadores reales, tests de la capa `api` (slice de controlador, mapeador, un test end-to-end completo) y por las reglas de arquitectura de ArchUnit (§2.9, §2.10). La interfaz web ("Validar") consume este mismo endpoint (§2.13); la pantalla "Firmar" (AutoFirma) está planificada (⏳, T11b).
+**En palabras sencillas.** Quien usa el servicio (desde la página web o desde Swagger UI) sube un PDF. El servicio lo pasa por una serie de comprobaciones, una detrás de otra, y responde con un único informe:
+
+1. **Recepción.** Un *controlador* REST recibe el fichero (capa `api`). Si algo falla, responde con un error estándar (`ProblemDetail`) que explica la causa, en lugar de un mensaje técnico sin sentido.
+2. **Orquestación.** Un único caso de uso, `AnalyzePdfUseCase`, decide el orden de las comprobaciones: calcula los hashes, lee la estructura del PDF, verifica cada firma, valida la cadena de confianza, consulta la revocación si se pidió y comprueba el formato PDF/A. Si una comprobación falla, las demás siguen adelante y el informe indica qué sección falló.
+3. **Veredicto.** Con todos esos resultados, una política pura (`SignatureVerdictPolicy`) decide, firma por firma, si el documento es válido, no admitido o no válido, y por qué (§2.13).
+4. **Respuesta.** Un *mapeador* convierte el resultado interno en un JSON pensado para el cliente (los DTOs), sin exponer las clases internas del dominio.
+
+Spring conecta todas las piezas al arrancar la aplicación (§2.11). La página web «Validar» usa este mismo servicio (§2.13). La pantalla «Firmar» no lo usa: firma en el equipo del usuario con AutoFirma (§2.14).
+
+**Cómo sabemos que funciona.** El caso de uso se prueba de tres maneras: tests unitarios de cada pieza, un test de integración con los componentes reales (PDFBox y Bouncy Castle), y un test completo que sube un PDF por HTTP y comprueba la respuesta. Además, las reglas de arquitectura de ArchUnit vigilan en cada compilación que cada capa solo dependa de la que debe (§2.9, §2.10).
 
 ### 2.2 Cómo se detecta que un documento ha cambiado después de firmarse
 
