@@ -3,13 +3,13 @@ package com.coam.pdfvalidator.infrastructure.pki;
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.fixtures.TestPki;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.X509CertificateInfoMapper;
 import org.junit.jupiter.api.Test;
 
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.HexFormat;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -261,21 +261,11 @@ class PkixCertificateChainValidatorTest {
         return certificates.stream().map(PkixCertificateChainValidatorTest::toCertificateInfo).toList();
     }
 
+    /**
+     * Uses the production mapper (not a hand-rolled copy) so the DN format the
+     * validator sees in these tests cannot drift from what production emits.
+     */
     private static CertificateInfo toCertificateInfo(X509Certificate certificate) {
-        try {
-            return new CertificateInfo(
-                    certificate.getSubjectX500Principal().getName(),
-                    null,
-                    certificate.getIssuerX500Principal().getName(),
-                    HexFormat.of().formatHex(certificate.getSerialNumber().toByteArray()),
-                    certificate.getNotBefore().toInstant(),
-                    certificate.getNotAfter().toInstant(),
-                    certificate.getSigAlgName(),
-                    List.of(),
-                    List.of(),
-                    certificate.getEncoded());
-        } catch (CertificateEncodingException e) {
-            throw new IllegalStateException(e);
-        }
+        return X509CertificateInfoMapper.toDomain(certificate);
     }
 }

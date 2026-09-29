@@ -5,10 +5,10 @@ import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1String;
+import org.bouncycastle.asn1.x500.AttributeTypeAndValue;
 import org.bouncycastle.asn1.x500.RDN;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.style.BCStyle;
-import org.bouncycastle.asn1.x500.style.IETFUtils;
 import org.bouncycastle.asn1.x509.AccessDescription;
 import org.bouncycastle.asn1.x509.AuthorityInformationAccess;
 import org.bouncycastle.asn1.x509.CRLDistPoint;
@@ -112,13 +112,23 @@ public final class X509CertificateInfoMapper {
         }
     }
 
-    /** The first {@code CN} RDN's decoded string value, or {@code null} if {@code name} has none. */
+    /**
+     * The first {@code CN} attribute's own decoded string value, or {@code
+     * null} if {@code name} has none or its value is not an ASN.1 string
+     * type. The value is read straight from the attribute (also when the CN
+     * shares a multi-valued RDN with other attributes) and never goes
+     * through an RFC 2253 rendering, so characters such as {@code ,} {@code
+     * +} or {@code "} are returned as they are, not backslash-escaped.
+     */
     private static String commonNameOf(X500Name name) {
-        RDN[] commonNameRdns = name.getRDNs(BCStyle.CN);
-        if (commonNameRdns.length == 0) {
-            return null;
+        for (RDN rdn : name.getRDNs(BCStyle.CN)) {
+            for (AttributeTypeAndValue attribute : rdn.getTypesAndValues()) {
+                if (BCStyle.CN.equals(attribute.getType())) {
+                    return attribute.getValue() instanceof ASN1String text ? text.getString() : null;
+                }
+            }
         }
-        return IETFUtils.valueToString(commonNameRdns[0].getFirst().getValue());
+        return null;
     }
 
     private static X500Name x500NameOf(X500Principal principal) {
