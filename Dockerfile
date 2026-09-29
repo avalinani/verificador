@@ -38,11 +38,14 @@ COPY --from=build --chown=app:app /workspace/extracted/application/ ./
 #   thread stacks    20 MB  (~40 threads: 20 Tomcat + JIT/VM/misc, x 512 KB via -Xss512k)
 #   other native     32 MB  (malloc arenas, GC structures, CDS, libc)
 #   --------------- 428 MB
-#   tmpfs /tmp       64 MB  (compose/CI; counted against the cgroup when full)
+#   tmpfs /tmp       64 MB  (compose/CI; counted against the cgroup when full; in practice
+#                            at most 2 uploads x 20 MB = 40 MB thanks to the bulkhead)
 #   --------------- 492 MB  -> ~20 MB of headroom under 512 MB.
 # SerialGC = no GC worker threads / lowest footprint. Compact object headers are
 # stable in Java 25 and shrink every object. Request concurrency is bounded in
-# application.yml (server.tomcat.threads.max / accept-count) so the thread term holds.
+# application.yml (server.tomcat.threads.max / accept-count) so the thread term holds, and
+# simultaneous analyses by the bulkhead (pdfvalidator.analysis.max-concurrent=2), which is
+# what keeps the heap term realistic (2 analyses x ~100 MB worst case < 240 MB).
 ENV JAVA_TOOL_OPTIONS="-XX:+UseSerialGC -Xms64m -Xmx240m -XX:MaxMetaspaceSize=80m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=24m -Xss512k -XX:+UseCompactObjectHeaders -XX:+ExitOnOutOfMemoryError"
 
 USER app:app

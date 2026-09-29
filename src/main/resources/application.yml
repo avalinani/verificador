@@ -17,6 +17,13 @@ spring:
     multipart:
       max-file-size: 20MB
       max-request-size: 20MB
+      # Uploads are buffered on disk (tmpfs /tmp in the container), never in the heap:
+      # threshold 0 = every part goes straight to a temp file. The bulkhead below admits
+      # at most `max-concurrent` uploads, so /tmp holds at most 2 x 20 MB = 40 MB of the
+      # 64 MB tmpfs. A heap-buffered upload would add 20 MB per analysis to the scarce
+      # 240 MB heap. Location is explicit so it is obvious what must stay writable.
+      file-size-threshold: 0B
+      location: ${java.io.tmpdir}
 
 management:
   endpoints:
@@ -25,6 +32,17 @@ management:
         # Only health and info are exposed; every other actuator endpoint
         # (env, beans, threaddump, ...) stays off by default.
         include: health,info
+
+# Bulkhead (T12c): limits simultaneous PDF analyses (upload buffering + analysis) so
+# worst-case memory stays inside the 512 MB container budget. A request waits up to
+# acquire-timeout for a slot, otherwise the API answers 503 (urn:pdfvalidator:error:busy)
+# with a Retry-After header. Tomcat threads.max/accept-count (above) only queue requests;
+# this is what actually bounds memory. Override with PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT
+# and PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT.
+pdfvalidator:
+  analysis:
+    max-concurrent: 2
+    acquire-timeout: 5s
 
 # Trust store used by CertificateChainValidator (PkixCertificateChainValidator)
 # to validate a signer's certificate chain. All properties are optional: the
