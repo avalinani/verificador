@@ -1,0 +1,39 @@
+# Local / VM run of the PDF validator.
+#   docker compose up -d --build   # build and start
+#   docker compose logs -f         # follow logs
+#   docker compose down            # stop and remove
+services:
+  pdf-validator:
+    build: .
+    image: pdf-validator:local
+    ports:
+      - "8963:8963"
+    mem_limit: 512m
+    restart: unless-stopped
+
+    # Hardening: the app only writes to /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8963/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    # Optional overrides (uncomment as needed).
+    # environment:
+    #   # Extra trusted roots, one certificate per file (additive to the bundled ones):
+    #   PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR: /truststore
+    #   # Revocation (OCSP/CRL) timeout, default 2s:
+    #   PDFVALIDATOR_REVOCATION_TIMEOUT: 2s
+    #   # Different port inside the container (update ports/healthcheck too):
+    #   SERVER_PORT: "8963"
+    # volumes:
+    #   - ./my-truststore:/truststore:ro
