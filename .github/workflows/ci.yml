@@ -23,7 +23,8 @@ jobs:
 
   docker:
     # Builds the image (never pushed) and smoke-tests it at runtime under the same
-    # limits as docker-compose.yml: 512 MB, read-only root filesystem, 64 MB /tmp.
+    # limits as docker-compose.yml: 512 MB, read-only root filesystem, 64 MB /tmp,
+    # then load-tests it with concurrent ~19 MB PDFs (bulkhead + memory budget, T12c).
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -61,3 +62,84 @@ jobs:
             exit 1
           fi
           docker rm -f pdfv
+
+      # The PDF is generated with the runner's JDK (`java File.java`, no dependencies):
+      # a hand-written 194-page PDF, ~19 MB, valid for PDFBox. No extra tooling needed.
+      - name: Load-test the container (5 concurrent ~19 MB uploads, 512 MB)
+        run: |
+          java .github/scripts/LargePdfGenerator.java "$RUNNER_TEMP/large.pdf" 19
+          ls -l "$RUNNER_TEMP/large.pdf"
+
+          docker run -d --name pdfv-load -p 8963:8963 --memory=512m \
+            --read-only --tmpfs /tmp:size=64m,mode=1777 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            pdf-validator:ci
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fs http://localhost:8963/actuator/health | grep -q '"status":"UP"'; then ok=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' pdfv-load)" != "true" ]; then break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Container did not become healthy"
+            docker logs pdfv-load
+            docker rm -f pdfv-load
+            exit 1
+          fi
+
+          # Sample container memory once per second while the load runs.
+          : > "$RUNNER_TEMP/mem.txt"
+          (while true; do
+             docker stats --no-stream --format '{{.MemUsage}}' pdfv-load >> "$RUNNER_TEMP/mem.txt" 2>/dev/null
+             sleep 1
+           done) &
+          sampler=$!
+
+          pids=""
+          for i in 1 2 3 4 5; do
+            curl -s -o "$RUNNER_TEMP/resp$i.json" -w '%{http_code}' --max-time 120 \
+              -F "file=@$RUNNER_TEMP/large.pdf;type=application/pdf" \
+              http://localhost:8963/api/v1/pdf/analyze > "$RUNNER_TEMP/code$i.txt" &
+            pids="$pids $!"
+          done
+          wait $pids
+          kill $sampler 2>/dev/null || true
+
+          fail=0
+          twohundreds=0
+          for i in 1 2 3 4 5; do
+            code=$(cat "$RUNNER_TEMP/code$i.txt")
+            echo "request $i -> HTTP $code"
+            case "$code" in
+              200) twohundreds=$((twohundreds + 1)) ;;
+              503) grep -q 'urn:pdfvalidator:error:busy' "$RUNNER_TEMP/resp$i.json" || { echo "503 without the busy problem type"; fail=1; } ;;
+              *) echo "unexpected status $code"; head -c 500 "$RUNNER_TEMP/resp$i.json"; echo; fail=1 ;;
+            esac
+          done
+          [ "$twohundreds" -ge 1 ] || { echo "no request succeeded"; fail=1; }
+
+          restarts=$(docker inspect -f '{{.RestartCount}}' pdfv-load)
+          oom=$(docker inspect -f '{{.State.OOMKilled}}' pdfv-load)
+          running=$(docker inspect -f '{{.State.Running}}' pdfv-load)
+          echo "running=$running restartCount=$restarts oomKilled=$oom"
+          if [ "$running" != "true" ] || [ "$restarts" != "0" ] || [ "$oom" != "false" ]; then fail=1; fi
+          if docker logs pdfv-load 2>&1 | grep -q 'OutOfMemoryError'; then
+            echo "OutOfMemoryError found in the container logs"; fail=1
+          fi
+
+          echo "--- memory samples (docker stats) ---"
+          sort -u "$RUNNER_TEMP/mem.txt"
+          awk '{ v=$1; u=v; gsub(/[0-9.]/, "", u); sub(/[A-Za-z]+$/, "", v);
+                 if (u=="GiB") v*=1024; else if (u=="KiB") v/=1024; else if (u=="B") v/=1048576;
+                 if (v>max) max=v }
+               END { printf "peak sampled memory: %.1f MiB (limit 512)\n", max }' "$RUNNER_TEMP/mem.txt"
+          docker exec pdfv-load cat /sys/fs/cgroup/memory.peak 2>/dev/null \
+            | awk '{ printf "cgroup memory.peak: %.1f MiB\n", $1/1048576 }' || true
+          docker stats --no-stream pdfv-load
+
+          if [ "$fail" != "0" ]; then
+            docker logs pdfv-load | tail -50
+            docker rm -f pdfv-load
+            exit 1
+          fi
+          docker rm -f pdfv-load
