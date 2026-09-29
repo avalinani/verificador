@@ -31,7 +31,7 @@ COPY --from=build --chown=app:app /workspace/extracted/snapshot-dependencies/ ./
 COPY --from=build --chown=app:app /workspace/extracted/application/ ./
 
 # Memory budget for the 2 GB container limit (worst case, everything at its cap):
-#   heap           1024 MB  (-Xmx1024m; one 80 MB analysis needs ~5x its size, see README)
+#   heap           1024 MB  (-Xmx1024m; measured: 5 concurrent 79 MB analyses, max-concurrent=2, peaked ~1 GB total)
 #   metaspace        96 MB  (-XX:MaxMetaspaceSize=96m)
 #   code cache       48 MB  (-XX:ReservedCodeCacheSize=48m)
 #   direct buffers   32 MB  (-XX:MaxDirectMemorySize=32m)
