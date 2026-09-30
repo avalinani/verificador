@@ -370,8 +370,13 @@ public final class AnalyzePdfUseCase {
      * PinnedHttpClient}) is kept as defense in depth on top of this, not
      * instead of it.
      *
-     * <p>When the gate passes, the signer certificate and its immediate
-     * issuer are taken from {@link CertificateChainValidator#validatedPath}
+     * <p>When the gate passes, every non-anchor certificate of {@link
+     * CertificateChainValidator#validatedPath} is checked against its issuer
+     * (T21: an intermediate CA can be revoked while the signer is still
+     * good); any revoked certificate revokes the path, any inconclusive one
+     * makes it inconclusive, and the trust anchor itself is not checked --
+     * see {@link RevocationChecker#checkPath}. The path is taken from {@link
+     * CertificateChainValidator#validatedPath}
      * -- the certificates PKIX itself used to reach that {@code TRUSTED}
      * verdict -- rather than from {@code signature.chain()} directly:
      * {@code chain()} is exactly what {@code SignatureVerifier} extracted
@@ -397,9 +402,7 @@ public final class AnalyzePdfUseCase {
             return new RevocationStatus(
                     RevocationState.NOT_CHECKED, null, "validated certification path unavailable");
         }
-        CertificateInfo certificate = validatedPath.get(0);
-        CertificateInfo issuer = validatedPath.size() > 1 ? validatedPath.get(1) : null;
-        return revocationChecker.check(certificate, issuer);
+        return revocationChecker.checkPath(validatedPath);
     }
 
     private static SignatureReport withAppendedAnomaly(SignatureReport signature, String note) {
