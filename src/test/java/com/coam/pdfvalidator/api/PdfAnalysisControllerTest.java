@@ -38,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -106,6 +107,19 @@ class PdfAnalysisControllerTest {
                 .andExpect(status().isOk());
 
         verify(analyzePdfUseCase).analyze(eq("test.pdf"), eq(PDF_BYTES), eq(new AnalysisOptions(false)));
+    }
+
+    /** T18c: a malformed query parameter is a client error (400), not an internal one (500). */
+    @Test
+    void aNonBooleanCheckRevocationReturns400WithoutEchoingTheValue() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "test.pdf", "application/pdf", PDF_BYTES);
+
+        mockMvc.perform(multipart("/api/v1/pdf/analyze").file(file).param("checkRevocation", "<b>notabool</b>"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("urn:pdfvalidator:error:invalid-parameter"))
+                .andExpect(jsonPath("$.detail").value("Invalid value for parameter 'checkRevocation'."));
+
+        verifyNoInteractions(analyzePdfUseCase);
     }
 
     @Test

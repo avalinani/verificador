@@ -527,6 +527,7 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 |---|---|---|
 | `400` | Falta el campo `file`, o está vacío | `urn:pdfvalidator:error:missing-file` |
 | `400` | El contenido no empieza por una cabecera `%PDF-` reconocible (aunque el nombre termine en `.pdf`) | `urn:pdfvalidator:error:not-a-pdf` |
+| `400` | Un parámetro de consulta no se puede convertir (p. ej. `checkRevocation=notabool`); el mensaje nombra el parámetro, nunca el valor recibido | `urn:pdfvalidator:error:invalid-parameter` |
 | `422` | Documento con cabecera PDF pero corrupto | `urn:pdfvalidator:error:corrupt-pdf` |
 | `422` | Documento cifrado con contraseña de usuario no vacía | `urn:pdfvalidator:error:encrypted-pdf` |
 | `413` | Fichero superior al límite de subida configurado (80 MB) | `urn:pdfvalidator:error:file-too-large` |
