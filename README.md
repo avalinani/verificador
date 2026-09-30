@@ -332,7 +332,9 @@ Permite firmar un PDF con el propio certificado del usuario (DNIe, FNMT, ...) us
 | Criptografía | Bouncy Castle `bcprov` / `bcpkix` (jdk18on) | 1.86 |
 | Documentación API | springdoc-openapi (Swagger UI) | 3.1.1 |
 | Tests | JUnit 5, AssertJ, Mockito, ArchUnit | — / 1.5.1 |
-| Cobertura | JaCoCo | — |
+| Cobertura | JaCoCo (con umbral mínimo que hace fallar la compilación) | 0.8.15 |
+| Análisis estático | SpotBugs + FindSecBugs, PMD + CPD (solo informan), CodeQL en CI | 4.10.4 / 1.14.0, 7.28.0, — |
+| Pruebas de mutación | PIT (perfil Maven `mutation`, fuera de la compilación normal) | 1.30.0 |
 | Build | Maven (wrapper incluido) | 3.9.9 |
 | CI | GitHub Actions (Temurin 25) | — |
 | Despliegue | VPS OVHcloud VPS-1 (Ubuntu 24.04, 4 GB), Docker Compose, `ufw`, SSH solo con clave | ✅ (§4) |
@@ -646,7 +648,7 @@ El proyecto se desarrolla con **TDD** (primero el test en rojo, luego la impleme
 
 Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una CA de pruebas en memoria firma documentos, y a partir de ellos se crean variantes manipuladas, con actualización incremental, rotadas, cifradas o corruptas. Así los tests son reproducibles y no dependen de ficheros con datos personales (los dos PDFs reales firmados usados para reproducir casos de FNMT y Camerfirma nunca se incorporaron al repositorio).
 
-**Estado actual:** 355 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
+**Estado actual:** 354 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
 
 | Suite | Qué comprueba |
 |---|---|
@@ -677,6 +679,28 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `PdfAnalysisReportMapperTest` | Mapeo campo a campo de un informe completo y de uno mínimo, veredictos, `NO_SIGNATURES`, y comprobación por reflexión de que `CertificateInfoDto` no expone ningún `byte[]` |
 | `PdfAnalysisEndToEndTest` | `@SpringBootTest` + `MockMvc` con adaptadores reales: JSON completo de un PDF firmado y sellado, `/v3/api-docs` correcto y solo `health`/`info` expuestos en Actuator |
 | `StaticContentSecurityTest`, `CspHeaderFilterTest` | Cabecera CSP exacta en `/`, `/index.html`, `/app.js`, `/styles.css` (con y sin *context path*); ausente en `/v3/api-docs`, `/api/v1/pdf/analyze` y `/vendor/autofirma/autoscript.js`; coincidencia exacta de ruta (nunca por subcadena); `charset=UTF-8` en las rutas estáticas y ningún *charset* forzado en el JSON de error |
+
+### Herramientas de calidad de código
+
+`./mvnw verify` ejecuta, además de los tests, las herramientas siguientes. SpotBugs y PMD/CPD **solo informan** (no hacen fallar la compilación; se decidirá más adelante si se convierten en una puerta). El umbral de JaCoCo **sí** falla. Duración de `verify`: ~45 s antes y ~45 s después de añadirlas.
+
+| Herramienta | Qué comprueba | Informe | Resultado actual (2026-09-30) |
+|---|---|---|---|
+| **JaCoCo** (`check`) | Cobertura mínima del conjunto («trinquete»: si baja, falla la compilación) | `target/site/jacoco/index.html` | Líneas 89,99 % y ramas 77,46 % medidas; umbrales **88 %** y **75 %** (propiedades `jacoco.min.line` / `jacoco.min.branch` del `pom.xml`) |
+| **SpotBugs + FindSecBugs** | Patrones de error y de inseguridad (umbral *Medium*, esfuerzo *Max*) | `target/spotbugsXml.xml` | 24 avisos: 20 `EI_EXPOSE_REP/REP2` (DTO `record` con listas/arrays mutables), 1 posible NPE en `PdfAnalysisController` (línea 89), y 3 de seguridad/mala práctica en el cliente de revocación y la verificación CMS (`UNENCRYPTED_SOCKET` en `PinnedHttpClient`, `UNSAFE_HASH_EQUALS` en `CmsSignatureVerification`, `DMI_RANDOM_USED_ONLY_ONCE` en `OcspClient`) |
+| **PMD** | Buenas prácticas y complejidad (`config/pmd/ruleset.xml`: *quickstart* más complejidad ciclomática/cognitiva/NPath, `GodClass`, `NcssCount`) | `target/pmd.xml` | 32 infracciones; las más frecuentes: `CyclomaticComplexity` (11), `PreserveStackTrace` (5), `SimplifyBooleanReturns` (3) |
+| **CPD** | Código duplicado (mínimo 100 tokens) | `target/cpd.xml` | 1 duplicado (21 líneas) entre `PdfBoxDocumentReader` y `PreflightPdfaValidator` |
+| **PIT** | Pruebas de mutación: ¿los tests detectan cambios en el código? | `target/pit-reports/index.html` | 74 % de mutantes eliminados (937 generados), fuerza de los tests 82 %, cobertura de líneas 89 %; ~6 min |
+| **CodeQL** | Análisis de seguridad de GitHub (`.github/workflows/codeql.yml`, Java, JDK 25, en *push*/*pull request* a `master` y cada semana) | pestaña *Security* de GitHub | Pendiente de la primera ejecución en GitHub |
+
+Comandos:
+
+```bash
+./mvnw verify                                                           # tests + JaCoCo (con umbral) + SpotBugs + PMD/CPD
+./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage  # PIT, ~6 min
+```
+
+El job `build` de CI sube como artefacto `quality-reports` los informes de SpotBugs, PMD, CPD y JaCoCo. Las clases con peor puntuación de mutación son `AdapterConfiguration` (0 %, sin tests directos), `OcspClient` (43 %), `CrlClient` (52 %), `PreflightPdfaValidator` (59 %) y `PinnedHttpClient` (62 %).
 
 PDFs de prueba disponibles en `TestPdfFactory`: sin firmar, multipágina, firmado, firmado y después modificado, firmado y manipulado, doble firma, firmado con sello de tiempo válido o con imprint incorrecto, páginas rotadas (incluidos valores como `-90` o `450` y una rotación heredada), apaisado, con CropBox, cifrado con permisos restringidos (AES-256), cifrado con contraseña de usuario vacía, corrupto, no-PDF, con declaración PDF/A, firmado por un certificado ya caducado en el instante de firma y firmado con `digestAlgorithm` codificado como OID de firma. La TSA de pruebas (`TestPki.issueTsaIdentity`) es una identidad en memoria con el uso extendido `id-kp-timeStamping`.
 
@@ -783,6 +807,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-09-29 | **(T12h)** HTTPS con Caddy y Let's Encrypt versionado en `deploy/` (`Caddyfile` con HSTS y `docker-compose.caddy.yml` en red del host); la aplicación publica el 8963 solo en `127.0.0.1`, de modo que el único acceso externo es <https://vps-651608c6.vps.ovh.net/>. |
 | 2026-09-30 | README reorganizado para facilitar la comprensión: datos desactualizados corregidos (perfil de 2 GB / 80 MB, pestaña «Firmar», presentación entregada), sección 2 reordenada en orden de lectura y con introducción sencilla en cada apartado, e historial de desarrollo trasladado a §10 y §11. |
 | 2026-09-30 | **(T16)** La indicación de las zonas de subida («Validar» y «Firmar») decía «hasta 20 MB» aunque el límite real es 80 MB; corregida y protegida con un test que la compara con `spring.servlet.multipart.max-file-size`. Diapositivas con capturas reales de ambas pantallas, hechas con PDF y certificados de demostración. |
+| 2026-09-30 | **(T17)** Herramientas de calidad: umbral de cobertura JaCoCo (líneas 88 %, ramas 75 %) que hace fallar `verify`, SpotBugs + FindSecBugs y PMD/CPD en modo informe, PIT en el perfil `mutation` y flujo de CodeQL; los informes se suben como artefacto de CI. Sin cambios en el código de producción (§7). |
 
 ## 12. Repositorio y licencia
 
