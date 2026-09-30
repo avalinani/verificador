@@ -49,6 +49,12 @@ class PdfAnalysisEndToEndTest {
                 .andExpect(jsonPath("$.signatures[0].timestamp.present").value(true))
                 .andExpect(jsonPath("$.signatures[0].timestamp.imprintValid").value(true))
                 .andExpect(jsonPath("$.signatures[0].timestamp.signatureValid").value(true))
+                // The fixture TSA hangs from a private root that is not a bundled anchor.
+                .andExpect(jsonPath("$.signatures[0].timestamp.trusted").value(false))
+                .andExpect(jsonPath("$.signatures[0].timestamp.note").value(
+                        org.hamcrest.Matchers.containsString("TSA not trusted")))
+                .andExpect(jsonPath("$.signatures[0].verdictReasons").value(
+                        org.hamcrest.Matchers.hasItem("VALIDATED_AT_CURRENT_TIME")))
                 // Not in this test's own trust store: chain validation ran, but the
                 // test CA is (correctly) not one of the bundled trust anchors.
                 .andExpect(jsonPath("$.signatures[0].chainStatus").value("UNTRUSTED_ROOT"))

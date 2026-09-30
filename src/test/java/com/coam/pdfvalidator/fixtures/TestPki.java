@@ -52,7 +52,17 @@ public final class TestPki {
             X509Certificate rootCertificate,
             X509Certificate endEntityCertificate,
             PrivateKey endEntityPrivateKey,
-            List<X509Certificate> chain) {
+            List<X509Certificate> chain,
+            PrivateKey rootPrivateKey) {
+
+        /** Identity whose root private key is not exposed (most fixtures never need to issue further certificates). */
+        public IssuedIdentity(
+                X509Certificate rootCertificate,
+                X509Certificate endEntityCertificate,
+                PrivateKey endEntityPrivateKey,
+                List<X509Certificate> chain) {
+            this(rootCertificate, endEntityCertificate, endEntityPrivateKey, chain, null);
+        }
     }
 
     /** A TSA (Time-Stamping Authority) certificate/key, ready to sign RFC 3161 timestamp tokens. */
@@ -88,7 +98,8 @@ public final class TestPki {
                     rootCertificate,
                     eeCertificate,
                     eeKeyPair.getPrivate(),
-                    List.of(eeCertificate, rootCertificate));
+                    List.of(eeCertificate, rootCertificate),
+                    rootKeyPair.getPrivate());
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build test PKI", e);
         }
@@ -166,6 +177,62 @@ public final class TestPki {
                     List.of(eeCertificate, rootCertificate));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build test PKI with an end-entity expired at signing time", e);
+        }
+    }
+
+    /**
+     * A signer whose certificate expired two days ago but whose root was valid
+     * long before that (root: 500 days ago to one year ahead; signer: 400 to
+     * 2 days ago). Unlike {@link #issueSigningIdentityExpiredAtSigningTime()}
+     * the root is also valid 30 days ago, so a trusted timestamp issued 30
+     * days ago (see {@link #issueTsaIdentityUnder}) genuinely validates the
+     * whole chain at its {@code genTime}, while "now" finds the signer
+     * expired. Exposes the root key so a TSA can be issued under it.
+     */
+    public static IssuedIdentity issueExpiredSigner() {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+            long day = 24L * 60 * 60 * 1000;
+            long now = System.currentTimeMillis();
+
+            X509Certificate rootCertificate =
+                    buildRootCertificate(rootKeyPair, new Date(now - 500 * day), new Date(now + 365 * day));
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), eeKeyPair.getPublic(),
+                    new Date(now - 400 * day), new Date(now - 2 * day));
+
+            return new IssuedIdentity(
+                    rootCertificate, eeCertificate, eeKeyPair.getPrivate(),
+                    List.of(eeCertificate, rootCertificate), rootKeyPair.getPrivate());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build test PKI with an expired signer", e);
+        }
+    }
+
+    /**
+     * A TSA issued by {@code ca}'s root (so a trust store holding that root
+     * trusts the TSA), valid from 450 days ago to one year ahead, declaring
+     * {@code id-kp-timeStamping}. Requires an identity that exposes its root
+     * key ({@link IssuedIdentity#rootPrivateKey()}). Contrast with
+     * {@link #issueTsaIdentity()}, whose TSA hangs from its own private root
+     * that nobody trusts.
+     */
+    public static TsaIdentity issueTsaIdentityUnder(IssuedIdentity ca) {
+        if (ca.rootPrivateKey() == null) {
+            throw new IllegalArgumentException("the identity does not expose its root private key");
+        }
+        try {
+            KeyPair tsaKeyPair = generateRsaKeyPair();
+            long day = 24L * 60 * 60 * 1000;
+            long now = System.currentTimeMillis();
+            X509Certificate tsaCertificate = buildTsaCertificate(
+                    ca.rootCertificate(), ca.rootPrivateKey(), tsaKeyPair.getPublic(),
+                    new Date(now - 450 * day), new Date(now + 365 * day));
+            return new TsaIdentity(
+                    tsaCertificate, tsaKeyPair.getPrivate(), List.of(tsaCertificate, ca.rootCertificate()));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build a TSA under the given root", e);
         }
     }
 
@@ -296,11 +363,22 @@ public final class TestPki {
 
     /** A TSA identity whose certificate declares the {@code id-kp-timeStamping} extended key usage. */
     public static TsaIdentity issueTsaIdentity() {
+        return issueTsaIdentity(java.time.Duration.ofDays(1));
+    }
+
+    /**
+     * Same as {@link #issueTsaIdentity()}, but the TSA and its (self-made)
+     * root are valid since {@code validSince} ago: what an attacker running
+     * their own TSA does so that a back-dated timestamp still verifies (Bouncy
+     * Castle rejects a token whose TSA certificate was not valid at its
+     * {@code genTime}). Nobody trusts this root.
+     */
+    public static TsaIdentity issueTsaIdentity(java.time.Duration validSince) {
         try {
             KeyPair rootKeyPair = generateRsaKeyPair();
             KeyPair tsaKeyPair = generateRsaKeyPair();
 
-            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notBefore = new Date(System.currentTimeMillis() - validSince.toMillis());
             Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
 
             X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);

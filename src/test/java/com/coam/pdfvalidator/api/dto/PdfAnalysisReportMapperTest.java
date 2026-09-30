@@ -58,7 +58,7 @@ class PdfAnalysisReportMapperTest {
 
         Instant claimedSigningTime = Instant.parse("2026-01-01T00:00:00Z");
         Instant genTime = Instant.parse("2026-01-01T00:00:01Z");
-        TimestampInfo timestamp = new TimestampInfo(genTime, "CN=tsa", true, true, certificate, "a note");
+        TimestampInfo timestamp = new TimestampInfo(genTime, "CN=tsa", true, true, certificate, "a note", List.of(certificate), true, true);
         SignatureReport signature = new SignatureReport(
                 "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 15),
                 IntegrityStatus.INTACT, claimedSigningTime, timestamp, List.of(certificate),
@@ -116,6 +116,7 @@ class PdfAnalysisReportMapperTest {
         assertThat(signatureDto.timestamp().imprintValid()).isTrue();
         assertThat(signatureDto.timestamp().signatureValid()).isTrue();
         assertThat(signatureDto.timestamp().note()).isEqualTo("a note");
+        assertThat(signatureDto.timestamp().trusted()).isTrue();
 
         CertificateInfoDto signerDto = signatureDto.chain().get(0);
         assertThat(signerDto.subject()).isEqualTo("CN=signer");
@@ -203,6 +204,7 @@ class PdfAnalysisReportMapperTest {
         PdfAnalysisReportDto dto = mapper.toDto(report);
 
         assertThat(dto.signatures().get(0).timestamp().present()).isFalse();
+        assertThat(dto.signatures().get(0).timestamp().trusted()).isFalse();
         assertThat(dto.signatures().get(0).timestamp().tsaCertificate()).isNull();
         assertThat(dto.signatures().get(0).claimedSigningTime()).isNull();
         assertThat(dto.signatures().get(0).anomaly()).isNull();

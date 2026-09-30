@@ -115,13 +115,19 @@ public final class TestPdfSigner {
     private static byte[] sign(
             byte[] unsignedPdf, TestPki.IssuedIdentity identity, String subFilter, SignatureInterface cmsBuilder,
             int sizeMultiplier) throws IOException {
+        return sign(unsignedPdf, identity, subFilter, cmsBuilder, sizeMultiplier, Calendar.getInstance());
+    }
+
+    private static byte[] sign(
+            byte[] unsignedPdf, TestPki.IssuedIdentity identity, String subFilter, SignatureInterface cmsBuilder,
+            int sizeMultiplier, Calendar claimedSigningTime) throws IOException {
         try (PDDocument document = org.apache.pdfbox.Loader.loadPDF(unsignedPdf)) {
             PDSignature signature = new PDSignature();
             signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
             signature.setSubFilter(COSName.getPDFName(subFilter));
             signature.setName(identity.endEntityCertificate().getSubjectX500Principal().getName());
             signature.setReason("Signature spike test");
-            signature.setSignDate(Calendar.getInstance());
+            signature.setSignDate(claimedSigningTime);
 
             SignatureOptions signatureOptions = new SignatureOptions();
             signatureOptions.setPreferredSignatureSize(SignatureOptions.DEFAULT_SIGNATURE_SIZE * sizeMultiplier);
@@ -147,6 +153,33 @@ public final class TestPdfSigner {
             byte[] unsignedPdf, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity) throws IOException {
         return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
                 content -> createDetachedCmsWithTimestamp(content, identity, tsaIdentity, false), 8);
+    }
+
+    /**
+     * Same as {@link #signWithTimestamp(byte[], TestPki.IssuedIdentity, TestPki.TsaIdentity)}, but the TSA
+     * stamps {@code genTime} instead of "now" -- what a forger with any TSA of
+     * their own can do, and what a genuine TSA did if the signature is old.
+     */
+    public static byte[] signWithTimestamp(
+            byte[] unsignedPdf, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
+            java.time.Instant genTime) throws IOException {
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
+                content -> createDetachedCmsWithTimestamp(content, identity, tsaIdentity, false, Date.from(genTime)), 8);
+    }
+
+    /**
+     * Same as {@link #sign(byte[], TestPki.IssuedIdentity)}, but the signature
+     * dictionary claims {@code claimedSigningTime} as the signing time
+     * ({@code /M}) instead of "now" -- the signer-declared date the validator
+     * must never trust.
+     */
+    public static byte[] signClaimingTime(
+            byte[] unsignedPdf, TestPki.IssuedIdentity identity, java.time.Instant claimedSigningTime)
+            throws IOException {
+        Calendar claimed = Calendar.getInstance();
+        claimed.setTimeInMillis(claimedSigningTime.toEpochMilli());
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
+                content -> createDetachedCms(content, identity), 2, claimed);
     }
 
     /**
@@ -437,6 +470,12 @@ public final class TestPdfSigner {
     private static byte[] createDetachedCmsWithTimestamp(
             InputStream content, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
             boolean tamperImprint) throws IOException {
+        return createDetachedCmsWithTimestamp(content, identity, tsaIdentity, tamperImprint, new Date());
+    }
+
+    private static byte[] createDetachedCmsWithTimestamp(
+            InputStream content, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
+            boolean tamperImprint, Date genTime) throws IOException {
         try {
             byte[] contentBytes = content.readAllBytes();
 
@@ -466,7 +505,7 @@ public final class TestPdfSigner {
                     ? "this is not the real signature value".getBytes(java.nio.charset.StandardCharsets.UTF_8)
                     : signerInformation.getSignature();
 
-            TimeStampToken token = issueTimeStampToken(imprintSource, tsaIdentity);
+            TimeStampToken token = issueTimeStampToken(imprintSource, tsaIdentity, genTime);
 
             AttributeTable existingUnsignedAttributes = signerInformation.getUnsignedAttributes();
             Hashtable<ASN1ObjectIdentifier, Attribute> unsignedAttributeTable =
@@ -486,7 +525,8 @@ public final class TestPdfSigner {
     }
 
     /** Issues a genuine RFC 3161 timestamp token over the SHA-256 digest of {@code imprintSource}. */
-    private static TimeStampToken issueTimeStampToken(byte[] imprintSource, TestPki.TsaIdentity tsaIdentity)
+    private static TimeStampToken issueTimeStampToken(
+            byte[] imprintSource, TestPki.TsaIdentity tsaIdentity, Date genTime)
             throws IOException, OperatorCreationException, CMSException, TSPException, CertificateEncodingException {
         byte[] imprint;
         try {
@@ -518,6 +558,6 @@ public final class TestPdfSigner {
                 tsaSignerInfoGenerator, digestCalculator, new ASN1ObjectIdentifier("1.2.3.4.1"));
         tokenGenerator.addCertificates(new JcaCertStore(tsaIdentity.chain()));
 
-        return tokenGenerator.generate(request, BigInteger.valueOf(System.currentTimeMillis()), new Date());
+        return tokenGenerator.generate(request, BigInteger.valueOf(System.currentTimeMillis()), genTime);
     }
 }

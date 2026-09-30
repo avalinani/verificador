@@ -29,6 +29,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
@@ -55,11 +56,20 @@ import java.util.Objects;
  *       signature itself, proving it existed at that time).</li>
  *   <li><b>TSA signature</b>: the token's own CMS signature must verify
  *       against the TSA certificate embedded in the token ({@link
- *       TimeStampToken#validate}), and that certificate should declare the
- *       {@code id-kp-timeStamping} extended key usage (a missing EKU is
- *       reported as a note rather than a failure, since it does not affect
- *       cryptographic validity by itself).</li>
+ *       TimeStampToken#validate}).</li>
  * </ol>
+ *
+ * <p>Neither part says the TSA is <em>trustworthy</em>: the certificate that
+ * verifies the token is the one the token itself carries. This class
+ * therefore only <b>reports</b> the facts the application layer needs to
+ * decide trust -- whether the TSA certificate declares the {@code
+ * id-kp-timeStamping} extended key usage ({@link
+ * TimestampInfo#tsaTimeStampingEku()}, presence required; RFC 3161 section
+ * 2.3 also asks for "critical" and "only", which is deliberately not
+ * enforced here: chain trust is the security-relevant control, and several
+ * real TSAs omit the criticality bit) and the TSA certificate chain carried
+ * in the token ({@link TimestampInfo#tsaChain()}). It never sets {@link
+ * TimestampInfo#trusted()}.
  */
 final class SignatureTimestampVerifier {
 
@@ -98,6 +108,8 @@ final class SignatureTimestampVerifier {
         boolean signatureValid = false;
         String note = null;
         CertificateInfo tsaCertificateInfo = null;
+        List<CertificateInfo> tsaChain = List.of();
+        boolean timeStampingEku = false;
         String tsaName = "";
 
         if (tsaCertificate == null) {
@@ -108,6 +120,9 @@ final class SignatureTimestampVerifier {
             CertificateMapping mapping = mapTsaCertificate(tsaCertificate);
             tsaCertificateInfo = mapping.certificateInfo();
             note = appendNote(note, mapping.failureNote());
+            if (tsaCertificateInfo != null) {
+                tsaChain = mapTsaChain(tsaCertificate, tsaCertificateInfo, token, bcProvider);
+            }
 
             try {
                 SignerInformationVerifier verifier =
@@ -126,12 +141,15 @@ final class SignatureTimestampVerifier {
             // still reported on its own merits rather than folded into that
             // failure, since the two are independent facts about the
             // certificate.
-            if (!hasTimeStampingEku(tsaCertificate)) {
+            timeStampingEku = hasTimeStampingEku(tsaCertificate);
+            if (!timeStampingEku) {
                 note = appendNote(note, "TSA certificate is missing the id-kp-timeStamping extended key usage");
             }
         }
 
-        return new TimestampInfo(genTime, tsaName, imprintValid, signatureValid, tsaCertificateInfo, note);
+        return new TimestampInfo(
+                genTime, tsaName, imprintValid, signatureValid, tsaCertificateInfo, note,
+                tsaChain, timeStampingEku, false);
     }
 
     /**
@@ -150,6 +168,55 @@ final class SignatureTimestampVerifier {
         } catch (RuntimeException e) {
             return new CertificateMapping(null, "TSA certificate data could not be mapped: " + e.getMessage());
         }
+    }
+
+    /**
+     * The TSA certificate followed by its issuers found in the token,
+     * walking issuer DN to subject DN (at most one hop per certificate in
+     * the token, so a DN cycle cannot loop). Certificates in the token that
+     * are not on that path are left out on purpose: the chain validator
+     * checks the validity of every certificate it is given, and an unrelated
+     * embedded certificate must not decide the TSA's trust. A mapping
+     * failure of an issuer ends the chain there (the validator then reports
+     * an incomplete chain, so the timestamp is simply not trusted).
+     */
+    private static List<CertificateInfo> mapTsaChain(
+            X509Certificate tsaCertificate, CertificateInfo tsaCertificateInfo, TimeStampToken token,
+            Provider bcProvider) {
+        List<CertificateInfo> chain = new ArrayList<>();
+        chain.add(tsaCertificateInfo);
+        try {
+            List<X509Certificate> candidates = new ArrayList<>();
+            JcaX509CertificateConverter converter = new JcaX509CertificateConverter().setProvider(bcProvider);
+            for (X509CertificateHolder holder : token.getCertificates().getMatches(null)) {
+                candidates.add(converter.getCertificate(holder));
+            }
+            X509Certificate current = tsaCertificate;
+            for (int hop = 0; hop < candidates.size(); hop++) {
+                if (current.getIssuerX500Principal().equals(current.getSubjectX500Principal())) {
+                    break; // self-signed: reached the root
+                }
+                X509Certificate issuer = findIssuer(candidates, current);
+                if (issuer == null) {
+                    break;
+                }
+                chain.add(X509CertificateInfoMapper.toDomain(issuer));
+                current = issuer;
+            }
+        } catch (CertificateException | RuntimeException e) {
+            // Keep whatever part of the chain was mapped; an incomplete chain is simply not trusted.
+        }
+        return chain;
+    }
+
+    private static X509Certificate findIssuer(List<X509Certificate> candidates, X509Certificate certificate) {
+        for (X509Certificate candidate : candidates) {
+            if (!candidate.equals(certificate)
+                    && candidate.getSubjectX500Principal().equals(certificate.getIssuerX500Principal())) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /** Result of {@link #mapTsaCertificate}: the mapped certificate, or a failure note when mapping failed. */
@@ -215,6 +282,6 @@ final class SignatureTimestampVerifier {
     }
 
     private static TimestampInfo malformed(String note) {
-        return new TimestampInfo(null, "", false, false, null, Objects.requireNonNull(note));
+        return new TimestampInfo(null, "", false, false, null, Objects.requireNonNull(note), List.of(), false, false);
     }
 }

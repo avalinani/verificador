@@ -14,8 +14,11 @@ import java.util.Optional;
  * validated the chain and (optionally) checked revocation.
  *
  * @param claimedSigningTime the signing time claimed inside the signature
- *                           (CMS signing-time attribute), or {@code null}
- *                           when absent — see {@link #claimedSigningTimeOptional()}
+ *                           (CMS signing-time attribute or {@code /M}), or
+ *                           {@code null} when absent — see {@link #claimedSigningTimeOptional()}.
+ *                           Informational only: the signer can write any
+ *                           date there, so it is never used as the chain
+ *                           validation time (only a trusted timestamp is)
  * @param anomaly            a diagnostic note for a problem that does not
  *                            by itself invalidate this signature's
  *                            integrity (e.g. the CMS verified but part of
@@ -100,6 +103,13 @@ public record SignatureReport(
 
     public Optional<String> anomalyOptional() {
         return Optional.ofNullable(anomaly);
+    }
+
+    /** Returns a copy of this report with its timestamp replaced (the use case records the trust decision). */
+    public SignatureReport withTimestamp(TimestampInfo newTimestamp) {
+        return new SignatureReport(
+                fieldName, subFilter, coverage, integrity, claimedSigningTime, newTimestamp, chain,
+                chainStatus, revocation, anomaly, verdict, verdictReasons);
     }
 
     /** Returns a copy of this report with the chain/revocation status enriched by the use case. */

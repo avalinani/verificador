@@ -137,6 +137,47 @@ class SignatureVerdictPolicyTest {
     }
 
     @Test
+    void withoutATrustedTimestampTheVerdictCarriesTheValidatedAtCurrentTimeReason() {
+        for (TimestampInfo untrusted : List.of(
+                TimestampInfo.absent(), TRUSTED_TIMESTAMP.withTrust(false, "TSA not trusted: x"))) {
+            SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                    ChainStatus.TRUSTED, RevocationStatus.notChecked(), untrusted);
+
+            SignatureReport result = SignatureVerdictPolicy.evaluate(
+                    signature, false, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
+
+            assertThat(result.verdict()).isEqualTo(SignatureVerdict.VALID);
+            assertThat(result.verdictReasons()).containsExactly(
+                    SignatureVerdictPolicy.REASON_VALIDATED_AT_CURRENT_TIME,
+                    SignatureVerdictPolicy.REASON_REVOCATION_NOT_REQUESTED);
+        }
+    }
+
+    @Test
+    void anExpiredChainWithoutATrustedTimestampIsNotAdmittedAndSaysItWasValidatedAtTheCurrentTime() {
+        SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                ChainStatus.EXPIRED, RevocationStatus.notChecked(), TimestampInfo.absent());
+
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, false, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
+
+        assertThat(result.verdict()).isEqualTo(SignatureVerdict.NOT_ADMITTED);
+        assertThat(result.verdictReasons()).containsExactly(
+                SignatureVerdictPolicy.REASON_VALIDATED_AT_CURRENT_TIME, SignatureVerdictPolicy.REASON_CHAIN_EXPIRED);
+    }
+
+    @Test
+    void aTrustedTimestampNeverCarriesTheValidatedAtCurrentTimeReason() {
+        SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
+                ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
+
+        SignatureReport result = SignatureVerdictPolicy.evaluate(
+                signature, true, SignatureVerdictPolicy.LaterSignatureCoverage.NO_LATER_SIGNATURE);
+
+        assertThat(result.verdictReasons()).doesNotContain(SignatureVerdictPolicy.REASON_VALIDATED_AT_CURRENT_TIME);
+    }
+
+    @Test
     void trustedChainWithGoodRevocationIsValid() {
         SignatureReport signature = signature(IntegrityStatus.INTACT, wholeDocumentCoverage(),
                 ChainStatus.TRUSTED, new RevocationStatus(RevocationState.GOOD, "OCSP", null));
@@ -332,10 +373,20 @@ class SignatureVerdictPolicyTest {
                 .withVerdict(verdict, List.of());
     }
 
+    /** The decision-table tests use a trusted timestamp so that only the row under test contributes reasons. */
+    private static final TimestampInfo TRUSTED_TIMESTAMP = new TimestampInfo(
+            java.time.Instant.parse("2025-01-01T00:00:00Z"), "TSA", true, true, null, null, List.of(), true, true);
+
     private static SignatureReport signature(
             IntegrityStatus integrity, ByteRangeCoverage coverage, ChainStatus chainStatus, RevocationStatus revocation) {
+        return signature(integrity, coverage, chainStatus, revocation, TRUSTED_TIMESTAMP);
+    }
+
+    private static SignatureReport signature(
+            IntegrityStatus integrity, ByteRangeCoverage coverage, ChainStatus chainStatus, RevocationStatus revocation,
+            TimestampInfo timestamp) {
         return new SignatureReport(
-                "Signature1", "adbe.pkcs7.detached", coverage, integrity, null, TimestampInfo.absent(),
+                "Signature1", "adbe.pkcs7.detached", coverage, integrity, null, timestamp,
                 List.of(), chainStatus, revocation, null);
     }
 

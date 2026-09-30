@@ -14,8 +14,16 @@ import java.time.Instant;
  * @param signatureValid whether the TSA's own signature over the token
  *                       verifies against its embedded certificate
  * @param note           a diagnostic note for an anomaly that does not by
- *                       itself invalidate the surrounding signature, or
- *                       {@code null}
+ *                       itself invalidate the surrounding signature (for an
+ *                       untrusted timestamp it starts with {@code "TSA not
+ *                       trusted: "} and says why), or {@code null}
+ * @param trusted        whether the timestamp may fix the validation time:
+ *                       imprint and TSA signature valid, TSA certificate with
+ *                       {@code id-kp-timeStamping}, TSA chain trusted at
+ *                       {@code genTime}, and {@code genTime} not in the
+ *                       future. When {@code false}, the signer chain was
+ *                       validated at the analysis time, whatever
+ *                       {@code genTime} says
  */
 public record TimestampInfoDto(
         Instant genTime,
@@ -24,5 +32,6 @@ public record TimestampInfoDto(
         boolean imprintValid,
         boolean signatureValid,
         CertificateInfoDto tsaCertificate,
-        String note) {
+        String note,
+        boolean trusted) {
 }
