@@ -110,7 +110,7 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
 
     static String sanitizeForLog(Throwable failure) {
         String text = failure.getClass().getName() + ": " + failure.getMessage();
-        String flat = text.replaceAll("\\p{Cntrl}+", " ");
+        String flat = text.replaceAll("[\\p{Cc}\\p{Zl}\\p{Zp}]+", " ");
         return flat.length() > 300 ? flat.substring(0, 300) + "..." : flat;
     }
 

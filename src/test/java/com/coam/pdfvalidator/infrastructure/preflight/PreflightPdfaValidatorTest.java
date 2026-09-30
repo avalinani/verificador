@@ -61,6 +61,7 @@ class PreflightPdfaValidatorTest {
     void parserFailureTextNeverReachesTheReport() throws Exception {
         PdfaReport report = validator.validate(TestPdfFactory.corrupt());
 
+        assertThat(report.issues()).isNotEmpty();
         assertThat(report.issues()).extracting(PdfaIssue::message).allSatisfy(message ->
                 assertThat(message).isIn(
                         "The document declares a PDF header but could not be parsed",
@@ -247,9 +248,10 @@ class PreflightPdfaValidatorTest {
     @Test
     void logTextOfAFailureIsFlattenedToOneLine() {
         String logged = PreflightPdfaValidator.sanitizeForLog(
-                new java.io.IOException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000" + "x".repeat(1000)));
+                new java.io.IOException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000 LINE PARA\u0085NEL" + "x".repeat(1000)));
 
-        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000");
+        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000")
+                .doesNotContain(" ").doesNotContain(" ").doesNotContain("\u0085");
         assertThat(logged).contains("java.io.IOException: MARKER").hasSizeLessThanOrEqualTo(303);
     }
 }

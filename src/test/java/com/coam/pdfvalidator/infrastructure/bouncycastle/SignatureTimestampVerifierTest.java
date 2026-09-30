@@ -247,9 +247,10 @@ class SignatureTimestampVerifierTest {
     @Test
     void logTextOfAFailureIsFlattenedToOneLine() {
         String logged = SignatureTimestampVerifier.sanitizeForLog(
-                new IllegalStateException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000" + "x".repeat(1000)));
+                new IllegalStateException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000 LINE PARA\u0085NEL" + "x".repeat(1000)));
 
-        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000");
+        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000")
+                .doesNotContain(" ").doesNotContain(" ").doesNotContain("\u0085");
         assertThat(logged).contains("java.lang.IllegalStateException: MARKER").hasSizeLessThanOrEqualTo(303);
     }
 }
