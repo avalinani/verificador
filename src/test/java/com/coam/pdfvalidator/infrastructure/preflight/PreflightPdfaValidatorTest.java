@@ -6,6 +6,7 @@ import com.coam.pdfvalidator.domain.model.PdfaIssue;
 import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.fixtures.TestPdfFactory;
+import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
 import org.apache.pdfbox.preflight.ValidationResult;
 import org.junit.jupiter.api.Test;
 
@@ -135,5 +136,36 @@ class PreflightPdfaValidatorTest {
         PdfaIssue last = issues.get(issues.size() - 1);
         assertThat(last.code()).isEqualTo("TRUNCATED");
         assertThat(last.message()).contains("50");
+    }
+
+    /**
+     * T18a: a decompression bomb (tiny on disk, huge once decoded) must be
+     * reported as NOT_VALIDATED before preflight ever inflates it -- in
+     * production the unbounded inflate exhausted the heap and, with
+     * {@code -XX:+ExitOnOutOfMemoryError}, killed the JVM.
+     */
+    @Test
+    void aDecompressionBombIsNotValidatedAsTooComplexInsteadOfExhaustingTheHeap() throws Exception {
+        byte[] pdf = TestPdfFactory.decompressionBomb(1, 8 * 1024 * 1024);
+        PreflightPdfaValidator bounded = new PreflightPdfaValidator(new DecodedSizeGuard.Limits(1024 * 1024, 64L * 1024 * 1024));
+
+        PdfaReport report = bounded.validate(pdf);
+
+        assertThat(report.status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
+        assertThat(report.issues()).singleElement().satisfies(issue -> {
+            assertThat(issue.code()).isEqualTo("DOCUMENT_TOO_COMPLEX");
+            assertThat(issue.message()).contains("decoded size limit");
+        });
+    }
+
+    @Test
+    void aBombInsideMetadataIsAlsoNotValidatedAsTooComplex() throws Exception {
+        byte[] pdf = TestPdfFactory.decompressionBombInMetadata(8 * 1024 * 1024);
+        PreflightPdfaValidator bounded = new PreflightPdfaValidator(new DecodedSizeGuard.Limits(1024 * 1024, 64L * 1024 * 1024));
+
+        PdfaReport report = bounded.validate(pdf);
+
+        assertThat(report.status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
+        assertThat(report.issues()).extracting(PdfaIssue::code).containsExactly("DOCUMENT_TOO_COMPLEX");
     }
 }

@@ -8,6 +8,7 @@ import com.coam.pdfvalidator.domain.port.RevocationChecker;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
+import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
 import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
 import com.coam.pdfvalidator.infrastructure.pki.PkixCertificateChainValidator;
 import com.coam.pdfvalidator.infrastructure.pki.TrustAnchorProvider;
@@ -41,7 +42,7 @@ import java.time.Clock;
  * "composition root" for a hexagonal application.
  */
 @Configuration
-@EnableConfigurationProperties({TrustStoreProperties.class, RevocationProperties.class})
+@EnableConfigurationProperties({TrustStoreProperties.class, RevocationProperties.class, AnalysisProperties.class})
 public class AdapterConfiguration {
 
     @Bean
@@ -55,8 +56,8 @@ public class AdapterConfiguration {
     }
 
     @Bean
-    public PdfDocumentReader pdfDocumentReader() {
-        return new PdfBoxDocumentReader();
+    public PdfDocumentReader pdfDocumentReader(AnalysisProperties analysis) {
+        return new PdfBoxDocumentReader(decodedSizeLimits(analysis));
     }
 
     @Bean
@@ -65,8 +66,13 @@ public class AdapterConfiguration {
     }
 
     @Bean
-    public PdfaConformanceValidator pdfaConformanceValidator() {
-        return new PreflightPdfaValidator();
+    public PdfaConformanceValidator pdfaConformanceValidator(AnalysisProperties analysis) {
+        return new PreflightPdfaValidator(decodedSizeLimits(analysis));
+    }
+
+    private static DecodedSizeGuard.Limits decodedSizeLimits(AnalysisProperties analysis) {
+        return new DecodedSizeGuard.Limits(analysis.maxDecodedStreamSize().toBytes(),
+                analysis.maxDecodedTotalSize().toBytes());
     }
 
     /**
