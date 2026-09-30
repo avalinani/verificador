@@ -115,6 +115,7 @@ function sameBox(a, b) {
 }
 
 const round1 = (value) => Math.round(value * 10) / 10;
+const cropped = (value) => Math.max(0, round1(value));
 
 /**
  * Pages whose CropBox differs from the MediaBox (0.5 pt tolerance), grouped by
@@ -138,10 +139,12 @@ export function findCropGroups(pages) {
         pageHeight: round1(media.height),
         visibleWidth: round1(crop.width),
         visibleHeight: round1(crop.height),
-        left: round1(crop.llx - media.llx),
-        bottom: round1(crop.lly - media.lly),
-        right: round1(media.urx - crop.urx),
-        top: round1(media.ury - crop.ury),
+        // The backend clips the CropBox to the MediaBox (PDFBox getCropBox), so
+        // these are never negative; clamp anyway so the UI never shows one.
+        left: cropped(crop.llx - media.llx),
+        bottom: cropped(crop.lly - media.lly),
+        right: cropped(media.urx - crop.urx),
+        top: cropped(media.ury - crop.ury),
       };
       groups.set(key, group);
     }
