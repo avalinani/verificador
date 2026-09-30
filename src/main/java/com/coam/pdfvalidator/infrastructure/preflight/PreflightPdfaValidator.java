@@ -7,6 +7,8 @@ import com.coam.pdfvalidator.domain.model.PdfaReport;
 import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
 
+import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
+
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.io.RandomAccessRead;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
@@ -84,6 +86,16 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
     private static final Pattern PDF_HEADER = Pattern.compile("%PDF-\\d\\.\\d");
     private static final int HEADER_SEARCH_WINDOW = 1024;
 
+    private final DecodedSizeGuard.Limits limits;
+
+    public PreflightPdfaValidator() {
+        this(DecodedSizeGuard.Limits.DEFAULT);
+    }
+
+    public PreflightPdfaValidator(DecodedSizeGuard.Limits limits) {
+        this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
     @Override
     public PdfaReport validate(byte[] pdf) {
         Objects.requireNonNull(pdf, "pdf");
@@ -98,6 +110,11 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
                 return notValidated(PdfaDeclaration.NONE,
                         "ENCRYPTED", "Encrypted documents cannot be validated for PDF/A-1b conformance");
             }
+            // T18a: refuse decompression bombs before preflight inflates anything.
+            DecodedSizeGuard.check(probe, limits);
+        } catch (DecodedSizeGuard.LimitExceededException e) {
+            return notValidated(PdfaDeclaration.NONE, "DOCUMENT_TOO_COMPLEX",
+                    "The document is too complex to validate: " + e.getMessage());
         } catch (InvalidPasswordException e) {
             return notValidated(PdfaDeclaration.NONE,
                     "ENCRYPTED", "Encrypted documents cannot be validated for PDF/A-1b conformance");
@@ -164,13 +181,13 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
      * adapter package self-contained, matching this codebase's existing
      * convention (no {@code infrastructure.*} package depends on another).
      */
-    private static PdfaDeclaration readDeclaration(PDDocument document) {
+    private PdfaDeclaration readDeclaration(PDDocument document) {
         PDMetadata metadata = document.getDocumentCatalog().getMetadata();
         if (metadata == null) {
             return PdfaDeclaration.NONE;
         }
         try {
-            byte[] xmpBytes = metadata.toByteArray();
+            byte[] xmpBytes = DecodedSizeGuard.decode(metadata.getCOSObject(), limits.maxStreamBytes());
             XMPMetadata xmp = new DomXmpParser().parse(xmpBytes);
             PDFAIdentificationSchema schema = xmp.getPDFAIdentificationSchema();
             if (schema == null) {

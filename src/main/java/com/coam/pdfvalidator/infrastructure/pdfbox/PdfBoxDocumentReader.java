@@ -49,6 +49,17 @@ import java.util.regex.Pattern;
  */
 public class PdfBoxDocumentReader implements PdfDocumentReader {
 
+    private final DecodedSizeGuard.Limits limits;
+
+    public PdfBoxDocumentReader() {
+        this(DecodedSizeGuard.Limits.DEFAULT);
+    }
+
+    public PdfBoxDocumentReader(DecodedSizeGuard.Limits limits) {
+        this.limits = java.util.Objects.requireNonNull(limits, "limits");
+    }
+
+
     private static final Pattern HEADER_VERSION = Pattern.compile("%PDF-(\\d\\.\\d)");
     private static final int HEADER_SEARCH_WINDOW = 1024;
 
@@ -98,9 +109,9 @@ public class PdfBoxDocumentReader implements PdfDocumentReader {
         }
     }
 
-    private static PdfaDeclaration parsePdfaDeclaration(PDMetadata metadata) {
+    private PdfaDeclaration parsePdfaDeclaration(PDMetadata metadata) {
         try {
-            byte[] xmpBytes = metadata.toByteArray();
+            byte[] xmpBytes = DecodedSizeGuard.decode(metadata.getCOSObject(), limits.maxStreamBytes());
             XMPMetadata xmp = new DomXmpParser().parse(xmpBytes);
             PDFAIdentificationSchema schema = xmp.getPDFAIdentificationSchema();
             if (schema == null) {

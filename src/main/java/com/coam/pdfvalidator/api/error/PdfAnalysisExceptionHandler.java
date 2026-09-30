@@ -9,6 +9,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 import java.net.URI;
@@ -44,12 +45,23 @@ public class PdfAnalysisExceptionHandler {
     private static final URI NOT_A_PDF = URI.create("urn:pdfvalidator:error:not-a-pdf");
     private static final URI CORRUPT_PDF = URI.create("urn:pdfvalidator:error:corrupt-pdf");
     private static final URI ENCRYPTED_PDF = URI.create("urn:pdfvalidator:error:encrypted-pdf");
+    private static final URI INVALID_PARAMETER = URI.create("urn:pdfvalidator:error:invalid-parameter");
     private static final URI INTERNAL_ERROR = URI.create("urn:pdfvalidator:error:internal-error");
 
     /** No {@code file} part at all in the multipart request (a required {@link org.springframework.web.multipart.MultipartFile} parameter). */
     @ExceptionHandler({MissingServletRequestPartException.class, MissingServletRequestParameterException.class})
     public ProblemDetail handleMissingPart(Exception exception) {
         return problem(HttpStatus.BAD_REQUEST, MISSING_FILE, "Missing required 'file' part in the request.");
+    }
+
+    /**
+     * A query parameter that cannot be converted (e.g. {@code checkRevocation=notabool}). Reports only the
+     * parameter's declared name, never the client-supplied value.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleInvalidParameter(MethodArgumentTypeMismatchException exception) {
+        return problem(HttpStatus.BAD_REQUEST, INVALID_PARAMETER,
+                "Invalid value for parameter '" + exception.getName() + "'.");
     }
 
     /** The {@code file} part is present but empty. */

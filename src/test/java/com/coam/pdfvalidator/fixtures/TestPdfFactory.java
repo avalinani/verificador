@@ -2,6 +2,8 @@ package com.coam.pdfvalidator.fixtures;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSStream;
+import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -605,6 +607,106 @@ public final class TestPdfFactory {
             document.save(out);
             return out.toByteArray();
         }
+    }
+
+    /**
+     * A PDF whose single page has {@code streams} content streams, each
+     * {@code /FlateDecode} and inflating to {@code inflatedBytesEach} bytes of
+     * {@code '0'} (a scaled-down copy of the decompression bomb used in the
+     * pentest: tiny on disk, huge once decoded, and one single giant token
+     * for a content-stream parser).
+     */
+    public static byte[] decompressionBomb(int streams, int inflatedBytesEach) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            java.util.List<PDStream> contents = new java.util.ArrayList<>();
+            for (int i = 0; i < streams; i++) {
+                contents.add(zerosStream(document, inflatedBytesEach, COSName.FLATE_DECODE));
+            }
+            page.setContents(contents);
+            return save(document);
+        }
+    }
+
+    /** Like {@link #decompressionBomb} but the stream is {@code [/FlateDecode /FlateDecode]}: each stage inflates. */
+    public static byte[] doubleFlateBomb(int inflatedBytes) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            COSStream stream = document.getDocument().createCOSStream();
+            org.apache.pdfbox.cos.COSArray filters = new org.apache.pdfbox.cos.COSArray();
+            filters.add(COSName.FLATE_DECODE);
+            filters.add(COSName.FLATE_DECODE);
+            try (java.io.OutputStream out = stream.createOutputStream(filters)) {
+                writeZeros(out, inflatedBytes);
+            }
+            page.setContents(new PDStream(stream));
+            return save(document);
+        }
+    }
+
+    /** A PDF whose XMP metadata stream is a {@code /FlateDecode} bomb inflating to {@code inflatedBytes}. */
+    public static byte[] decompressionBombInMetadata(int inflatedBytes) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            document.addPage(new PDPage(PDRectangle.A4));
+            COSStream stream = document.getDocument().createCOSStream();
+            stream.setItem(COSName.TYPE, COSName.METADATA);
+            stream.setItem(COSName.SUBTYPE, COSName.getPDFName("XML"));
+            try (java.io.OutputStream out = stream.createOutputStream(COSName.FLATE_DECODE)) {
+                writeZeros(out, inflatedBytes);
+            }
+            document.getDocumentCatalog().setMetadata(new PDMetadata(stream));
+            return save(document);
+        }
+    }
+
+    /** A PDF with a {@code /Subtype /Image} XObject whose {@code /FlateDecode} data inflates to {@code inflatedBytes}. */
+    public static byte[] flateImage(int inflatedBytes) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            COSStream image = document.getDocument().createCOSStream();
+            image.setItem(COSName.TYPE, COSName.XOBJECT);
+            image.setItem(COSName.SUBTYPE, COSName.IMAGE);
+            image.setInt(COSName.WIDTH, 1);
+            image.setInt(COSName.HEIGHT, 1);
+            image.setInt(COSName.BITS_PER_COMPONENT, 8);
+            image.setItem(COSName.COLORSPACE, COSName.DEVICEGRAY);
+            try (java.io.OutputStream out = image.createOutputStream(COSName.FLATE_DECODE)) {
+                writeZeros(out, inflatedBytes);
+            }
+            org.apache.pdfbox.pdmodel.PDResources resources = new org.apache.pdfbox.pdmodel.PDResources();
+            resources.put(COSName.getPDFName("Im1"),
+                    new org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject(new PDStream(image), resources));
+            page.setResources(resources);
+            return save(document);
+        }
+    }
+
+    private static PDStream zerosStream(PDDocument document, int inflatedBytes, COSName filter) throws IOException {
+        COSStream stream = document.getDocument().createCOSStream();
+        try (java.io.OutputStream out = stream.createOutputStream(filter)) {
+            writeZeros(out, inflatedBytes);
+        }
+        return new PDStream(stream);
+    }
+
+    private static void writeZeros(java.io.OutputStream out, int count) throws IOException {
+        byte[] chunk = new byte[64 * 1024];
+        java.util.Arrays.fill(chunk, (byte) '0');
+        int remaining = count;
+        while (remaining > 0) {
+            int n = Math.min(remaining, chunk.length);
+            out.write(chunk, 0, n);
+            remaining -= n;
+        }
+    }
+
+    private static byte[] save(PDDocument document) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        document.save(out);
+        return out.toByteArray();
     }
 
     private static int[] firstByteRange(byte[] pdf) throws IOException {

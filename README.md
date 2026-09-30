@@ -220,6 +220,8 @@ PDF/A es el estándar de archivo a largo plazo. `infrastructure/preflight/Prefli
 
 **Resultado y robustez.** Un documento individual nunca provoca una excepción salvo una entrada que ni siquiera declara cabecera `%PDF-x.y` (lanza `InvalidPdfException`). Un documento cifrado, roto con cabecera o un fallo interno de *preflight* se informan como `NOT_VALIDATED` con una incidencia explicativa. Antes de invocar *preflight* se carga el documento una vez con PDFBox normal para distinguir cifrado de "cabecera presente pero roto"; eso supone un segundo parseo, un coste aceptado y acotado por el tamaño máximo de subida.
 
+**Bombas de descompresión (T18a).** Un PDF de 510 KB cuyo flujo de contenido `/FlateDecode` se expandía a 500 MB agotaba el *heap* dentro de *preflight* (`PDFStreamParser` construye un único *token* gigante), y con `-XX:+ExitOnOutOfMemoryError` cada subida así mataba la JVM. Se comprobó en el código de PDFBox 3.0.8 que el *stream cache* (`MemoryUsageSetting`/`StreamCacheCreateFunction`) solo afecta a la **escritura** de flujos: al **decodificar**, `Filter.decode` acumula todo el resultado en memoria, así que acotar la caché no lo evita. Por eso `infrastructure/pdfbox/DecodedSizeGuard` decodifica una vez, antes de *preflight*, cada flujo del documento con un decodificador en *streaming* que **cuenta y descarta** los bytes (nunca los materializa) y rechaza el documento en cuanto se cruza un límite. Solo se aplican los filtros de expansión sin pérdida (Flate, LZW, ASCII85, ASCIIHex, RunLength); en una cadena de filtros, las etapas intermedias usan un búfer acotado al límite por flujo. Los flujos `/Subtype /Image` quedan exentos del límite por flujo (los escaneos grandes son legítimos y *preflight* no los materializa) pero cuentan en el total. Si se supera un límite, el informe PDF/A es `NOT_VALIDATED` con la incidencia `DOCUMENT_TOO_COMPLEX`, el resto del informe se genera con normalidad y la respuesta es `200`. La lectura del XMP (`PdfBoxDocumentReader`, y la declaración dentro de *preflight*) usa la misma decodificación acotada: un XMP que es una bomba se lee como «sin declaración PDF/A». Los límites son `pdfvalidator.analysis.max-decoded-stream-size` (32 MB por flujo) y `pdfvalidator.analysis.max-decoded-total-size` (2 GB en total, que acota también el tiempo de CPU).
+
 **Incidencias.** Cada resultado no conforme trae una lista de `PdfaIssue` (código + mensaje) deduplicada y acotada a 200 elementos (con una incidencia `TRUNCATED` que indica cuántas se omitieron).
 
 **Incidencias bilingües.** Cada incidencia lleva `code`, `message` (texto original en inglés de PDFBox) y `messageEs` (descripción en español o `null`). La traducción la resuelve `domain/model/PdfaIssueCatalog`, un catálogo de datos puro con una entrada por cada código `ERROR_*` de `PreflightConstants` de *preflight* 3.0.8; si un código no existe, sube por su categoría (`3.1.99` → `3.1` → `3`). Un código sin traducción (`-1`, `NOT_VALIDATED`, `TRUNCATED`) devuelve `messageEs = null` y nunca se inventa una. La interfaz muestra primero el español y debajo, en cursiva, el original en inglés (`lang="en"`).
@@ -304,7 +306,7 @@ La pantalla «Validar» es la forma normal de usar el servicio: arrastras un PDF
 - **Tema claro/oscuro:** variables CSS (`prefers-color-scheme` más un botón manual que persiste la elección en `localStorage`, dentro de `try`/`catch`).
 - **Accesibilidad:** HTML semántico, zona de arrastre operable por teclado, regiones `aria-live`, ningún estado se transmite solo por color, contraste WCAG AA en ambos temas.
 - **Robustez:** se ignora un segundo envío mientras hay una petición en curso; una respuesta `2xx` con forma inesperada muestra un error en español; seleccionar un fichero inválido (no PDF o de más de 80 MB) limpia la selección anterior; los DN largos y las huellas no desbordan las tarjetas; un `503` `busy` se muestra como «El servicio está ocupado analizando otros documentos».
-- **Seguridad:** toda cadena que pueda venir del PDF (nombre de firmante, campo, anomalía) se renderiza con `textContent`, nunca `innerHTML`. `infrastructure/web/CspHeaderFilter` añade `Content-Security-Policy` solo a las rutas exactas `/`, `/index.html`, `/app.js` y `/styles.css` (comparadas relativas al *context path*), sin afectar a Swagger UI, Actuator ni al endpoint de análisis. También fuerza `charset=UTF-8` en esas rutas (la alternativa, una propiedad global, forzaría el *charset* en el JSON de la API). El pie de página es neutro: nombre del proyecto y enlace al repositorio.
+- **Seguridad:** toda cadena que pueda venir del PDF (nombre de firmante, campo, anomalía) se renderiza con `textContent`, nunca `innerHTML`. `infrastructure/web/CspHeaderFilter` añade `Content-Security-Policy` solo a las rutas exactas `/`, `/index.html`, `/app.js` y `/styles.css` (comparadas relativas al *context path*), sin afectar a Swagger UI, Actuator ni al endpoint de análisis. También fuerza `charset=UTF-8` en esas rutas (la alternativa, una propiedad global, forzaría el *charset* en el JSON de la API). El pie de página es neutro: nombre del proyecto y enlace al repositorio. Además, `infrastructure/web/SecurityHeadersFilter` añade a **todas** las respuestas (interfaz, API, errores y Actuator, también las cortocircuitadas como el `503` o el `413`) `X-Content-Type-Options: nosniff` y `Referrer-Policy: no-referrer` (T18d); no se añade `X-Frame-Options` porque la CSP ya envía `frame-ancestors 'none'`.
 - **Módulos:** `app.js` (punto de entrada: tema y pestañas), `dom.js` (DOM y utilidades compartidas, `switchTab`), `render.js` (renderizado del informe), `validate.js` («Validar», exporta `analyzeFile()`), `sign.js` («Firmar»).
 
 Los tests cubren la política de veredicto, el mapeo JSON y la cabecera CSP (`StaticContentSecurityTest`, `CspHeaderFilterTest`, §7). La interfaz en sí no tiene tests JS automatizados y se verifica manualmente en el navegador.
@@ -330,6 +332,8 @@ Permite firmar un PDF con el propio certificado del usuario (DNIe, FNMT, ...) us
 | Motor PDF | Apache PDFBox | 3.0.8 |
 | Validación PDF/A | Apache PDFBox *preflight* (PDF/A-1b) | 3.0.8 |
 | Criptografía | Bouncy Castle `bcprov` / `bcpkix` (jdk18on) | 1.86 |
+| Servidor embebido | Apache Tomcat (sobrescrito, ver «Dependencias parcheadas» en §10) | 11.0.26 |
+| Serialización JSON | Jackson 3 / Jackson 2 (esta última vía springdoc; sobrescritas, ver §10) | 3.1.7 / 2.21.6 |
 | Documentación API | springdoc-openapi (Swagger UI) | 3.1.1 |
 | Tests | JUnit 5, AssertJ, Mockito, ArchUnit | — / 1.5.1 |
 | Cobertura | JaCoCo (con umbral mínimo que hace fallar la compilación) | 0.8.15 |
@@ -527,6 +531,7 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 |---|---|---|
 | `400` | Falta el campo `file`, o está vacío | `urn:pdfvalidator:error:missing-file` |
 | `400` | El contenido no empieza por una cabecera `%PDF-` reconocible (aunque el nombre termine en `.pdf`) | `urn:pdfvalidator:error:not-a-pdf` |
+| `400` | Un parámetro de consulta no se puede convertir (p. ej. `checkRevocation=notabool`); el mensaje nombra el parámetro, nunca el valor recibido | `urn:pdfvalidator:error:invalid-parameter` |
 | `422` | Documento con cabecera PDF pero corrupto | `urn:pdfvalidator:error:corrupt-pdf` |
 | `422` | Documento cifrado con contraseña de usuario no vacía | `urn:pdfvalidator:error:encrypted-pdf` |
 | `413` | Fichero superior al límite de subida configurado (80 MB) | `urn:pdfvalidator:error:file-too-large` |
@@ -542,6 +547,8 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 | `server.tomcat.threads.max` / `accept-count` | Hilos activos y cola de conexiones de Tomcat | `20` / `20` |
 | `pdfvalidator.analysis.max-concurrent` | Análisis simultáneos máximos (*bulkhead*, ver «Límite de análisis simultáneos») | `2` |
 | `pdfvalidator.analysis.acquire-timeout` | Espera máxima de un hueco antes de responder `503` | `30s` |
+| `pdfvalidator.analysis.max-decoded-stream-size` | Tamaño máximo decodificado de un flujo PDF que no sea imagen; por encima, el PDF/A es `NOT_VALIDATED` (`DOCUMENT_TOO_COMPLEX`, §2.9) | `32MB` |
+| `pdfvalidator.analysis.max-decoded-total-size` | Tamaño máximo decodificado de todos los flujos de un PDF juntos (acota la CPU de inflar) | `2GB` |
 | `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |
@@ -569,7 +576,7 @@ src/main/java/com/coam/pdfvalidator/
 │  ├─ pki/                        PkixCertificateChainValidator, TrustAnchorProvider (cadena de confianza X.509)
 │  ├─ revocation/                 CompositeRevocationChecker (OCSP+CRL), OcspClient, CrlClient, RevocationUrlGuard + PinnedHttpClient (guarda SSRF con anclaje de conexión)
 │  ├─ preflight/                  PreflightPdfaValidator (validación formal PDF/A-1b)
-│  ├─ web/                        CspHeaderFilter (cabecera CSP de la interfaz web)
+│  ├─ web/                        CspHeaderFilter (cabecera CSP de la interfaz web), SecurityHeadersFilter (nosniff y no-referrer en todas las respuestas)
 │  └─ config/                     AdapterConfiguration (beans de adaptadores), TrustStoreProperties, RevocationProperties, AnalysisProperties, OpenApiConfiguration, WebSecurityHeadersConfiguration
 ├─ api/                           Controlador REST, DTOs, gestión de errores
 │  ├─ concurrency/                AnalysisBulkhead, AnalysisBulkheadFilter (límite de análisis simultáneos), AnalysisBusyException
@@ -678,6 +685,7 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `AnalysisBulkheadTest`, `AnalysisBulkheadIntegrationTest`, `AnalysisPropertiesTest` | Permisos del *bulkhead*, `503` `busy` con `Retry-After` y `Connection: close` y todas las variantes de URL (`;jsessionid`, `%61nalyze`, barra final, mayúsculas, segmentos de punto) contra el servidor real |
 | `PdfAnalysisReportMapperTest` | Mapeo campo a campo de un informe completo y de uno mínimo, veredictos, `NO_SIGNATURES`, y comprobación por reflexión de que `CertificateInfoDto` no expone ningún `byte[]` |
 | `PdfAnalysisEndToEndTest` | `@SpringBootTest` + `MockMvc` con adaptadores reales: JSON completo de un PDF firmado y sellado, `/v3/api-docs` correcto y solo `health`/`info` expuestos en Actuator |
+| `SecurityHeadersFilterTest`, `SecurityHeadersIntegrationTest` | `X-Content-Type-Options: nosniff` y `Referrer-Policy: no-referrer` en interfaz, API, errores y Actuator |
 | `StaticContentSecurityTest`, `CspHeaderFilterTest` | Cabecera CSP exacta en `/`, `/index.html`, `/app.js`, `/styles.css` (con y sin *context path*); ausente en `/v3/api-docs`, `/api/v1/pdf/analyze` y `/vendor/autofirma/autoscript.js`; coincidencia exacta de ruta (nunca por subcadena); `charset=UTF-8` en las rutas estáticas y ningún *charset* forzado en el JSON de error |
 
 ### Herramientas de calidad de código
@@ -770,6 +778,8 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 - **CSP ampliada con lo estrictamente necesario, nunca `'unsafe-eval'`/`'unsafe-inline'` para scripts.** AutoScript no usa `eval()`/`Function()` ni genera `<script>` en línea. Solo hicieron falta `connect-src wss://127.0.0.1:* https://127.0.0.1:*` (cliente WebSocket y su alternativa de compatibilidad, a un puerto local dinámico) y `frame-src 'self' afirma:` (el `<iframe>` oculto que Firefox/Safari usan para lanzar AutoFirma).
 - **Página única con pestañas, no un `firmar.html` separado**, para reutilizar cabecera, tema, filtro CSP y `render.js` para «Validar este PDF». `switchTab` vive en `dom.js`, el módulo hoja del que dependen `app.js` y `sign.js`, para evitar un ciclo de importación entre ES *modules*.
 
+- **Dependencias parcheadas por encima de lo que gestiona Spring Boot (T18b).** Spring Boot 4.1.1, la última versión, gestiona Tomcat 11.0.24 y Jackson 3.1.5 / 2.21.5, que OSV.dev marca como vulnerables: Tomcat (CVE-2026-65905, CVE-2026-65182, CVE-2026-68525, corregidas en 11.0.25), `tools.jackson.core:jackson-databind` (CVE-2026-68497, CVE-2026-83557, CVE-2026-19032, corregidas en 3.1.6) y `com.fasterxml.jackson.core:jackson-databind` 2.21.5 (corregida en 2.21.6; llega por springdoc/swagger-core). El `pom.xml` sobrescribe las propiedades de versión del BOM de Spring Boot (`tomcat.version=11.0.26`, `jackson-bom.version=3.1.7`, `jackson-2-bom.version=2.21.6`) y `PatchedDependenciesTest` falla si una versión resuelta baja de la primera corregida. Consultadas las 114 dependencias resueltas contra OSV.dev el 2026-09-30, ninguna tiene vulnerabilidades conocidas. Cuando Spring Boot gestione versiones parcheadas, cada sobrescritura se retira.
+
 ## 11. Historial de cambios
 
 | Fecha | Cambio |
@@ -808,6 +818,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-09-30 | README reorganizado para facilitar la comprensión: datos desactualizados corregidos (perfil de 2 GB / 80 MB, pestaña «Firmar», presentación entregada), sección 2 reordenada en orden de lectura y con introducción sencilla en cada apartado, e historial de desarrollo trasladado a §10 y §11. |
 | 2026-09-30 | **(T16)** La indicación de las zonas de subida («Validar» y «Firmar») decía «hasta 20 MB» aunque el límite real es 80 MB; corregida y protegida con un test que la compara con `spring.servlet.multipart.max-file-size`. Diapositivas con capturas reales de ambas pantallas, hechas con PDF y certificados de demostración. |
 | 2026-09-30 | **(T17)** Herramientas de calidad: umbral de cobertura JaCoCo (líneas 88 %, ramas 75 %) que hace fallar `verify`, SpotBugs + FindSecBugs y PMD/CPD en modo informe, PIT en el perfil `mutation` y flujo de CodeQL; los informes se suben como artefacto de CI. Sin cambios en el código de producción (§7). |
+| 2026-09-30 | **(T18)** Endurecimiento de seguridad, bloque 1, a raíz de un pentest y una auditoría del código. (a) Una bomba de descompresión (PDF de 510 KB con un flujo `/FlateDecode` de 500 MB) agotaba el *heap* en *preflight* y, con `ExitOnOutOfMemoryError`, reiniciaba el contenedor: `DecodedSizeGuard` decodifica los flujos en *streaming* con límites (`max-decoded-stream-size` 32 MB, `max-decoded-total-size` 2 GB) y el PDF/A pasa a `NOT_VALIDATED` (`DOCUMENT_TOO_COMPLEX`) con el resto del informe intacto (§2.9). (b) Tomcat 11.0.26 y Jackson 3.1.7 / 2.21.6 por CVE conocidas (§10). (c) `checkRevocation=notabool` devuelve `400` (`invalid-parameter`) en vez de `500`. (d) `X-Content-Type-Options: nosniff` y `Referrer-Policy: no-referrer` en todas las respuestas (§2.14). |
 
 ## 12. Repositorio y licencia
 

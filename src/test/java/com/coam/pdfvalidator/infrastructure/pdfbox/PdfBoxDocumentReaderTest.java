@@ -243,4 +243,14 @@ class PdfBoxDocumentReaderTest {
 
         assertThat(declaration).isEqualTo(PdfaDeclaration.NONE);
     }
+
+    /** T18a: an XMP stream that is a decompression bomb must not be inflated; it reads as "no declaration". */
+    @Test
+    void anXmpDecompressionBombReadsAsNoPdfaDeclarationWithoutInflatingIt() throws Exception {
+        byte[] pdf = TestPdfFactory.decompressionBombInMetadata(8 * 1024 * 1024);
+        PdfBoxDocumentReader bounded = new PdfBoxDocumentReader(
+                new DecodedSizeGuard.Limits(1024 * 1024, 64L * 1024 * 1024));
+
+        assertThat(bounded.readPdfaDeclaration(pdf)).isEqualTo(PdfaDeclaration.NONE);
+    }
 }
