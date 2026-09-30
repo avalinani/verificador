@@ -27,4 +27,5 @@ docker-compose.yml
 !README.md
 *.log
 *.pdf
+*.pptx
 deploy/

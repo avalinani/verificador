@@ -1,6 +1,7 @@
 mvnw text eol=lf
 *.cmd text eol=crlf
 *.pdf binary
+*.pptx binary
 
 # Vendored third-party component (T11b): must stay byte-identical to the
 # upstream file at all times (its NOTICE.md records the exact git blob SHA
