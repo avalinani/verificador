@@ -73,10 +73,16 @@ pdfvalidator:
 #    pkcs12-password: change-me
 
 # Optional revocation checking (OCSP/CRL, CompositeRevocationChecker), only
-# used when a request sets checkRevocation=true. Both defaults already match
-# the task's requirements; uncomment only to change them -- see README
-# section on revocation checking/4.
+# used when a request sets checkRevocation=true. Every non-anchor certificate
+# of the validated path is checked, under ONE shared deadline per signature.
+# The defaults below already apply; uncomment only to change them -- see the
+# README sections on revocation checking (2.8) and configuration (4).
 #pdfvalidator:
 #  revocation:
-#    timeout: 2s
-#    max-response-bytes: 10MB
+#    timeout: 2s                  # cap for one request (DNS + connect + response)
+#    total-timeout: 6s            # one deadline for the whole check of a signature (all certificates, OCSP and CRL)
+#    max-response-bytes: 10MB     # maximum OCSP/CRL response body
+#    max-urls-per-method: 3       # AIA (OCSP) / CDP (CRL) URLs tried per certificate, after de-duplication
+#    max-header-line-bytes: 8KB   # longest accepted HTTP response line (status, header, trailer)
+#    max-headers: 100             # most response headers (and, separately, chunk trailers)
+#    max-header-bytes: 64KB       # combined size of the response headers (and of the trailers)

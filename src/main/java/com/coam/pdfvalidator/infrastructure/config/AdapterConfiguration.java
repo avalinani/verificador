@@ -110,6 +110,6 @@ public class AdapterConfiguration {
      */
     @Bean
     public RevocationChecker revocationChecker(RevocationProperties properties) {
-        return new CompositeRevocationChecker(properties.timeout(), properties.maxResponseBytes().toBytes());
+        return new CompositeRevocationChecker(properties.toLimits());
     }
 }

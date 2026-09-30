@@ -38,23 +38,37 @@ final class CrlClient {
 
     private static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
 
-    private final Duration timeout;
-    private final long maxResponseBytes;
+    private final RevocationLimits limits;
     private final boolean allowPrivateAddresses;
     private final HostResolver resolver;
 
     CrlClient(Duration timeout, long maxResponseBytes, boolean allowPrivateAddresses, HostResolver resolver) {
-        this.timeout = timeout;
-        this.maxResponseBytes = maxResponseBytes;
+        this(RevocationLimits.withDefaults(timeout, maxResponseBytes), allowPrivateAddresses, resolver);
+    }
+
+    CrlClient(RevocationLimits limits, boolean allowPrivateAddresses, HostResolver resolver) {
+        this.limits = limits;
         this.allowPrivateAddresses = allowPrivateAddresses;
         this.resolver = resolver;
     }
 
-    /** Tries each URL in order, returning the first non-{@code UNKNOWN} result, or the last {@code UNKNOWN} one. */
+    /** {@link #check(X509Certificate, X509Certificate, List, Deadline)} under a fresh total budget. */
     RevocationStatus check(X509Certificate certificate, X509Certificate issuer, List<String> urls) {
+        return check(certificate, issuer, urls, Deadline.after(limits.totalTimeout()));
+    }
+
+    /**
+     * Tries each URL in order, returning the first non-{@code UNKNOWN} result, or the last {@code UNKNOWN}
+     * one. Every attempt (DNS, connect, response) runs under the smaller of the per-request timeout and the
+     * shared {@code deadline}; once that is spent, the remaining URLs are not contacted at all.
+     */
+    RevocationStatus check(X509Certificate certificate, X509Certificate issuer, List<String> urls, Deadline deadline) {
         RevocationStatus last = unknown(null, "no CRL URL available for this certificate");
         for (String url : urls) {
-            last = checkOne(certificate, issuer, url);
+            if (deadline.expired()) {
+                return unknown(null, Deadline.EXHAUSTED_DETAIL);
+            }
+            last = checkOne(certificate, issuer, url, deadline.capped(limits.timeout()));
             if (last.state() != RevocationState.UNKNOWN) {
                 return last;
             }
@@ -62,10 +76,11 @@ final class CrlClient {
         return last;
     }
 
-    private RevocationStatus checkOne(X509Certificate certificate, X509Certificate issuer, String url) {
+    private RevocationStatus checkOne(
+            X509Certificate certificate, X509Certificate issuer, String url, Deadline attempt) {
         RevocationUrlGuard.ValidatedTarget target;
         try {
-            target = RevocationUrlGuard.resolve(url, allowPrivateAddresses, resolver);
+            target = RevocationUrlGuard.resolve(url, allowPrivateAddresses, resolver, attempt.remaining());
         } catch (RevocationUrlRejectedException e) {
             return unknown(url, "CRL URL rejected: " + e.getMessage());
         }
@@ -73,7 +88,8 @@ final class CrlClient {
         byte[] body;
         try {
             PinnedHttpClient.Response response =
-                    PinnedHttpClient.send(target, "GET", null, Map.of(), timeout, maxResponseBytes);
+                    PinnedHttpClient.send(target, "GET", null, Map.of(), attempt.remaining(),
+                            limits.maxResponseBytes(), limits.httpLimits());
             if (response.statusCode() != 200) {
                 return unknown(url, "CRL distribution point returned HTTP " + response.statusCode());
             }
