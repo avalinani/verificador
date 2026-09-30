@@ -21,6 +21,19 @@ jobs:
       - name: Build and verify
         run: ./mvnw -B verify
 
+      # Quality reports (SpotBugs+FindSecBugs, PMD/CPD, JaCoCo); kept even when the build fails.
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          if-no-files-found: ignore
+          path: |
+            target/spotbugsXml.xml
+            target/pmd.xml
+            target/cpd.xml
+            target/site/jacoco/
+
   docker:
     # Builds the image (never pushed) and smoke-tests it at runtime under the same
     # limits as docker-compose.yml: 2 GB, read-only root filesystem, 256 MB /tmp,
