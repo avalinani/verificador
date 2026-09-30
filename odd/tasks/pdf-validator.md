@@ -907,6 +907,19 @@ Checks: visual readback of each screenshot (no COAM, no personal data); slides P
 - T16c: slides artifact version 6 adds `demo-validar` and `demo-firmar` after `ui` (15 slides). User re-exported PDF and PPTX (15 slides each; pages 8-9 carry the screenshots, checked by text extraction and embedded images); copied to `docs/PDF-Inspector-TFM.pdf` and `docs/PDF-Inspector-TFM.pptx`, linked from README §9. Slide 11 test count corrected to 356 (itself wrong, see T17: the real count is 354) (artifact version 7) and both files re-exported by the user (15 slides; slide 11 shows 356 in PDF and PPTX).
 - VPS redeployed with master a4ccb07 (user-authorized): code swapped via `git archive` (previous copy kept as `~/pdf-validator.bak-20260930-0641`), `docker compose up -d --build`, container healthy; public `index.html` shows "hasta 80 MB" in both drop zones; demo PDF analysis over HTTPS returns 200.
 
+## T17 Code quality tooling
+Objective: add static analysis, a coverage ratchet, mutation testing and CodeQL, and measure how the code scores. Report-only for SpotBugs/PMD; JaCoCo check fails the build. No production code changes; findings are reported, not fixed.
+Branch `feat/quality-tools` (worktree `validador-worktrees/quality-tools`). Route: delegated direct (single writer). TDD: build tooling only, ordinary functional checks.
+- [x] T17a SpotBugs 4.10.4 (plugin 4.10.4.1) + FindSecBugs 1.14.0, verify phase, failOnError=false.
+- [x] T17b PMD 7.28.0 (plugin 3.28.0; pmd-core/pmd-java pinned so Java 25 parses) + CPD, `config/pmd/ruleset.xml` (quickstart + complexity rules), failOnViolation=false.
+- [x] T17c JaCoCo `check` (BUNDLE): line 0.88, branch 0.75.
+- [x] T17d PIT 1.30.0 + pitest-junit5-plugin 1.2.3 in profile `mutation`; nothing excluded.
+- [x] T17e `.github/workflows/codeql.yml` (java-kotlin, manual build, Temurin 25, `github/codeql-action@v4`, push/PR to master + weekly); CI uploads `quality-reports` artifact.
+Checks: `./mvnw -B verify` green (354 tests, ~45 s before and after); negative test of the ratchet (`-Djacoco.min.line=0.95` -> "Rule violated").
+- Evidence: JaCoCo measured line 89.99 % (1835/2039), branch 77.46 % (598/772) (a first attempt with line 0.90 failed the build at 0.89, floor lowered to 0.88). SpotBugs 24 findings (Medium threshold): 20 EI_EXPOSE_REP/REP2 in 7 DTO records, NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE PdfAnalysisController:89, UNSAFE_HASH_EQUALS CmsSignatureVerification:270, DMI_RANDOM_USED_ONLY_ONCE OcspClient:101, UNENCRYPTED_SOCKET PinnedHttpClient:87. PMD 32 violations (CyclomaticComplexity 11, PreserveStackTrace 5, SimplifyBooleanReturns 3, ...); CPD 1 duplicate (PdfBoxDocumentReader:102-122 vs PreflightPdfaValidator:172-190). PIT: 937 mutants, 74 % killed, test strength 82 %, line coverage 89 %, ~6 min; weakest AdapterConfiguration 0 %, OcspClient 43 %, CrlClient 52 %, PreflightPdfaValidator 59 %, PinnedHttpClient 62 %.
+- CodeQL: docs list Java 7 to 26 as supported, so Java 25 is covered by the current CLI (v2.27.1); `codeql-action` latest major is v4 (used). The workflow has not run on GitHub yet.
+- Pending: user decides which findings to fix and which gating to enable.
+
 ## T18 Security hardening, block 1
 Objective: close the findings of the pentest and code audit: decompression-bomb OOM (HIGH, DoS on the public demo), vulnerable dependencies, 500 on a malformed query parameter, missing hardening headers. Branch `fix/security-hardening-1` (from master 82b58c6), not pushed.
 Constraints: strict TDD (runner `./mvnw`), fixtures generated in code, tests cheap (scaled-down bombs, small configurable limits), ArchUnit green, README in Spanish updated with each behavior.
@@ -921,21 +934,7 @@ Constraints: strict TDD (runner `./mvnw`), fixtures generated in code, tests che
 - T18d RED: `SecurityHeadersFilterTest` did not compile (`cannot find symbol SecurityHeadersFilter`). GREEN: filter unit tests + `SecurityHeadersIntegrationTest` (UI, `/v3/api-docs`, Actuator, 404, API error); CSP tests unchanged and green.
 - End-to-end (jar, `-Xmx1024m -XX:+ExitOnOutOfMemoryError`, port 8965): real `bomb_flate_500MB.pdf` -> 200 in 0.10 s, pdfa `NOT_VALIDATED` `DOCUMENT_TOO_COMPLEX`, `/actuator/health` UP, heap used 29 MB after GC (211 MB before); demo `contrato-firmado.pdf` -> VALID, same report as before except permission order and timestamp; `checkRevocation=notabool` -> 400 `invalid-parameter`; nosniff and no-referrer on `/`, `/actuator/health`, 404 and the 400. An ObjStm bomb (900 MB inflated) did not crash the JVM (200, 4.6 s).
 - Checks: `./mvnw -B verify` green, 379 tests (354 before), ArchUnit green.
+- Deployed master 52e8646 to the VPS (backup `~/pdf-validator.bak-20260930-0844`): over HTTPS the real 500 MB bomb returns 200 in 0.9 s with PDF/A `NOT_VALIDATED` (`DOCUMENT_TOO_COMPLEX`), health UP, container restarts=0, OOMKilled=false; `checkRevocation=notabool` -> 400; `nosniff`, `no-referrer`, HSTS and CSP present on `/`.
 
 ## Next step
-T18 done on branch `fix/security-hardening-1` (4 work-unit commits, not pushed; PR and VPS redeploy are the user's call). Afterwards: optional T14 TSL auto-load; optional T12f follow-ups; open from T18: per-endpoint rate limiting and any other findings of the audit not in block 1.
-## T17 Code quality tooling
-Objective: add static analysis, a coverage ratchet, mutation testing and CodeQL, and measure how the code scores. Report-only for SpotBugs/PMD; JaCoCo check fails the build. No production code changes; findings are reported, not fixed.
-Branch `feat/quality-tools` (worktree `validador-worktrees/quality-tools`). Route: delegated direct (single writer). TDD: build tooling only, ordinary functional checks.
-- [x] T17a SpotBugs 4.10.4 (plugin 4.10.4.1) + FindSecBugs 1.14.0, verify phase, failOnError=false.
-- [x] T17b PMD 7.28.0 (plugin 3.28.0; pmd-core/pmd-java pinned so Java 25 parses) + CPD, `config/pmd/ruleset.xml` (quickstart + complexity rules), failOnViolation=false.
-- [x] T17c JaCoCo `check` (BUNDLE): line 0.88, branch 0.75.
-- [x] T17d PIT 1.30.0 + pitest-junit5-plugin 1.2.3 in profile `mutation`; nothing excluded.
-- [x] T17e `.github/workflows/codeql.yml` (java-kotlin, manual build, Temurin 25, `github/codeql-action@v4`, push/PR to master + weekly); CI uploads `quality-reports` artifact.
-Checks: `./mvnw -B verify` green (354 tests, ~45 s before and after); negative test of the ratchet (`-Djacoco.min.line=0.95` -> "Rule violated").
-- Evidence: JaCoCo measured line 89.99 % (1835/2039), branch 77.46 % (598/772) (a first attempt with line 0.90 failed the build at 0.89, floor lowered to 0.88). SpotBugs 24 findings (Medium threshold): 20 EI_EXPOSE_REP/REP2 in 7 DTO records, NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE PdfAnalysisController:89, UNSAFE_HASH_EQUALS CmsSignatureVerification:270, DMI_RANDOM_USED_ONLY_ONCE OcspClient:101, UNENCRYPTED_SOCKET PinnedHttpClient:87. PMD 32 violations (CyclomaticComplexity 11, PreserveStackTrace 5, SimplifyBooleanReturns 3, ...); CPD 1 duplicate (PdfBoxDocumentReader:102-122 vs PreflightPdfaValidator:172-190). PIT: 937 mutants, 74 % killed, test strength 82 %, line coverage 89 %, ~6 min; weakest AdapterConfiguration 0 %, OcspClient 43 %, CrlClient 52 %, PreflightPdfaValidator 59 %, PinnedHttpClient 62 %.
-- CodeQL: docs list Java 7 to 26 as supported, so Java 25 is covered by the current CLI (v2.27.1); `codeql-action` latest major is v4 (used). The workflow has not run on GitHub yet.
-- Pending: user decides which findings to fix and which gating to enable.
-
-## Next step
-T17 done on `feat/quality-tools` (not pushed). User decides which SpotBugs/PMD findings to fix and which gates to enable; then T16/T17 PRs. Optional T14 TSL auto-load; optional T12f follow-ups.
+T17 (PR #20) and T18 (PR #21) merged into master (52e8646) and deployed to the VPS; the 500 MB bomb now returns 200 with PDF/A NOT_VALIDATED (DOCUMENT_TOO_COMPLEX), no container restart. Next: security block 2 (trusted-timestamp validation time, T19), then resource caps and revocation budget from the audit; optional T14 TSL auto-load; optional T12f follow-ups.
