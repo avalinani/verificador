@@ -66,6 +66,8 @@ class SignatureTimestampVerifierTest {
         assertThat(result.signatureValid()).isFalse();
         assertThat(result.noteOptional()).isPresent();
         assertThat(result.note()).contains("Malformed");
+        // T23a: fixed text only -- no parser/exception detail reaches the report.
+        assertThat(result.note()).isEqualTo("Malformed RFC 3161 timestamp token");
     }
 
     @Test
@@ -98,6 +100,9 @@ class SignatureTimestampVerifierTest {
         assertThat(result.isPresent()).isTrue();
         assertThat(result.noteOptional()).isPresent();
         assertThat(result.note()).contains("timeStamping");
+        // T23a: the signature failure is reported with a fixed text, never BC's own message.
+        assertThat(result.note()).contains("TSA signature verification failed");
+        assertThat(result.note()).doesNotContain("failed:").doesNotContain("certificate hash");
         assertThat(result.tsaTimeStampingEku()).isFalse();
         assertThat(result.trusted()).isFalse();
     }
@@ -174,7 +179,23 @@ class SignatureTimestampVerifierTest {
                 SignatureTimestampVerifier.mapTsaCertificate(certificate);
 
         assertThat(mapping.certificateInfo()).isNull();
-        assertThat(mapping.failureNote()).contains("DER-encode");
+        assertThat(mapping.failureNote()).isEqualTo("TSA certificate data could not be mapped");
+    }
+
+    /** T23a: an exception whose message carries attacker-style text never reaches the note. */
+    @Test
+    void aTsaCertificateMappingFailureNeverExposesTheExceptionMessage() {
+        X509Certificate certificate = mock(X509Certificate.class);
+        when(certificate.getSubjectX500Principal())
+                .thenThrow(new IllegalStateException("MARKER\ncom.evil.FakeException: injected"));
+
+        SignatureTimestampVerifier.CertificateMapping mapping =
+                SignatureTimestampVerifier.mapTsaCertificate(certificate);
+
+        assertThat(mapping.certificateInfo()).isNull();
+        assertThat(mapping.failureNote())
+                .isEqualTo("TSA certificate data could not be mapped")
+                .doesNotContain("MARKER").doesNotContain("FakeException").doesNotContain("\n");
     }
 
     @Test
@@ -220,5 +241,15 @@ class SignatureTimestampVerifierTest {
                 signerInformation.getUnsignedAttributes().get(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken);
         ContentInfo contentInfo = ContentInfo.getInstance(attribute.getAttributeValues()[0]);
         return new TimeStampToken(contentInfo);
+    }
+
+    /** T23a: the log copy of a failure is one flat line, so hostile parser text cannot forge log entries. */
+    @Test
+    void logTextOfAFailureIsFlattenedToOneLine() {
+        String logged = SignatureTimestampVerifier.sanitizeForLog(
+                new IllegalStateException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000" + "x".repeat(1000)));
+
+        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000");
+        assertThat(logged).contains("java.lang.IllegalStateException: MARKER").hasSizeLessThanOrEqualTo(303);
     }
 }

@@ -56,6 +56,19 @@ class PreflightPdfaValidatorTest {
         assertThat(report.issues()).isNotEmpty();
     }
 
+    /** T23a: parser failures are reported with fixed texts only, never the parser's own message. */
+    @Test
+    void parserFailureTextNeverReachesTheReport() throws Exception {
+        PdfaReport report = validator.validate(TestPdfFactory.corrupt());
+
+        assertThat(report.issues()).extracting(PdfaIssue::message).allSatisfy(message ->
+                assertThat(message).isIn(
+                        "The document declares a PDF header but could not be parsed",
+                        "The document declares a PDF header but could not be probed for encryption",
+                        "PDF/A-1b validation failed",
+                        "PDF/A-1b validation could not parse the document"));
+    }
+
     @Test
     void encryptedInputIsNotValidatedRatherThanThrowing() throws Exception {
         byte[] pdf = TestPdfFactory.encrypted("owner-secret", "user-secret");
@@ -228,5 +241,15 @@ class PreflightPdfaValidatorTest {
 
         assertThat(report.issues().stream().filter(issue -> !issue.code().equals("TRUNCATED")).count())
                 .isLessThanOrEqualTo(1);
+    }
+
+    /** T23a: the log copy of a failure is one flat line, so hostile parser text cannot forge log entries. */
+    @Test
+    void logTextOfAFailureIsFlattenedToOneLine() {
+        String logged = PreflightPdfaValidator.sanitizeForLog(
+                new java.io.IOException("MARKER\r\n2026-01-01 FORGED ENTRY\u0000" + "x".repeat(1000)));
+
+        assertThat(logged).doesNotContain("\n").doesNotContain("\r").doesNotContain("\u0000");
+        assertThat(logged).contains("java.io.IOException: MARKER").hasSizeLessThanOrEqualTo(303);
     }
 }

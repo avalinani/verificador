@@ -94,8 +94,25 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
     private static final Pattern PDF_HEADER = Pattern.compile("%PDF-\\d\\.\\d");
     private static final int HEADER_SEARCH_WINDOW = 1024;
 
+    private static final System.Logger LOGGER = System.getLogger(PreflightPdfaValidator.class.getName());
+
     private final DecodedSizeGuard.Limits limits;
     private final int maxIssues;
+
+    /**
+     * Logs the full failure server-side (T23a) so the report can carry a fixed text only. Parser messages can echo
+     * attacker-controlled document content, so line breaks are replaced and the length is capped before logging
+     * (no log-line forging); the stack trace is deliberately not logged. Package-private for direct unit testing.
+     */
+    static void logFailure(String what, Throwable failure) {
+        LOGGER.log(System.Logger.Level.WARNING, () -> what + ": " + sanitizeForLog(failure));
+    }
+
+    static String sanitizeForLog(Throwable failure) {
+        String text = failure.getClass().getName() + ": " + failure.getMessage();
+        String flat = text.replaceAll("\\p{Cntrl}+", " ");
+        return flat.length() > 300 ? flat.substring(0, 300) + "..." : flat;
+    }
 
     public PreflightPdfaValidator() {
         this(DecodedSizeGuard.Limits.DEFAULT);
@@ -139,16 +156,18 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
             // Declares a PDF header but is otherwise broken: report, never
             // throw (see the class Javadoc for why this differs from
             // PdfBoxDocumentReader's own, broader "unreadable" case).
+            logFailure("PDF/A probe could not parse the document", e);
             return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED",
-                    "The document declares a PDF header but could not be parsed: " + e.getMessage());
+                    "The document declares a PDF header but could not be parsed");
         } catch (RuntimeException e) {
             // T07b: plain PDFBox parsing (unlike preflight's own parse below)
             // is not otherwise guarded here, so a hostile/malformed document
             // that trips an unchecked exception during this cheap probe
             // (rather than an IOException) must not escape and abort the
             // whole analysis either.
+            logFailure("PDF/A probe failed unexpectedly", e);
             return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED",
-                    "The document declares a PDF header but could not be probed for encryption: " + e);
+                    "The document declares a PDF header but could not be probed for encryption");
         }
 
         try (RandomAccessRead source = new RandomAccessReadBuffer(pdf)) {
@@ -172,7 +191,8 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
             // analysis: any preflight-internal failure beyond a genuinely
             // unreadable PDF (excluded above, by isEncrypted()/the throw in
             // ensureParseable-equivalent below) is reported, never thrown.
-            return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED", "PDF/A-1b validation failed: " + e);
+            logFailure("PDF/A-1b validation failed", e);
+            return notValidated(PdfaDeclaration.NONE, "NOT_VALIDATED", "PDF/A-1b validation failed");
         }
     }
 
@@ -226,8 +246,8 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
         if (!issues.isEmpty()) {
             return issues;
         }
-        return List.of(new PdfaIssue("NOT_VALIDATED",
-                "PDF/A-1b validation could not parse the document: " + e.getMessage()));
+        logFailure("PDF/A-1b syntax validation could not parse the document", e);
+        return List.of(new PdfaIssue("NOT_VALIDATED", "PDF/A-1b validation could not parse the document"));
     }
 
     /**
