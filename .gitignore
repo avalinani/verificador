@@ -64,3 +64,6 @@ replay_pid*
 
 # Keep the Maven wrapper jar despite *.jar above
 !.mvn/wrapper/maven-wrapper.jar
+
+# Local browser-automation output (screenshots, snapshots)
+.playwright-mcp/
