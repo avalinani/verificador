@@ -28,10 +28,12 @@ import org.apache.xmpbox.xml.XmpParsingException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -79,21 +81,36 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
      * systemic problem (e.g. every page missing the same required resource)
      * can otherwise produce thousands of near-duplicate {@code preflight}
      * errors. Exact duplicates (same code and message) are also collapsed
-     * to one entry before this cap is applied.
+     * to one entry as they are collected. Default; configurable through {@code pdfvalidator.analysis.max-pdfa-issues}.
      */
     static final int MAX_ISSUES = 200;
+
+    /**
+     * How many distinct omitted issues are remembered to report an exact omitted count (T20). Past it the
+     * marker says "at least N", so memory stays bounded whatever the number of distinct errors.
+     */
+    private static final int MAX_TRACKED_OMITTED = 1000;
 
     private static final Pattern PDF_HEADER = Pattern.compile("%PDF-\\d\\.\\d");
     private static final int HEADER_SEARCH_WINDOW = 1024;
 
     private final DecodedSizeGuard.Limits limits;
+    private final int maxIssues;
 
     public PreflightPdfaValidator() {
         this(DecodedSizeGuard.Limits.DEFAULT);
     }
 
     public PreflightPdfaValidator(DecodedSizeGuard.Limits limits) {
+        this(limits, MAX_ISSUES);
+    }
+
+    public PreflightPdfaValidator(DecodedSizeGuard.Limits limits, int maxIssues) {
         this.limits = Objects.requireNonNull(limits, "limits");
+        if (maxIssues < 1) {
+            throw new IllegalArgumentException("maxIssues must be >= 1, got: " + maxIssues);
+        }
+        this.maxIssues = maxIssues;
     }
 
     @Override
@@ -140,7 +157,7 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
             try {
                 parsed = parser.parse(Format.PDF_A1B);
             } catch (SyntaxValidationException e) {
-                return notValidated(PdfaDeclaration.NONE, syntaxErrorIssues(e));
+                return notValidated(PdfaDeclaration.NONE, syntaxErrorIssues(e, maxIssues));
             }
             try (PreflightDocument document = (PreflightDocument) parsed) {
                 PdfaDeclaration declaration = readDeclaration(document);
@@ -148,7 +165,7 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
                 if (result.isValid()) {
                     return new PdfaReport(declaration, PdfaValidationStatus.COMPLIANT, List.of());
                 }
-                return new PdfaReport(declaration, PdfaValidationStatus.NON_COMPLIANT, mapErrors(result.getErrorsList()));
+                return new PdfaReport(declaration, PdfaValidationStatus.NON_COMPLIANT, mapErrors(result.getErrorsList(), maxIssues));
             }
         } catch (IOException | RuntimeException e) {
             // A single malformed document must never abort the whole
@@ -204,8 +221,8 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
         }
     }
 
-    private static List<PdfaIssue> syntaxErrorIssues(SyntaxValidationException e) {
-        List<PdfaIssue> issues = mapErrors(e.getResult().getErrorsList());
+    private static List<PdfaIssue> syntaxErrorIssues(SyntaxValidationException e, int maxIssues) {
+        List<PdfaIssue> issues = mapErrors(e.getResult().getErrorsList(), maxIssues);
         if (!issues.isEmpty()) {
             return issues;
         }
@@ -213,19 +230,36 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
                 "PDF/A-1b validation could not parse the document: " + e.getMessage()));
     }
 
-    /** Package-private (rather than {@code private}) specifically so it can be unit-tested in isolation. */
-    static List<PdfaIssue> mapErrors(List<ValidationResult.ValidationError> errors) {
-        Map<String, PdfaIssue> deduplicated = new LinkedHashMap<>();
+    /**
+     * Deduplicates and caps the errors while collecting them (T20): at most {@code maxIssues} distinct issues are
+     * ever materialised, and the issues omitted after that are remembered only as a bounded set of keys to give
+     * an exact count ("N additional issue(s) omitted") or, past {@link #MAX_TRACKED_OMITTED}, a lower bound
+     * ("at least N ..."). Package-private (rather than {@code private}) specifically so it can be unit-tested in
+     * isolation.
+     */
+    static List<PdfaIssue> mapErrors(List<ValidationResult.ValidationError> errors, int maxIssues) {
+        Map<String, PdfaIssue> kept = new LinkedHashMap<>();
+        Set<String> omitted = new HashSet<>();
+        boolean omittedCountIsLowerBound = false;
         for (ValidationResult.ValidationError error : errors) {
             String code = error.getErrorCode();
             String message = error.getDetails() != null ? error.getDetails() : code;
-            deduplicated.putIfAbsent(code + "|" + message, new PdfaIssue(code, message));
+            String key = code + "|" + message;
+            if (kept.containsKey(key)) {
+                continue;
+            }
+            if (kept.size() < maxIssues) {
+                kept.put(key, new PdfaIssue(code, message));
+            } else if (omitted.size() < MAX_TRACKED_OMITTED) {
+                omitted.add(key);
+            } else if (!omitted.contains(key)) {
+                omittedCountIsLowerBound = true;
+            }
         }
-        List<PdfaIssue> issues = new ArrayList<>(deduplicated.values());
-        if (issues.size() > MAX_ISSUES) {
-            int omitted = issues.size() - MAX_ISSUES;
-            issues = new ArrayList<>(issues.subList(0, MAX_ISSUES));
-            issues.add(new PdfaIssue("TRUNCATED", omitted + " additional issue(s) omitted"));
+        List<PdfaIssue> issues = new ArrayList<>(kept.values());
+        if (!omitted.isEmpty()) {
+            issues.add(new PdfaIssue("TRUNCATED",
+                    (omittedCountIsLowerBound ? "at least " : "") + omitted.size() + " additional issue(s) omitted"));
         }
         return issues;
     }

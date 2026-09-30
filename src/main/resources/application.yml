@@ -58,6 +58,7 @@ pdfvalidator:
     max-signature-fields: 50      # signature fields analysed; more => ANALYSIS_INCOMPLETE, never VALID
     max-certificates-per-signature: 50 # certificates taken from one CMS
     max-chain-length: 10          # certificates linked signer-to-root when ordering a chain
+    max-pdfa-issues: 200          # distinct PDF/A issues kept; the rest become one TRUNCATED issue
 
 # Trust store used by CertificateChainValidator (PkixCertificateChainValidator)
 # to validate a signer's certificate chain. All properties are optional: the

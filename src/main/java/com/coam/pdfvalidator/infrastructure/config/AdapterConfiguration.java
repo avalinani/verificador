@@ -71,7 +71,7 @@ public class AdapterConfiguration {
 
     @Bean
     public PdfaConformanceValidator pdfaConformanceValidator(AnalysisProperties analysis) {
-        return new PreflightPdfaValidator(decodedSizeLimits(analysis));
+        return new PreflightPdfaValidator(decodedSizeLimits(analysis), analysis.maxPdfaIssues());
     }
 
     private static DecodedSizeGuard.Limits decodedSizeLimits(AnalysisProperties analysis) {

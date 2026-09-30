@@ -240,6 +240,8 @@ PDF/A es el estándar de archivo a largo plazo. `infrastructure/preflight/Prefli
 
 **Incidencias bilingües.** Cada incidencia lleva `code`, `message` (texto original en inglés de PDFBox) y `messageEs` (descripción en español o `null`). La traducción la resuelve `domain/model/PdfaIssueCatalog`, un catálogo de datos puro con una entrada por cada código `ERROR_*` de `PreflightConstants` de *preflight* 3.0.8; si un código no existe, sube por su categoría (`3.1.99` → `3.1` → `3`). Un código sin traducción (`-1`, `NOT_VALIDATED`, `TRUNCATED`) devuelve `messageEs = null` y nunca se inventa una. La interfaz muestra primero el español y debajo, en cursiva, el original en inglés (`lang="en"`).
 
+**Límite de incidencias (T20).** El informe conserva como máximo `max-pdfa-issues` incidencias distintas (200): el límite se aplica **mientras se recogen** los errores de *preflight* (antes se acumulaban todas las únicas en un mapa y solo después se recortaba). Las incidencias omitidas se resumen en una incidencia `TRUNCATED` con «N additional issue(s) omitted»; para no crecer sin límite, solo se recuerdan las primeras 1 000 omitidas distintas, y por encima el mensaje pasa a «at least N additional issue(s) omitted» (cota inferior). Nota honesta: la lista de errores original ya la guarda *preflight* en memoria antes de llamarnos; el límite acota lo que este adaptador añade encima (mapa de claves e incidencias), no esa lista.
+
 ### 2.10 Veredicto general por firma
 
 El veredicto resume en una sola palabra qué se puede concluir de cada firma, con sus motivos. `domain/policy/SignatureVerdictPolicy` (política de dominio pura) combina `IntegrityStatus`, `ChainStatus` y `RevocationStatus` de cada firma ya enriquecida en un `SignatureVerdict`, más un `OverallVerdict` a nivel de documento, según esta tabla (de arriba abajo; la primera fila que aplica decide):
@@ -571,6 +573,7 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 | `pdfvalidator.analysis.max-signature-fields` | Campos de firma que se analizan; si hay más, el documento es `ANALYSIS_INCOMPLETE`, nunca `VALID` (§2.4) | `50` |
 | `pdfvalidator.analysis.max-certificates-per-signature` | Certificados tomados de un mismo CMS (§2.5) | `50` |
 | `pdfvalidator.analysis.max-chain-length` | Certificados enlazados firmante → raíz al ordenar la cadena (§2.5) | `10` |
+| `pdfvalidator.analysis.max-pdfa-issues` | Incidencias PDF/A distintas que conserva el informe; el resto se resume en `TRUNCATED` (§2.9) | `200` |
 | `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |

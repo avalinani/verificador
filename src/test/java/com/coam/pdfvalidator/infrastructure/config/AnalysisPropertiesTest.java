@@ -82,6 +82,7 @@ class AnalysisPropertiesTest {
         assertThat(props.maxSignatureFields()).isEqualTo(50);
         assertThat(props.maxCertificatesPerSignature()).isEqualTo(50);
         assertThat(props.maxChainLength()).isEqualTo(10);
+        assertThat(props.maxPdfaIssues()).isEqualTo(200);
     }
 
     @Test
@@ -89,11 +90,13 @@ class AnalysisPropertiesTest {
         AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of(
                 "pdfvalidator.analysis.max-signature-fields", "4",
                 "pdfvalidator.analysis.max-certificates-per-signature", "5",
-                "pdfvalidator.analysis.max-chain-length", "6")))
+                "pdfvalidator.analysis.max-chain-length", "6",
+                "pdfvalidator.analysis.max-pdfa-issues", "7")))
                 .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
 
         assertThat(props.maxSignatureFields()).isEqualTo(4);
         assertThat(props.maxCertificatesPerSignature()).isEqualTo(5);
         assertThat(props.maxChainLength()).isEqualTo(6);
+        assertThat(props.maxPdfaIssues()).isEqualTo(7);
     }
 }

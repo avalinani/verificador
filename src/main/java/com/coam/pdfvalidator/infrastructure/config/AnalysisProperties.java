@@ -25,6 +25,8 @@ import java.time.Duration;
  *                       {@code ANALYSIS_INCOMPLETE}, never {@code VALID} (T20)
  * @param maxCertificatesPerSignature certificates taken from one CMS signature (default 50)
  * @param maxChainLength certificates linked signer-to-root through issuer names (default 10)
+ * @param maxPdfaIssues  PDF/A issues kept in a report (default 200); the rest are summarised in a {@code TRUNCATED}
+ *                       issue, and the limit is enforced while collecting (T20)
  */
 @ConfigurationProperties(prefix = "pdfvalidator.analysis")
 public record AnalysisProperties(
@@ -37,5 +39,6 @@ public record AnalysisProperties(
         @DefaultValue("10000") int maxRevisions,
         @DefaultValue("50") int maxSignatureFields,
         @DefaultValue("50") int maxCertificatesPerSignature,
-        @DefaultValue("10") int maxChainLength) {
+        @DefaultValue("10") int maxChainLength,
+        @DefaultValue("200") int maxPdfaIssues) {
 }

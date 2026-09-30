@@ -126,7 +126,7 @@ class PreflightPdfaValidatorTest {
         }
         errors.add(new ValidationResult.ValidationError("CODE0", "detail 0")); // exact duplicate
 
-        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors);
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors, PreflightPdfaValidator.MAX_ISSUES);
 
         assertThat(issues).hasSize(PreflightPdfaValidator.MAX_ISSUES + 1);
         assertThat(issues.subList(0, PreflightPdfaValidator.MAX_ISSUES))
@@ -167,5 +167,66 @@ class PreflightPdfaValidatorTest {
 
         assertThat(report.status()).isEqualTo(PdfaValidationStatus.NOT_VALIDATED);
         assertThat(report.issues()).extracting(PdfaIssue::code).containsExactly("DOCUMENT_TOO_COMPLEX");
+    }
+
+    // ---- T20: the issue limit is enforced while collecting ----
+
+    private static List<ValidationResult.ValidationError> errors(String... codes) {
+        List<ValidationResult.ValidationError> list = new ArrayList<>();
+        for (String code : codes) {
+            list.add(new ValidationResult.ValidationError(code, "detail " + code));
+        }
+        return list;
+    }
+
+    @Test
+    void theIssueLimitIsConfigurableAndCountsOmittedIssues() {
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors("A", "B", "C", "D", "E", "F"), 3);
+
+        assertThat(issues).extracting(PdfaIssue::code).containsExactly("A", "B", "C", "TRUNCATED");
+        assertThat(issues.get(3).message()).isEqualTo("3 additional issue(s) omitted");
+    }
+
+    @Test
+    void repeatedOccurrencesOfAnOmittedIssueAreCountedOnce() {
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors("A", "B", "C", "C", "C", "A"), 2);
+
+        assertThat(issues).extracting(PdfaIssue::code).containsExactly("A", "B", "TRUNCATED");
+        assertThat(issues.get(2).message()).isEqualTo("1 additional issue(s) omitted");
+    }
+
+    @Test
+    void noMarkerIsAddedWhenEveryLaterErrorRepeatsAKeptIssue() {
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors("A", "B", "A", "B", "A"), 2);
+
+        assertThat(issues).extracting(PdfaIssue::code).containsExactly("A", "B");
+    }
+
+    /**
+     * The omitted issues are tracked only up to a fixed bound (so a report with millions of distinct errors
+     * cannot grow a second unbounded set): beyond it the marker says "at least".
+     */
+    @Test
+    void theOmittedCountIsALowerBoundOnceTheTrackingBoundIsExceeded() {
+        String[] codes = new String[1300];
+        for (int i = 0; i < codes.length; i++) {
+            codes[i] = "CODE" + i;
+        }
+
+        List<PdfaIssue> issues = PreflightPdfaValidator.mapErrors(errors(codes), 3);
+
+        assertThat(issues).hasSize(4);
+        assertThat(issues.get(3).code()).isEqualTo("TRUNCATED");
+        assertThat(issues.get(3).message()).isEqualTo("at least 1000 additional issue(s) omitted");
+    }
+
+    @Test
+    void aValidatorBuiltWithAnIssueLimitAppliesItToItsReports() throws Exception {
+        PreflightPdfaValidator capped = new PreflightPdfaValidator(DecodedSizeGuard.Limits.DEFAULT, 1);
+
+        PdfaReport report = capped.validate(TestPdfFactory.unsigned());
+
+        assertThat(report.issues().stream().filter(issue -> !issue.code().equals("TRUNCATED")).count())
+                .isLessThanOrEqualTo(1);
     }
 }
