@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Project PMD ruleset: PMD's curated "quickstart" set (widely-agreed rules with low noise)
+     plus a few rules excluded because they conflict with the project's conventions.
+     Report-only for now (failOnViolation=false in pom.xml). -->
+<ruleset name="pdf-validator"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+  <description>Quickstart ruleset for the PDF validator.</description>
+
+  <rule ref="rulesets/java/quickstart.xml"/>
+
+  <!-- Complexity and size, which quickstart leaves out. -->
+  <rule ref="category/java/design.xml/CyclomaticComplexity"/>
+  <rule ref="category/java/design.xml/CognitiveComplexity"/>
+  <rule ref="category/java/design.xml/NPathComplexity"/>
+  <rule ref="category/java/design.xml/GodClass"/>
+  <rule ref="category/java/design.xml/ExcessiveParameterList"/>
+  <rule ref="category/java/design.xml/NcssCount"/>
+</ruleset>

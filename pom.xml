@@ -27,6 +27,8 @@
     <spotbugs.plugin.version>4.10.4.1</spotbugs.plugin.version>
     <spotbugs.version>4.10.4</spotbugs.version>
     <findsecbugs.version>1.14.0</findsecbugs.version>
+    <pmd.plugin.version>3.28.0</pmd.plugin.version>
+    <pmd.version>7.28.0</pmd.version>
     <jacoco.min.branch>0.75</jacoco.min.branch>
   </properties>
 
@@ -196,6 +198,46 @@
             <phase>verify</phase>
             <goals>
               <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!-- PMD (bad practices, complexity, design) + CPD (copy/paste detection), report-only
+             for now. Reports: target/pmd.xml, target/site/pmd.html, target/cpd.xml. PMD is
+             pinned to a release that parses Java 25. Ruleset: config/pmd/ruleset.xml. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-pmd-plugin</artifactId>
+        <version>${pmd.plugin.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>net.sourceforge.pmd</groupId>
+            <artifactId>pmd-core</artifactId>
+            <version>${pmd.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>net.sourceforge.pmd</groupId>
+            <artifactId>pmd-java</artifactId>
+            <version>${pmd.version}</version>
+          </dependency>
+        </dependencies>
+        <configuration>
+          <targetJdk>${java.version}</targetJdk>
+          <rulesets>
+            <ruleset>config/pmd/ruleset.xml</ruleset>
+          </rulesets>
+          <printFailingErrors>false</printFailingErrors>
+          <failOnViolation>false</failOnViolation>
+          <minimumTokens>100</minimumTokens>
+          <excludeFromFailureFile></excludeFromFailureFile>
+        </configuration>
+        <executions>
+          <execution>
+            <id>pmd-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+              <goal>cpd-check</goal>
             </goals>
           </execution>
         </executions>
