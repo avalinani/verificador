@@ -7,6 +7,7 @@ import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
 import com.coam.pdfvalidator.domain.port.RevocationChecker;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.SignatureLimits;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
 import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
 import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
@@ -63,8 +64,9 @@ public class AdapterConfiguration {
     }
 
     @Bean
-    public SignatureVerifier signatureVerifier() {
-        return new BcSignatureVerifier();
+    public SignatureVerifier signatureVerifier(AnalysisProperties analysis) {
+        return new BcSignatureVerifier(new SignatureLimits(
+                analysis.maxSignatureFields(), analysis.maxCertificatesPerSignature(), analysis.maxChainLength()));
     }
 
     @Bean

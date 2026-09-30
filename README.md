@@ -128,10 +128,13 @@ Una firma PDF no firma el fichero entero, sino los bytes indicados en el array *
 - La cadena de certificados se extrae y se informa siempre que el CMS se pudo parsear, aunque la verificación criptográfica falle.
 - `INVALID_SIGNATURE` y `UNSUPPORTED` siempre llevan un motivo legible (`anomaly`), con texto fijo y no sensible (*"messageDigest does not match the signed bytes"*, *"CMS container could not be parsed"*, ...). El detalle real de una excepción inesperada se registra por log (`System.Logger`) y nunca llega al cliente.
 
+**Límite de campos de firma (T20).** `BcSignatureVerifier` recorre el árbol de campos del formulario de forma perezosa y analiza como mucho `max-signature-fields` campos con firma (50). Los siguientes solo se cuentan (`SignatureExtraction.skippedFields`); como la firma decisiva podría esconderse tras el límite, el caso de uso añade un `SectionError` de la sección `SIGNATURES` («N signature field(s) were not analysed…») y el veredicto del documento pasa a `ANALYSIS_INCOMPLETE`, **nunca** `VALID`. Las firmas no analizadas tampoco pueden hacer de «firma posterior» que exima a una anterior modificada (§2.10): no están en la lista.
+
 ### 2.5 Extracción de certificados
 
 Para saber quién firmó hace falta extraer del CMS el certificado del firmante y los de su cadena. Para cada firma con CMS verificable, `BcSignatureVerifier` obtiene el certificado del firmante y todos los incluidos (normalmente firmante + emisor) y los mapea a `CertificateInfo`: sujeto y emisor, número de serie en hexadecimal, fechas de validez, algoritmo, certificado en DER. La cadena se ordena **firmante primero**, siguiendo el emisor de cada certificado hasta una raíz autofirmada o hasta que el siguiente emisor no esté en el propio CMS.
 
+- **Límites (T20).** De un mismo CMS se toman como máximo `max-certificates-per-signature` certificados (50): primero el del firmante y luego el resto en el orden del contenedor; si hay más, se descartan (una cadena que así quede incompleta solo puede acabar en `NOT_ADMITTED`, nunca en confianza) y `anomaly` lo dice («signature carries N certificates; only M were considered…»). La ordenación firmante → raíz sigue los emisores como mucho `max-chain-length` certificados (10), de modo que el coste ya no crece de forma cuadrática con un CMS lleno de certificados.
 - **Nombres legibles.** Sujeto y emisor se formatean con Bouncy Castle (`X500Name` + `BCStyle`), no con el RFC 2253 de la JDK, que vuelca atributos que no conoce (p. ej. `emailAddress`) como `#16<hex>`. El `commonName` se extrae aparte del atributo `CN` (sin escapes RFC 2253, también con RDN multivalor) y vive en el dominio porque `api` no puede depender de `infrastructure`.
 - **URLs de revocación.** De cada certificado se leen las extensiones *Authority Information Access* (OCSP) y *CRL Distribution Points*. Una extensión ausente o mal formada no invalida el certificado: se informa sin URLs.
 
@@ -256,7 +259,7 @@ El veredicto resume en una sola palabra qué se puede concluir de cada firma, co
 | Cadena `TRUSTED`, revocación solicitada, `UNKNOWN` | ⚠️ `NOT_ADMITTED` | `REVOCATION_UNKNOWN` |
 | Cadena `TRUSTED`, revocación solicitada, sigue en `NOT_CHECKED` (p. ej. ruta validada vacía) | ⚠️ `NOT_ADMITTED` | `REVOCATION_UNAVAILABLE` |
 
-`OverallVerdict` (documento) es el peor veredicto entre las firmas (`INVALID` > `NOT_ADMITTED` > `VALID`), `NO_SIGNATURES` si no hay ninguna, o `ANALYSIS_INCOMPLETE` cuando la sección `SIGNATURES` falló de forma inesperada (`sectionErrors`): una lista vacía por ese fallo nunca se confunde con "documento sin firmar". `PdfAnalysisReport.modifiedAfterLastSignature()` expone aparte el hecho estructural de que ninguna firma alcanza el final real del fichero.
+`OverallVerdict` (documento) es el peor veredicto entre las firmas (`INVALID` > `NOT_ADMITTED` > `VALID`), `NO_SIGNATURES` si no hay ninguna, o `ANALYSIS_INCOMPLETE` cuando la sección `SIGNATURES` falló de forma inesperada o quedaron campos de firma sin analizar por el límite `max-signature-fields` (`sectionErrors`, T20): una lista vacía por ese fallo nunca se confunde con "documento sin firmar". `PdfAnalysisReport.modifiedAfterLastSignature()` expone aparte el hecho estructural de que ninguna firma alcanza el final real del fichero.
 
 **Decisiones explícitas:**
 
@@ -565,6 +568,9 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 | `pdfvalidator.analysis.max-pages` | Páginas de las que se devuelve detalle; el resto solo se cuentan (`pagesTruncated`, §2.3) | `1000` |
 | `pdfvalidator.analysis.max-revision-markers` | Apariciones de cada palabra clave de revisión (`stream`, `startxref`, `/Prev`) que se recogen; por encima, el número de revisiones es una cota inferior (`revisionCountLowerBound`, §2.3) | `1000000` |
 | `pdfvalidator.analysis.max-revisions` | Secciones `xref` que sigue el recorrido de revisiones; por encima, cota inferior | `10000` |
+| `pdfvalidator.analysis.max-signature-fields` | Campos de firma que se analizan; si hay más, el documento es `ANALYSIS_INCOMPLETE`, nunca `VALID` (§2.4) | `50` |
+| `pdfvalidator.analysis.max-certificates-per-signature` | Certificados tomados de un mismo CMS (§2.5) | `50` |
+| `pdfvalidator.analysis.max-chain-length` | Certificados enlazados firmante → raíz al ordenar la cadena (§2.5) | `10` |
 | `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |

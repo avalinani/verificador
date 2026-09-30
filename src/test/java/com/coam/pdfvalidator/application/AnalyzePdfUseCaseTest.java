@@ -20,6 +20,7 @@ import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
+import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
@@ -672,6 +673,82 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
         assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.INVALID);
         assertThat(report.modifiedAfterLastSignature()).isTrue();
+    }
+
+    // ---- T20: signature fields skipped by the verifier's cap ----
+
+    /** A verifier that analysed {@code signatures} and skipped {@code skipped} further fields (cap reached). */
+    private static final class CappedSignatureVerifier implements SignatureVerifier {
+        private final List<SignatureReport> signatures;
+        private final int skipped;
+
+        CappedSignatureVerifier(List<SignatureReport> signatures, int skipped) {
+            this.signatures = signatures;
+            this.skipped = skipped;
+        }
+
+        @Override
+        public List<SignatureReport> verify(byte[] pdf) {
+            return signatures;
+        }
+
+        @Override
+        public SignatureExtraction extract(byte[] pdf) {
+            return new SignatureExtraction(signatures, skipped);
+        }
+    }
+
+    private PdfAnalysisReport analyzeWithSkipped(List<SignatureReport> signatures, int skipped) {
+        return useCase(
+                new FakePdfDocumentReader(STRUCTURE, SECURITY, PdfaDeclaration.NONE),
+                new CappedSignatureVerifier(signatures, skipped),
+                new FakeCertificateChainValidator(ChainStatus.TRUSTED),
+                new FakePdfaConformanceValidator(COMPLIANT_PDFA_REPORT),
+                new FakeRevocationChecker(new RevocationStatus(RevocationState.GOOD, "OCSP", null)))
+                .analyze("t.pdf", CONTENT, new AnalysisOptions(true));
+    }
+
+    /**
+     * SECURITY (T20): a fully valid analysed signature must not make the document VALID while other signature
+     * fields were left unanalysed -- the decisive (invalid) signature could be hidden behind the cap.
+     */
+    @Test
+    void aDocumentWithSkippedSignatureFieldsIsNeverOverallValid() {
+        SignatureReport valid =
+                signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+
+        PdfAnalysisReport report = analyzeWithSkipped(List.of(valid), 2);
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.VALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.ANALYSIS_INCOMPLETE);
+        assertThat(report.sectionErrors()).hasSize(1);
+        assertThat(report.sectionErrors().get(0).section()).isEqualTo(AnalysisSection.SIGNATURES);
+        assertThat(report.sectionErrors().get(0).message()).contains("2 signature field(s) were not analysed");
+    }
+
+    @Test
+    void aSkippedLaterSignatureNeverCoversAnEarlierModification() {
+        SignatureReport modified = new SignatureReport(
+                "Signature1", "adbe.pkcs7.detached", ByteRangeCoverage.of(0, 10, 10, 5, 100),
+                IntegrityStatus.MODIFIED_AFTER_SIGNING, FIXED_NOW, TimestampInfo.absent(),
+                List.of(certificate("signer"), certificate("ca")), ChainStatus.NOT_CHECKED,
+                RevocationStatus.notChecked(), null);
+
+        PdfAnalysisReport report = analyzeWithSkipped(List.of(modified), 1);
+
+        assertThat(report.signatures().get(0).verdict()).isEqualTo(SignatureVerdict.INVALID);
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.ANALYSIS_INCOMPLETE);
+    }
+
+    @Test
+    void aDocumentWithoutSkippedFieldsKeepsItsVerdictAndHasNoSectionError() {
+        SignatureReport valid =
+                signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(certificate("signer"), certificate("ca")));
+
+        PdfAnalysisReport report = analyzeWithSkipped(List.of(valid), 0);
+
+        assertThat(report.overallVerdict()).isEqualTo(OverallVerdict.VALID);
+        assertThat(report.sectionErrors()).isEmpty();
     }
 
     // ---- PDF/A-2/3 declaration ----

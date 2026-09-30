@@ -73,4 +73,27 @@ class AnalysisPropertiesTest {
         assertThat(props.maxRevisionMarkers()).isEqualTo(20);
         assertThat(props.maxRevisions()).isEqualTo(30);
     }
+
+    @Test
+    void signatureCapsDefaultToSafeValues() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of()))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxSignatureFields()).isEqualTo(50);
+        assertThat(props.maxCertificatesPerSignature()).isEqualTo(50);
+        assertThat(props.maxChainLength()).isEqualTo(10);
+    }
+
+    @Test
+    void signatureCapsAreConfigurable() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of(
+                "pdfvalidator.analysis.max-signature-fields", "4",
+                "pdfvalidator.analysis.max-certificates-per-signature", "5",
+                "pdfvalidator.analysis.max-chain-length", "6")))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxSignatureFields()).isEqualTo(4);
+        assertThat(props.maxCertificatesPerSignature()).isEqualTo(5);
+        assertThat(props.maxChainLength()).isEqualTo(6);
+    }
 }

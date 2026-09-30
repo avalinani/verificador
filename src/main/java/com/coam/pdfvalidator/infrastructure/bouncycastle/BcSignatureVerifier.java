@@ -6,12 +6,15 @@ import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.IntegrityStatus;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
+import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
+import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
+import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
@@ -49,20 +52,62 @@ public final class BcSignatureVerifier implements SignatureVerifier {
             "adbe.pkcs7.detached", "ETSI.CAdES.detached");
 
     private final Provider bcProvider = new BouncyCastleProvider();
+    private final SignatureLimits limits;
+
+    public BcSignatureVerifier() {
+        this(SignatureLimits.DEFAULT);
+    }
+
+    public BcSignatureVerifier(SignatureLimits limits) {
+        this.limits = java.util.Objects.requireNonNull(limits, "limits");
+    }
 
     @Override
     public List<SignatureReport> verify(byte[] pdf) {
+        return extract(pdf).signatures();
+    }
+
+    /**
+     * Analyses at most {@link SignatureLimits#maxSignatureFields()} signature fields (T20): the form's field
+     * tree is walked lazily instead of materialising every signature field first, and each further field that
+     * does hold a signature is only counted, never analysed. The caller must treat a positive {@code
+     * skippedFields} as an incomplete analysis.
+     */
+    @Override
+    public SignatureExtraction extract(byte[] pdf) {
         try (PDDocument document = Loader.loadPDF(pdf)) {
             List<SignatureReport> reports = new ArrayList<>();
-            for (PDSignatureField field : document.getSignatureFields()) {
-                SignatureReport report = evaluateField(pdf, field);
-                if (report != null) {
-                    reports.add(report);
+            int skipped = 0;
+            int analysed = 0;
+            PDAcroForm acroForm = document.getDocumentCatalog().getAcroForm(null);
+            if (acroForm != null) {
+                for (PDField field : acroForm.getFieldTree()) {
+                    if (!(field instanceof PDSignatureField signatureField)) {
+                        continue;
+                    }
+                    if (analysed < limits.maxSignatureFields()) {
+                        SignatureReport report = evaluateField(pdf, signatureField);
+                        if (report != null) {
+                            reports.add(report);
+                            analysed++;
+                        }
+                    } else if (holdsASignature(signatureField)) {
+                        skipped++;
+                    }
                 }
             }
-            return List.copyOf(reports);
+            return new SignatureExtraction(reports, skipped);
         } catch (IOException e) {
             throw new InvalidPdfException("Failed to parse PDF for signature verification", e);
+        }
+    }
+
+    /** Whether a field beyond the cap has something to hide; a field that cannot even be read is assumed to. */
+    private static boolean holdsASignature(PDSignatureField field) {
+        try {
+            return field.getSignature() != null;
+        } catch (RuntimeException e) {
+            return true;
         }
     }
 
@@ -144,7 +189,7 @@ public final class BcSignatureVerifier implements SignatureVerifier {
         }
 
         CmsSignatureVerification.Result cms =
-                CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider);
+                CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider, limits);
 
         // A CMS that parsed must not be reported with an empty chain merely
         // because verification failed, or because one certificate's data

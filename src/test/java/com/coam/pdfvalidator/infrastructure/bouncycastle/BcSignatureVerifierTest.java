@@ -5,6 +5,7 @@ import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.IntegrityStatus;
 import com.coam.pdfvalidator.domain.model.RevocationState;
+import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.fixtures.TestPdfFactory;
@@ -15,6 +16,8 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.time.Instant;
 import java.util.List;
 
@@ -398,4 +401,75 @@ class BcSignatureVerifierTest {
     // token's certificate (see SignatureTimestampVerifierTest and
     // TestPki#reissueWithoutTimestampingEku), which needs BC types this
     // black-box test does not otherwise depend on.
+
+    // ---- T20: resource caps ----
+
+    private static byte[] signedTimes(int signatures) throws Exception {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        byte[] pdf = TestPdfSigner.createSimplePdf();
+        for (int i = 0; i < signatures; i++) {
+            pdf = TestPdfSigner.sign(pdf, identity);
+        }
+        return pdf;
+    }
+
+    /**
+     * Before T20 every signature field of the document was analysed however many there were: a hostile file
+     * with thousands of fields cost one CMS verification (and one report) each.
+     */
+    @Test
+    void signatureFieldsBeyondTheCapAreNotAnalysedButAreCounted() throws Exception {
+        BcSignatureVerifier capped = new BcSignatureVerifier(new SignatureLimits(3, 50, 10));
+
+        SignatureExtraction extraction = capped.extract(signedTimes(5));
+
+        assertThat(extraction.signatures()).hasSize(3);
+        assertThat(extraction.skippedFields()).isEqualTo(2);
+        assertThat(capped.verify(signedTimes(5))).hasSize(3);
+    }
+
+    @Test
+    void aDocumentWithinTheSignatureCapSkipsNothing() throws Exception {
+        BcSignatureVerifier capped = new BcSignatureVerifier(new SignatureLimits(3, 50, 10));
+
+        SignatureExtraction extraction = capped.extract(signedTimes(3));
+
+        assertThat(extraction.signatures()).hasSize(3);
+        assertThat(extraction.skippedFields()).isZero();
+    }
+
+    @Test
+    void certificatesBeyondTheCapAreDroppedKeepingTheSignerFirstAndSaySo() throws Exception {
+        TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
+        List<X509Certificate> bloated = new ArrayList<>(identity.chain());
+        for (int i = 0; i < 5; i++) {
+            bloated.addAll(TestPki.issueSigningIdentity().chain());
+        }
+        TestPki.IssuedIdentity withManyCertificates = new TestPki.IssuedIdentity(
+                identity.rootCertificate(), identity.endEntityCertificate(), identity.endEntityPrivateKey(), bloated);
+        byte[] pdf = TestPdfSigner.sign(TestPdfSigner.createSimplePdf(), withManyCertificates);
+
+        assertThat(new BcSignatureVerifier().verify(pdf).get(0).chain()).hasSize(12);
+
+        SignatureReport report = new BcSignatureVerifier(new SignatureLimits(50, 5, 10)).verify(pdf).get(0);
+
+        assertThat(report.integrity()).isEqualTo(IntegrityStatus.INTACT);
+        assertThat(report.chain()).hasSize(5);
+        assertThat(report.chain().get(0).encoded()).isEqualTo(identity.endEntityCertificate().getEncoded());
+        assertThat(report.anomaly()).contains("12 certificates").contains("only 5");
+    }
+
+    @Test
+    void theChainFollowedThroughIssuersIsCapped() {
+        TestPki.ThreeTierIdentity pki = TestPki.issueThreeTierIdentity();
+        List<X509Certificate> shuffled = List.of(pki.rootCertificate(), pki.endEntityCertificate(),
+                pki.intermediateCertificate());
+
+        List<X509Certificate> full = CmsSignatureVerification.orderSignerFirst(pki.endEntityCertificate(), shuffled, 10);
+        List<X509Certificate> capped = CmsSignatureVerification.orderSignerFirst(pki.endEntityCertificate(), shuffled, 2);
+
+        assertThat(full).containsExactly(
+                pki.endEntityCertificate(), pki.intermediateCertificate(), pki.rootCertificate());
+        assertThat(capped).hasSize(3).startsWith(pki.endEntityCertificate(), pki.intermediateCertificate());
+    }
 }

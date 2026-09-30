@@ -21,6 +21,10 @@ import java.time.Duration;
  *                       1 000 000); beyond it the revision count is a lower bound (T20)
  * @param maxRevisions   cross-reference sections followed by the revision walk (default 10 000); beyond it the
  *                       revision count is a lower bound (T20)
+ * @param maxSignatureFields signature fields analysed (default 50); a document with more is reported
+ *                       {@code ANALYSIS_INCOMPLETE}, never {@code VALID} (T20)
+ * @param maxCertificatesPerSignature certificates taken from one CMS signature (default 50)
+ * @param maxChainLength certificates linked signer-to-root through issuer names (default 10)
  */
 @ConfigurationProperties(prefix = "pdfvalidator.analysis")
 public record AnalysisProperties(
@@ -30,5 +34,8 @@ public record AnalysisProperties(
         @DefaultValue("2GB") DataSize maxDecodedTotalSize,
         @DefaultValue("1000") int maxPages,
         @DefaultValue("1000000") int maxRevisionMarkers,
-        @DefaultValue("10000") int maxRevisions) {
+        @DefaultValue("10000") int maxRevisions,
+        @DefaultValue("50") int maxSignatureFields,
+        @DefaultValue("50") int maxCertificatesPerSignature,
+        @DefaultValue("10") int maxChainLength) {
 }

@@ -14,6 +14,7 @@ import com.coam.pdfvalidator.domain.model.RevocationState;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
 import com.coam.pdfvalidator.domain.model.SecurityInfo;
 import com.coam.pdfvalidator.domain.model.SectionError;
+import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
@@ -226,7 +227,17 @@ public final class AnalyzePdfUseCase {
             byte[] content, AnalysisOptions options, List<SectionError> sectionErrors) {
         List<SignatureReport> extracted;
         try {
-            extracted = signatureVerifier.verify(content);
+            SignatureExtraction extraction = signatureVerifier.extract(content);
+            extracted = extraction.signatures();
+            if (extraction.skippedFields() > 0) {
+                // T20 SECURITY: signature fields beyond the verifier's cap were not analysed. The report says so
+                // through the same mechanism as a failed section, which forces ANALYSIS_INCOMPLETE: the
+                // document must never be VALID when a decisive signature could be hiding behind the cap. The
+                // unanalysed fields are absent from `extracted`, so they can never count as the "later
+                // signature" that covers an earlier modification.
+                sectionErrors.add(new SectionError(AnalysisSection.SIGNATURES, extraction.skippedFields()
+                        + " signature field(s) were not analysed because the analysis limit was reached"));
+            }
         } catch (RuntimeException e) {
             LOGGER.log(System.Logger.Level.WARNING, "Signature verification failed unexpectedly", e);
             sectionErrors.add(new SectionError(
