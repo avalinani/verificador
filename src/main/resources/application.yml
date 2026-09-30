@@ -49,6 +49,16 @@ pdfvalidator:
   analysis:
     max-concurrent: 2
     acquire-timeout: 30s
+    # T20 resource caps against hostile PDFs: a cap never fails the request, it truncates the result and
+    # the report says so (pagesTruncated, revisionCountLowerBound, ...). Defaults shown; override with
+    # PDFVALIDATOR_ANALYSIS_MAX_PAGES etc.
+    max-pages: 1000               # pages whose details are returned (the total is still reported)
+    max-revision-markers: 1000000 # occurrences of stream/startxref//Prev collected when counting revisions
+    max-revisions: 10000          # xref sections followed by the revision walk
+    max-signature-fields: 50      # signature fields analysed; more => ANALYSIS_INCOMPLETE, never VALID
+    max-certificates-per-signature: 50 # certificates taken from one CMS
+    max-chain-length: 10          # certificates linked signer-to-root when ordering a chain
+    max-pdfa-issues: 200          # distinct PDF/A issues kept; the rest become one TRUNCATED issue
 
 # Trust store used by CertificateChainValidator (PkixCertificateChainValidator)
 # to validate a signer's certificate chain. All properties are optional: the

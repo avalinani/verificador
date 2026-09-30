@@ -50,13 +50,19 @@ import java.util.regex.Pattern;
 public class PdfBoxDocumentReader implements PdfDocumentReader {
 
     private final DecodedSizeGuard.Limits limits;
+    private final StructureLimits structureLimits;
 
     public PdfBoxDocumentReader() {
         this(DecodedSizeGuard.Limits.DEFAULT);
     }
 
     public PdfBoxDocumentReader(DecodedSizeGuard.Limits limits) {
+        this(limits, StructureLimits.DEFAULT);
+    }
+
+    public PdfBoxDocumentReader(DecodedSizeGuard.Limits limits, StructureLimits structureLimits) {
         this.limits = java.util.Objects.requireNonNull(limits, "limits");
+        this.structureLimits = java.util.Objects.requireNonNull(structureLimits, "structureLimits");
     }
 
 
@@ -70,14 +76,20 @@ public class PdfBoxDocumentReader implements PdfDocumentReader {
             PDDocumentCatalog catalog = document.getDocumentCatalog();
             String catalogVersion = catalog.getVersion();
 
+            // T20: details are read for the first maxPages pages only; the rest are merely counted, so a
+            // hostile page tree cannot build an unbounded in-memory list (nor, later, an unbounded JSON body).
             List<PageInfo> pages = new ArrayList<>();
-            int number = 1;
+            int pageCount = 0;
             for (PDPage page : document.getPages()) {
-                pages.add(readPageInfo(number++, page));
+                pageCount++;
+                if (pageCount <= structureLimits.maxPages()) {
+                    pages.add(readPageInfo(pageCount, page));
+                }
             }
 
-            int revisionCount = countRevisions(pdf);
-            return new DocumentStructure(headerVersion, catalogVersion, pages.size(), pages, revisionCount);
+            RevisionCounter.RevisionCount revisions = RevisionCounter.count(pdf, structureLimits);
+            return new DocumentStructure(headerVersion, catalogVersion, pageCount, pages, revisions.value(),
+                    pageCount > pages.size(), revisions.lowerBound());
         } catch (IOException e) {
             throw new InvalidPdfException("Failed to close PDF document after reading its structure", e);
         }
@@ -237,16 +249,6 @@ public class PdfBoxDocumentReader implements PdfDocumentReader {
         String head = new String(pdf, 0, Math.min(pdf.length, HEADER_SEARCH_WINDOW), StandardCharsets.US_ASCII);
         Matcher matcher = HEADER_VERSION.matcher(head);
         return matcher.find() ? matcher.group(1) : null;
-    }
-
-    /**
-     * Counts incremental-update revisions via {@link RevisionCounter}, which
-     * walks the cross-reference chain rather than naively counting
-     * {@code %%EOF} markers (see its Javadoc for why that over-reports
-     * linearized files).
-     */
-    private static int countRevisions(byte[] pdf) {
-        return RevisionCounter.count(pdf);
     }
 
     private static PDDocument load(byte[] pdf) {

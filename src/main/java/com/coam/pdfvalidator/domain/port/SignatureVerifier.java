@@ -2,6 +2,7 @@ package com.coam.pdfvalidator.domain.port;
 
 import com.coam.pdfvalidator.domain.model.ChainStatus;
 import com.coam.pdfvalidator.domain.model.RevocationStatus;
+import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 
 import java.util.List;
@@ -30,4 +31,12 @@ import java.util.List;
 public interface SignatureVerifier {
 
     List<SignatureReport> verify(byte[] pdf);
+
+    /**
+     * Like {@link #verify} but also says how many signature fields were left unanalysed because of a resource cap
+     * (T20). The default suits verifiers that analyse everything.
+     */
+    default SignatureExtraction extract(byte[] pdf) {
+        return new SignatureExtraction(verify(pdf), 0);
+    }
 }

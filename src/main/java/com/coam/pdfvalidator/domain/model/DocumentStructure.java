@@ -14,15 +14,29 @@ import java.util.Objects;
  *                       instead of rejecting it outright)
  * @param catalogVersion the catalog's {@code /Version} override, or
  *                       {@code null} when the document does not declare one
+ * @param pageCount      total number of pages of the document
+ * @param pages          per-page details; at most the configured page cap (T20), so it can be shorter than
+ *                       {@code pageCount} exactly when {@code pagesTruncated} is set
  * @param revisionCount  number of incremental update sections (at least 1
  *                       for the original revision)
+ * @param pagesTruncated {@code true} when {@code pages} holds only the first pages of a longer document
+ * @param revisionCountLowerBound {@code true} when a resource cap stopped the revision walk, so the document
+ *                       has <em>at least</em> {@code revisionCount} revisions
  */
 public record DocumentStructure(
         String headerVersion,
         String catalogVersion,
         int pageCount,
         List<PageInfo> pages,
-        int revisionCount) {
+        int revisionCount,
+        boolean pagesTruncated,
+        boolean revisionCountLowerBound) {
+
+    /** A structure whose page list and revision count are complete and exact. */
+    public DocumentStructure(
+            String headerVersion, String catalogVersion, int pageCount, List<PageInfo> pages, int revisionCount) {
+        this(headerVersion, catalogVersion, pageCount, pages, revisionCount, false, false);
+    }
 
     public DocumentStructure {
         Objects.requireNonNull(pages, "pages");
@@ -34,9 +48,10 @@ public record DocumentStructure(
         // explicit, independently-checkable component (e.g. for JSON
         // (de)serialization) instead of a computed accessor, at the cost of
         // this one consistency check.
-        if (pageCount != pages.size()) {
-            throw new IllegalArgumentException(
-                    "pageCount (" + pageCount + ") must equal pages.size() (" + pages.size() + ")");
+        if (pagesTruncated ? pageCount <= pages.size() : pageCount != pages.size()) {
+            throw new IllegalArgumentException("pageCount (" + pageCount + ") must "
+                    + (pagesTruncated ? "exceed" : "equal") + " pages.size() (" + pages.size()
+                    + ") when pagesTruncated=" + pagesTruncated);
         }
         if (revisionCount < 1) {
             throw new IllegalArgumentException("revisionCount must be >= 1, got: " + revisionCount);

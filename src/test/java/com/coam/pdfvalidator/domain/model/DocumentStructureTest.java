@@ -34,4 +34,38 @@ class DocumentStructureTest {
         assertThatNoException()
                 .isThrownBy(() -> new DocumentStructure(null, null, 1, List.of(page), 1));
     }
+
+    @Test
+    void aTruncatedPageListMayBeShorterThanThePageCount() {
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+
+        DocumentStructure structure = new DocumentStructure("1.7", null, 5000, List.of(page), 1, true, false);
+
+        org.assertj.core.api.Assertions.assertThat(structure.pagesTruncated()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(structure.pageCount()).isEqualTo(5000);
+    }
+
+    @Test
+    void aPageListShorterThanThePageCountMustBeFlaggedAsTruncated() {
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new DocumentStructure("1.7", null, 5000, List.of(page), 1, false, false));
+    }
+
+    @Test
+    void aTruncatedFlagWithACompletePageListIsRejected() {
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, BOX, BOX, Orientation.SQUARE);
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new DocumentStructure("1.7", null, 1, List.of(page), 1, true, false));
+    }
+
+    @Test
+    void theLegacyConstructorMeansNothingWasTruncated() {
+        DocumentStructure structure = new DocumentStructure("1.7", null, 0, List.of(), 1);
+
+        org.assertj.core.api.Assertions.assertThat(structure.pagesTruncated()).isFalse();
+        org.assertj.core.api.Assertions.assertThat(structure.revisionCountLowerBound()).isFalse();
+    }
 }

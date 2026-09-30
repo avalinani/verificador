@@ -224,4 +224,23 @@ class PdfAnalysisReportMapperTest {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         return HexFormat.of().formatHex(digest.digest(bytes));
     }
+
+    @Test
+    void exposesTheTruncationIndicatorsOfTheStructure() {
+        Box box = new Box(0, 0, 200, 100);
+        PageInfo page = new PageInfo(1, 0, true, Rotation.DEG_0, box, box, Orientation.of(box, Rotation.DEG_0));
+        DocumentStructure structure = new DocumentStructure("1.7", null, 5000, List.of(page), 7, true, true);
+        PdfAnalysisReport report = new PdfAnalysisReport(
+                "document.pdf", 1, new DocumentHashes("a".repeat(64), "b".repeat(128)), structure,
+                new SecurityInfo(false, EnumSet.noneOf(Permission.class)),
+                new PdfaReport(PdfaDeclaration.NONE, PdfaValidationStatus.COMPLIANT, List.of()),
+                List.of(), Instant.parse("2026-09-27T10:00:00Z"), List.of());
+
+        DocumentStructureDto dto = mapper.toDto(report).structure();
+
+        assertThat(dto.pageCount()).isEqualTo(5000);
+        assertThat(dto.pages()).hasSize(1);
+        assertThat(dto.pagesTruncated()).isTrue();
+        assertThat(dto.revisionCountLowerBound()).isTrue();
+    }
 }

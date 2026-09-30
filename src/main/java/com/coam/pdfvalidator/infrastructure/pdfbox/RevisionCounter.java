@@ -78,9 +78,21 @@ final class RevisionCounter {
         private long steps;
     }
 
-    /** Counts revisions (at least 1) for the given raw PDF bytes. */
+    /**
+     * Revision count of a file: {@code value} is exact unless {@code lowerBound}, in which case a resource cap
+     * ({@link StructureLimits}) stopped the analysis and the file has <em>at least</em> {@code value} revisions.
+     */
+    record RevisionCount(int value, boolean lowerBound) {
+    }
+
+    /** Counts revisions (at least 1) for the given raw PDF bytes, with the default caps. */
     static int count(byte[] pdf) {
-        return count(pdf, new ScanStats());
+        return count(pdf, StructureLimits.DEFAULT).value();
+    }
+
+    /** Counts revisions under the given caps; a hostile file can make the result a lower bound, never fail. */
+    static RevisionCount count(byte[] pdf, StructureLimits limits) {
+        return count(pdf, limits, new ScanStats());
     }
 
     /**
@@ -93,20 +105,28 @@ final class RevisionCounter {
      */
     static long countScanSteps(byte[] pdf) {
         ScanStats stats = new ScanStats();
-        count(pdf, stats);
+        count(pdf, StructureLimits.DEFAULT, stats);
         return stats.steps;
     }
 
-    private static int count(byte[] pdf, ScanStats stats) {
-        MarkerPositions markers = MarkerPositions.scan(pdf, stats);
-        List<Long> chain = xrefChainOffsets(pdf, markers);
-        int hops = chain.size();
+    private static RevisionCount count(byte[] pdf, StructureLimits limits, ScanStats stats) {
+        MarkerPositions markers = MarkerPositions.scan(pdf, limits.maxRevisionMarkers(), stats);
+        if (markers == null) {
+            // T20: more markers than the cap -- not a real revision history. The scan stopped at the cap, so
+            // nothing is known beyond the single original revision every file has.
+            return new RevisionCount(1, true);
+        }
+        XrefChain chain = xrefChainOffsets(pdf, markers, limits.maxRevisions());
+        int hops = chain.offsets().size();
         if (hops == 0) {
             // No startxref/Prev chain could be found at all -- including an
             // out-of-range or otherwise unusable startxref value, which
             // never enters the loop below: fall back to the previous
             // %%EOF-marker heuristic rather than reporting 0.
-            return Math.max(countEofMarkers(pdf, stats), 1);
+            return new RevisionCount(Math.max(countEofMarkers(pdf, stats), 1), false);
+        }
+        if (chain.truncated()) {
+            return new RevisionCount(hops, true);
         }
         if (hops > 1 && isLinearized(pdf, stats)) {
             // The hint-section xref for the first page is not itself a
@@ -114,18 +134,24 @@ final class RevisionCounter {
             // the main xref section it is chained to.
             hops--;
         }
-        return Math.max(hops, 1);
+        return new RevisionCount(Math.max(hops, 1), false);
     }
 
-    private static List<Long> xrefChainOffsets(byte[] pdf, MarkerPositions markers) {
+    private record XrefChain(List<Long> offsets, boolean truncated) {
+    }
+
+    private static XrefChain xrefChainOffsets(byte[] pdf, MarkerPositions markers, int maxRevisions) {
         List<Long> offsets = new ArrayList<>();
         Set<Long> visited = new HashSet<>();
         Long offset = lastStartXrefOffset(pdf, markers);
         while (offset != null && offset >= 0 && offset < pdf.length && visited.add(offset)) {
+            if (offsets.size() >= maxRevisions) {
+                return new XrefChain(offsets, true);
+            }
             offsets.add(offset);
             offset = prevOffset(pdf, offset, markers);
         }
-        return offsets;
+        return new XrefChain(offsets, false);
     }
 
     private static Long lastStartXrefOffset(byte[] pdf, MarkerPositions markers) {
@@ -231,25 +257,32 @@ final class RevisionCounter {
      * search instead of rescanning the file on every hop.
      */
     private static final class MarkerPositions {
-        private final long[] streamOffsets;
-        private final long[] startxrefOffsets;
-        private final long[] prevOffsets;
+        private final int[] streamOffsets;
+        private final int[] startxrefOffsets;
+        private final int[] prevOffsets;
 
-        private MarkerPositions(long[] streamOffsets, long[] startxrefOffsets, long[] prevOffsets) {
+        private MarkerPositions(int[] streamOffsets, int[] startxrefOffsets, int[] prevOffsets) {
             this.streamOffsets = streamOffsets;
             this.startxrefOffsets = startxrefOffsets;
             this.prevOffsets = prevOffsets;
         }
 
-        static MarkerPositions scan(byte[] pdf, ScanStats stats) {
-            return new MarkerPositions(
-                    allOffsetsOf(pdf, STREAM_KEYWORD, stats),
-                    allOffsetsOf(pdf, STARTXREF, stats),
-                    allOffsetsOf(pdf, PREV, stats));
+        /** Every marker position, or {@code null} as soon as any keyword occurs more than {@code max} times. */
+        static MarkerPositions scan(byte[] pdf, int max, ScanStats stats) {
+            int[] stream = allOffsetsOf(pdf, STREAM_KEYWORD, max, stats);
+            if (stream == null) {
+                return null;
+            }
+            int[] startxref = allOffsetsOf(pdf, STARTXREF, max, stats);
+            if (startxref == null) {
+                return null;
+            }
+            int[] prev = allOffsetsOf(pdf, PREV, max, stats);
+            return prev == null ? null : new MarkerPositions(stream, startxref, prev);
         }
 
         /** The smallest element of {@code sorted} that is {@code >= from}, or {@code -1} if none. */
-        long firstAtOrAfter(long[] sorted, long from) {
+        long firstAtOrAfter(int[] sorted, long from) {
             int lo = 0;
             int hi = sorted.length;
             while (lo < hi) {
@@ -264,21 +297,28 @@ final class RevisionCounter {
         }
     }
 
-    private static long[] allOffsetsOf(byte[] pdf, byte[] needle, ScanStats stats) {
-        List<Long> offsets = new ArrayList<>();
+    /**
+     * All occurrences of {@code needle}, in a primitive array grown on demand (an offset is an {@code int}: the
+     * upload limit keeps a file well below 2 GB), or {@code null} once there are more than {@code max} of them.
+     */
+    private static int[] allOffsetsOf(byte[] pdf, byte[] needle, int max, ScanStats stats) {
+        int[] offsets = new int[16];
+        int size = 0;
         int from = 0;
         while (true) {
             int idx = indexOf(pdf, needle, from, pdf.length, stats);
             if (idx < 0) {
                 break;
             }
-            offsets.add((long) idx);
+            if (size == max) {
+                return null;
+            }
+            if (size == offsets.length) {
+                offsets = java.util.Arrays.copyOf(offsets, (int) Math.min(max, 2L * offsets.length));
+            }
+            offsets[size++] = idx;
             from = idx + 1;
         }
-        long[] result = new long[offsets.size()];
-        for (int i = 0; i < result.length; i++) {
-            result[i] = offsets.get(i);
-        }
-        return result;
+        return java.util.Arrays.copyOf(offsets, size);
     }
 }

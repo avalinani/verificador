@@ -50,4 +50,53 @@ class AnalysisPropertiesTest {
         assertThat(props.maxDecodedStreamSize()).isEqualTo(DataSize.ofMegabytes(1));
         assertThat(props.maxDecodedTotalSize()).isEqualTo(DataSize.ofMegabytes(64));
     }
+
+    @Test
+    void resourceCapsDefaultToValuesThatFitTheOneGigabyteHeap() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of()))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxPages()).isEqualTo(1000);
+        assertThat(props.maxRevisionMarkers()).isEqualTo(1_000_000);
+        assertThat(props.maxRevisions()).isEqualTo(10_000);
+    }
+
+    @Test
+    void resourceCapsAreConfigurable() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of(
+                "pdfvalidator.analysis.max-pages", "10",
+                "pdfvalidator.analysis.max-revision-markers", "20",
+                "pdfvalidator.analysis.max-revisions", "30")))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxPages()).isEqualTo(10);
+        assertThat(props.maxRevisionMarkers()).isEqualTo(20);
+        assertThat(props.maxRevisions()).isEqualTo(30);
+    }
+
+    @Test
+    void signatureCapsDefaultToSafeValues() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of()))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxSignatureFields()).isEqualTo(50);
+        assertThat(props.maxCertificatesPerSignature()).isEqualTo(50);
+        assertThat(props.maxChainLength()).isEqualTo(10);
+        assertThat(props.maxPdfaIssues()).isEqualTo(200);
+    }
+
+    @Test
+    void signatureCapsAreConfigurable() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of(
+                "pdfvalidator.analysis.max-signature-fields", "4",
+                "pdfvalidator.analysis.max-certificates-per-signature", "5",
+                "pdfvalidator.analysis.max-chain-length", "6",
+                "pdfvalidator.analysis.max-pdfa-issues", "7")))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxSignatureFields()).isEqualTo(4);
+        assertThat(props.maxCertificatesPerSignature()).isEqualTo(5);
+        assertThat(props.maxChainLength()).isEqualTo(6);
+        assertThat(props.maxPdfaIssues()).isEqualTo(7);
+    }
 }

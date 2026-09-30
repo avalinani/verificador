@@ -137,6 +137,10 @@ final class CmsSignatureVerification {
     }
 
     static Result verify(byte[] signedBytes, byte[] cmsDer, Provider bcProvider) {
+        return verify(signedBytes, cmsDer, bcProvider, SignatureLimits.DEFAULT);
+    }
+
+    static Result verify(byte[] signedBytes, byte[] cmsDer, Provider bcProvider, SignatureLimits limits) {
         CMSSignedData signedData;
         try {
             ContentInfo contentInfo = readContentInfo(cmsDer);
@@ -161,13 +165,26 @@ final class CmsSignatureVerification {
 
         X509Certificate signerCertificate;
         List<X509Certificate> chain;
+        String truncationNote = null;
         try {
             signerCertificate = toJavaCertificate(signerHolder, bcProvider);
+            // T20: at most maxCertificatesPerSignature certificates are converted and ordered -- the signer
+            // first, then the others in container order -- so a CMS stuffed with certificates costs a bounded
+            // amount of work. Dropping one can only make the chain incomplete (fail closed), never trusted.
             List<X509Certificate> allCertificates = new ArrayList<>();
+            allCertificates.add(signerCertificate);
+            int total = 0;
             for (X509CertificateHolder holder : certificateStore.getMatches(null)) {
-                allCertificates.add(toJavaCertificate(holder, bcProvider));
+                total++;
+                if (allCertificates.size() < limits.maxCertificatesPerSignature() && !holder.equals(signerHolder)) {
+                    allCertificates.add(toJavaCertificate(holder, bcProvider));
+                }
             }
-            chain = orderSignerFirst(signerCertificate, allCertificates);
+            if (total > limits.maxCertificatesPerSignature()) {
+                truncationNote = "signature carries " + total + " certificates; only "
+                        + limits.maxCertificatesPerSignature() + " were considered, the chain may be incomplete";
+            }
+            chain = orderSignerFirst(signerCertificate, allCertificates, limits.maxChainLength());
         } catch (CertificateException | RuntimeException e) {
             LOG.log(System.Logger.Level.DEBUG, "Failed to map certificates extracted from a CMS signature", e);
             return Result.unparseable("CMS container could not be parsed: certificate data unreadable");
@@ -180,7 +197,7 @@ final class CmsSignatureVerification {
         String digestOidNote = digestOidMislabeled
                 ? "non-standard digestAlgorithm encoding (signature algorithm OID used instead of a digest OID)"
                 : null;
-        String anomaly = combineNotes(certificateValidityNote, digestOidNote);
+        String anomaly = combineNotes(combineNotes(certificateValidityNote, digestOidNote), truncationNote);
 
         boolean valid;
         String reason = null;
@@ -391,7 +408,8 @@ final class CmsSignatureVerification {
      * reached or no further issuer can be found. Any leftover, unrelated
      * certificates are appended at the end rather than dropped.
      */
-    private static List<X509Certificate> orderSignerFirst(X509Certificate signer, List<X509Certificate> certificates) {
+    static List<X509Certificate> orderSignerFirst(
+            X509Certificate signer, List<X509Certificate> certificates, int maxChainLength) {
         if (signer == null) {
             return List.copyOf(certificates);
         }
@@ -402,7 +420,7 @@ final class CmsSignatureVerification {
         ordered.add(signer);
 
         X509Certificate current = signer;
-        while (true) {
+        while (ordered.size() < maxChainLength) {
             X500Principal issuerDn = current.getIssuerX500Principal();
             if (issuerDn.equals(current.getSubjectX500Principal())) {
                 break; // self-signed: reached the root

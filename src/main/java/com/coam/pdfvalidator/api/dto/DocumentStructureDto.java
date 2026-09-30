@@ -12,11 +12,17 @@ import java.util.List;
  * @param catalogVersion the catalog's {@code /Version} override, or {@code
  *                       null} when the document does not declare one
  * @param revisionCount  number of incremental update sections (at least 1)
+ * @param pagesTruncated {@code true} when {@code pages} holds only the first pages of a longer document (the
+ *                       configured cap); {@code pageCount} is always the real total
+ * @param revisionCountLowerBound {@code true} when a resource cap stopped the revision walk, so {@code
+ *                       revisionCount} is a lower bound
  */
 public record DocumentStructureDto(
         String headerVersion,
         String catalogVersion,
         int pageCount,
         List<PageInfoDto> pages,
-        int revisionCount) {
+        int revisionCount,
+        boolean pagesTruncated,
+        boolean revisionCountLowerBound) {
 }

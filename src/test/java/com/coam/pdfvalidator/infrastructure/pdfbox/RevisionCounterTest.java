@@ -278,6 +278,64 @@ class RevisionCounterTest {
     }
 
     /**
+     * T20: a hostile file full of one repeated keyword used to box every
+     * offset into a {@code List<Long>} (about 48 bytes allocated per marker:
+     * an 80 MB file of {@code stream } tokens meant roughly 550 MB of
+     * transient heap). With a cap the scan stops as soon as it is crossed, so
+     * the allocation no longer depends on the file size.
+     */
+    @Test
+    void aFileFullOfRepeatedMarkersIsScannedWithBoundedMemoryAndReportsALowerBound() {
+        StructureLimits limits = new StructureLimits(1000, 100, 1000);
+        for (String token : List.of("startxref ", "stream ", "/Prev ")) {
+            byte[] pdf = repeated(token, 400_000);
+
+            long before = allocatedBytes();
+            RevisionCounter.RevisionCount count = RevisionCounter.count(pdf, limits);
+            long allocated = allocatedBytes() - before;
+
+            assertThat(count.lowerBound()).as(token).isTrue();
+            assertThat(count.value()).as(token).isGreaterThanOrEqualTo(1);
+            assertThat(allocated).as("bytes allocated for " + token).isLessThan(2_000_000L);
+        }
+    }
+
+    @Test
+    void aChainLongerThanTheRevisionCapReportsTheCapAsALowerBound() {
+        byte[] pdf = manyRevisionsDocument(20);
+
+        RevisionCounter.RevisionCount capped = RevisionCounter.count(pdf, new StructureLimits(1000, 1_000_000, 5));
+        RevisionCounter.RevisionCount uncapped = RevisionCounter.count(pdf, new StructureLimits(1000, 1_000_000, 50));
+
+        assertThat(capped.value()).isEqualTo(5);
+        assertThat(capped.lowerBound()).isTrue();
+        assertThat(uncapped.value()).isEqualTo(20);
+        assertThat(uncapped.lowerBound()).isFalse();
+    }
+
+    @Test
+    void aNormalDocumentIsNeverReportedAsALowerBound() throws Exception {
+        RevisionCounter.RevisionCount count = RevisionCounter.count(TestPdfFactory.doublySigned(), StructureLimits.DEFAULT);
+
+        assertThat(count.value()).isEqualTo(3);
+        assertThat(count.lowerBound()).isFalse();
+    }
+
+    private static byte[] repeated(String token, int times) {
+        byte[] unit = token.getBytes(StandardCharsets.US_ASCII);
+        byte[] pdf = new byte[unit.length * times];
+        for (int i = 0; i < times; i++) {
+            System.arraycopy(unit, 0, pdf, i * unit.length, unit.length);
+        }
+        return pdf;
+    }
+
+    private static long allocatedBytes() {
+        return ((com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean())
+                .getCurrentThreadAllocatedBytes();
+    }
+
+    /**
      * Two xref sections whose {@code /Prev} values point at each other,
      * forming a cycle: section A's {@code /Prev} points to section B, and
      * section B's {@code /Prev} points back to section A. The last {@code

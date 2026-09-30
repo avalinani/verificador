@@ -7,9 +7,11 @@ import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
 import com.coam.pdfvalidator.domain.port.RevocationChecker;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.SignatureLimits;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
 import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
 import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
+import com.coam.pdfvalidator.infrastructure.pdfbox.StructureLimits;
 import com.coam.pdfvalidator.infrastructure.pki.PkixCertificateChainValidator;
 import com.coam.pdfvalidator.infrastructure.pki.TrustAnchorProvider;
 import com.coam.pdfvalidator.infrastructure.preflight.PreflightPdfaValidator;
@@ -57,17 +59,19 @@ public class AdapterConfiguration {
 
     @Bean
     public PdfDocumentReader pdfDocumentReader(AnalysisProperties analysis) {
-        return new PdfBoxDocumentReader(decodedSizeLimits(analysis));
+        return new PdfBoxDocumentReader(decodedSizeLimits(analysis),
+                new StructureLimits(analysis.maxPages(), analysis.maxRevisionMarkers(), analysis.maxRevisions()));
     }
 
     @Bean
-    public SignatureVerifier signatureVerifier() {
-        return new BcSignatureVerifier();
+    public SignatureVerifier signatureVerifier(AnalysisProperties analysis) {
+        return new BcSignatureVerifier(new SignatureLimits(
+                analysis.maxSignatureFields(), analysis.maxCertificatesPerSignature(), analysis.maxChainLength()));
     }
 
     @Bean
     public PdfaConformanceValidator pdfaConformanceValidator(AnalysisProperties analysis) {
-        return new PreflightPdfaValidator(decodedSizeLimits(analysis));
+        return new PreflightPdfaValidator(decodedSizeLimits(analysis), analysis.maxPdfaIssues());
     }
 
     private static DecodedSizeGuard.Limits decodedSizeLimits(AnalysisProperties analysis) {

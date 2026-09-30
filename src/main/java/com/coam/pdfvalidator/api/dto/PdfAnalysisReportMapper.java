@@ -62,7 +62,7 @@ public class PdfAnalysisReportMapper {
                 .collect(Collectors.toList());
         return new DocumentStructureDto(
                 structure.headerVersion(), structure.catalogVersion(), structure.pageCount(), pages,
-                structure.revisionCount());
+                structure.revisionCount(), structure.pagesTruncated(), structure.revisionCountLowerBound());
     }
 
     private static PageInfoDto toDto(PageInfo page) {

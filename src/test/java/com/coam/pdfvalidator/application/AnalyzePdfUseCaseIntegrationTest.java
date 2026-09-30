@@ -8,6 +8,7 @@ import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.fixtures.TestPdfSigner;
 import com.coam.pdfvalidator.fixtures.TestPki;
 import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.SignatureLimits;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
 import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
 import com.coam.pdfvalidator.infrastructure.pki.PkixCertificateChainValidator;
@@ -71,5 +72,34 @@ class AnalyzePdfUseCaseIntegrationTest {
         // The TSA is issued under the same trusted root: the timestamp itself is trusted (T19).
         assertThat(signature.timestamp().trusted()).isTrue();
         assertThat(signature.verdict()).isEqualTo(com.coam.pdfvalidator.domain.model.SignatureVerdict.VALID);
+    }
+
+    /**
+     * T20 SECURITY, end to end with real adapters: three signatures by a trusted signer followed by a fourth by
+     * an untrusted one. With the cap at three the fourth is never analysed; the document must be reported as
+     * incomplete rather than as a set of valid signatures with the decisive one hidden.
+     */
+    @Test
+    void anUntrustedSignatureHiddenBehindTheSignatureCapNeverYieldsAValidDocument() throws Exception {
+        TestPki.IssuedIdentity trusted = TestPki.issueSigningIdentity();
+        TestPki.IssuedIdentity attacker = TestPki.issueSigningIdentity();
+        byte[] pdf = TestPdfSigner.createSimplePdf();
+        for (int i = 0; i < 3; i++) {
+            pdf = TestPdfSigner.sign(pdf, trusted);
+        }
+        pdf = TestPdfSigner.sign(pdf, attacker);
+        TrustAnchorProvider trustAnchorProvider = TrustAnchorProvider.of(trusted.rootCertificate());
+
+        AnalyzePdfUseCase capped = new AnalyzePdfUseCase(
+                new JcaHashCalculator(), new PdfBoxDocumentReader(),
+                new BcSignatureVerifier(new SignatureLimits(3, 50, 10)),
+                new PkixCertificateChainValidator(trustAnchorProvider), new PreflightPdfaValidator(),
+                new NoOpRevocationChecker(), Clock.systemUTC());
+        PdfAnalysisReport report = capped.analyze("hidden.pdf", pdf, new AnalysisOptions(false));
+
+        assertThat(report.signatures()).hasSize(3);
+        assertThat(report.overallVerdict()).isEqualTo(com.coam.pdfvalidator.domain.model.OverallVerdict.ANALYSIS_INCOMPLETE);
+        assertThat(report.sectionErrors()).extracting(com.coam.pdfvalidator.domain.model.SectionError::message)
+                .anyMatch(message -> message.contains("1 signature field(s) were not analysed"));
     }
 }
