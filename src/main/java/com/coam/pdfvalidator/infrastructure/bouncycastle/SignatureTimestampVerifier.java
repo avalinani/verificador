@@ -73,7 +73,24 @@ import java.util.Objects;
  */
 final class SignatureTimestampVerifier {
 
+    private static final System.Logger LOGGER = System.getLogger(SignatureTimestampVerifier.class.getName());
+
     private SignatureTimestampVerifier() {
+    }
+
+    /**
+     * Logs the full failure server-side (T23a) so the report can carry a fixed text only. Parser messages can echo
+     * attacker-controlled document content, so line breaks are replaced and the length is capped before logging
+     * (no log-line forging); the stack trace is deliberately not logged. Package-private for direct unit testing.
+     */
+    static void logFailure(String what, Throwable failure) {
+        LOGGER.log(System.Logger.Level.WARNING, () -> what + ": " + sanitizeForLog(failure));
+    }
+
+    static String sanitizeForLog(Throwable failure) {
+        String text = failure.getClass().getName() + ": " + failure.getMessage();
+        String flat = text.replaceAll("[\\p{Cc}\\p{Zl}\\p{Zp}]+", " ");
+        return flat.length() > 300 ? flat.substring(0, 300) + "..." : flat;
     }
 
     static TimestampInfo verify(SignerInformation signerInformation, Provider bcProvider) {
@@ -94,7 +111,8 @@ final class SignatureTimestampVerifier {
             TimeStampToken token = new TimeStampToken(ContentInfo.getInstance(values[0]));
             return verifyToken(token, signerInformation.getSignature(), bcProvider);
         } catch (IOException | TSPException | RuntimeException e) {
-            return malformed("Malformed RFC 3161 timestamp token: " + e);
+            logFailure("Malformed RFC 3161 timestamp token", e);
+            return malformed("Malformed RFC 3161 timestamp token");
         }
     }
 
@@ -130,7 +148,8 @@ final class SignatureTimestampVerifier {
                 token.validate(verifier);
                 signatureValid = true;
             } catch (TSPException | org.bouncycastle.operator.OperatorCreationException e) {
-                note = appendNote(note, "TSA signature verification failed: " + e.getMessage());
+                logFailure("TSA signature verification failed", e);
+                note = appendNote(note, "TSA signature verification failed");
             }
             // The missing-EKU check runs unconditionally alongside signature
             // validation above (not only when it succeeds): BC's own
@@ -166,7 +185,8 @@ final class SignatureTimestampVerifier {
         try {
             return new CertificateMapping(X509CertificateInfoMapper.toDomain(certificate), null);
         } catch (RuntimeException e) {
-            return new CertificateMapping(null, "TSA certificate data could not be mapped: " + e.getMessage());
+            logFailure("TSA certificate data could not be mapped", e);
+            return new CertificateMapping(null, "TSA certificate data could not be mapped");
         }
     }
 

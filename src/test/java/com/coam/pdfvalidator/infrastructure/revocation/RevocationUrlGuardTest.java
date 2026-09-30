@@ -287,4 +287,18 @@ class RevocationUrlGuardTest {
             resolver.release.countDown();
         }
     }
+
+    /**
+     * T23a: rejection messages are reported to the client by the CRL/OCSP clients, so they must stay fixed texts
+     * that never echo the (attacker-supplied) host or URL back.
+     */
+    @Test
+    void rejectionMessagesNeverEchoTheHostOrTheUrl() {
+        String[] urls = {"https://evil-host.example/ee", "http://evil-host.example/ee", "ftp://evil-host.example/x"};
+        for (String url : urls) {
+            assertThatThrownBy(() -> RevocationUrlGuard.resolve(url, false, fixedResolver(ip("127.0.0.1"))))
+                    .isInstanceOf(RevocationUrlRejectedException.class)
+                    .message().doesNotContain("evil-host").doesNotContain("example");
+        }
+    }
 }

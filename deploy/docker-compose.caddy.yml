@@ -7,9 +7,11 @@
 # or -p <name>): the certificates live in the <project>_caddy_data volume, and a new
 # project name means a new empty volume and a fresh Let's Encrypt issuance (rate-limited).
 # The reference VPS runs it from ~/https (project "https", volume https_caddy_data).
+# The image is pinned by digest (multi-arch index, pinned 2026-09-30; the tag is kept for
+# readability). To refresh: `docker buildx imagetools inspect caddy:2` and copy the digest.
 services:
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
     network_mode: host
     restart: unless-stopped
     cap_drop: [ALL]

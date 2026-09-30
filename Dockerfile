@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage: compile and split the Spring Boot jar into layers ----
-# Base images are pinned by tag (the patch level floats). For reproducible builds pin
-# by digest: run `docker buildx imagetools inspect eclipse-temurin:25-jdk-alpine`
-# and use `FROM eclipse-temurin:25-jdk-alpine@sha256:<digest>` (same for the JRE image).
-FROM eclipse-temurin:25-jdk-alpine AS build
+# Base images are pinned by digest (the multi-arch index digest, so linux/amd64 and
+# linux/arm64 both resolve); the tag is kept for readability and is ignored by Docker
+# when a digest is present. Pinned 2026-09-30. To refresh (they do not update themselves):
+#   docker buildx imagetools inspect eclipse-temurin:25-jdk-alpine   (and 25-jre-alpine)
+# or read the `docker-content-digest` header of the Docker Hub registry manifest
+# (Accept: application/vnd.oci.image.index.v1+json), then update BOTH FROM lines.
+FROM eclipse-temurin:25-jdk-alpine@sha256:3fd2d245c4e0eba615fe366a71b8bd25f5db7104f53e4026b24bf508b880bd2a AS build
 WORKDIR /workspace
 
 # Dependency layer: only re-resolved when pom.xml or the wrapper change.
@@ -20,7 +23,7 @@ RUN ./mvnw -B -DskipTests package \
         extract --layers --launcher --destination /workspace/extracted
 
 # ---- Runtime stage: JRE only, non-root ----
-FROM eclipse-temurin:25-jre-alpine
+FROM eclipse-temurin:25-jre-alpine@sha256:3c0a9084927a221ccd1d007fcaf614465672c0af37aaa834c5184483afe56d61
 RUN addgroup -g 10001 -S app && adduser -u 10001 -S -G app -H -s /sbin/nologin app
 WORKDIR /app
 
