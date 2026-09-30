@@ -45,7 +45,33 @@ final class RevocationUrlGuard {
     record ValidatedTarget(URI uri, InetAddress address) {
     }
 
+    /** Upper bound on simultaneously running (or abandoned but still blocked) DNS lookups. */
+    static final int MAX_CONCURRENT_LOOKUPS = 16;
+
+    /**
+     * Runs the (blocking, uninterruptible) resolver on a small bounded pool
+     * of daemon threads so the caller can stop waiting at its deadline. The
+     * pool has no queue: when all {@link #MAX_CONCURRENT_LOOKUPS} threads are
+     * busy -- e.g. abandoned lookups still stuck on a hostile authoritative
+     * server -- new lookups are refused instead of piling up.
+     */
+    private static final java.util.concurrent.ExecutorService LOOKUP_POOL =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    0, MAX_CONCURRENT_LOOKUPS, 30, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.SynchronousQueue<>(),
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "revocation-dns");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+
+    /** {@link #resolve(String, boolean, HostResolver, java.time.Duration)} with a 2 s DNS bound (test convenience). */
     static ValidatedTarget resolve(String urlString, boolean allowPrivateAddresses, HostResolver resolver) {
+        return resolve(urlString, allowPrivateAddresses, resolver, java.time.Duration.ofSeconds(2));
+    }
+
+    static ValidatedTarget resolve(
+            String urlString, boolean allowPrivateAddresses, HostResolver resolver, java.time.Duration dnsTimeout) {
         URI uri;
         try {
             uri = new URI(urlString);
@@ -64,12 +90,7 @@ final class RevocationUrlGuard {
             throw new RevocationUrlRejectedException("URL has no host");
         }
 
-        InetAddress[] addresses;
-        try {
-            addresses = resolver.resolve(host);
-        } catch (UnknownHostException e) {
-            throw new RevocationUrlRejectedException("host could not be resolved");
-        }
+        InetAddress[] addresses = resolveWithinDeadline(host, resolver, dnsTimeout);
 
         for (InetAddress candidate : addresses) {
             if (allowPrivateAddresses || !isPrivateOrReserved(candidate)) {
@@ -78,6 +99,37 @@ final class RevocationUrlGuard {
         }
         throw new RevocationUrlRejectedException(
                 "URL resolves only to private/loopback/reserved addresses, refusing to contact it");
+    }
+
+    /**
+     * The single resolution of {@code host}, bounded by {@code timeout}
+     * (the caller's remaining deadline): a slow or hostile resolver can no
+     * longer keep the request alive past its budget. The lookup is still
+     * performed exactly once -- resolve-once-and-pin is unchanged.
+     */
+    private static InetAddress[] resolveWithinDeadline(
+            String host, HostResolver resolver, java.time.Duration timeout) {
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new RevocationUrlRejectedException("host could not be resolved within the time limit");
+        }
+        java.util.concurrent.Future<InetAddress[]> lookup;
+        try {
+            lookup = LOOKUP_POOL.submit(() -> resolver.resolve(host));
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            throw new RevocationUrlRejectedException("DNS resolver busy, refusing to queue another lookup");
+        }
+        try {
+            return lookup.get(timeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            lookup.cancel(true);
+            throw new RevocationUrlRejectedException("host could not be resolved within the time limit");
+        } catch (InterruptedException e) {
+            lookup.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new RevocationUrlRejectedException("host resolution was interrupted");
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new RevocationUrlRejectedException("host could not be resolved");
+        }
     }
 
     /**

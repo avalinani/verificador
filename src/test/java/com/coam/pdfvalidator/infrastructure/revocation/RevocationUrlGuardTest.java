@@ -206,4 +206,85 @@ class RevocationUrlGuardTest {
                 "http://ocsp.internal/ee", false, fixedResolver(ip("127.0.0.1"), ip("10.0.0.1"))))
                 .isInstanceOf(RevocationUrlRejectedException.class);
     }
+
+    // ---- T21c: DNS resolution runs under the deadline ----
+
+    /** A resolver that hangs until released, standing in for a slow or hostile authoritative DNS server. */
+    private static final class HangingResolver implements HostResolver {
+        final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public InetAddress[] resolve(String host) throws UnknownHostException {
+            calls.incrementAndGet();
+            // Like a native getaddrinfo call, ignore interruption: only the release frees the thread.
+            boolean released = false;
+            while (!released) {
+                try {
+                    release.await();
+                    released = true;
+                } catch (InterruptedException e) {
+                    // keep waiting
+                }
+            }
+            throw new UnknownHostException(host);
+        }
+    }
+
+    @Test
+    void aSlowResolverIsAbandonedWhenTheDnsTimeoutElapses() {
+        HangingResolver resolver = new HangingResolver();
+        long start = System.nanoTime();
+        try {
+            assertThatThrownBy(() -> RevocationUrlGuard.resolve(
+                    "http://slow.example.org/ee", false, resolver, java.time.Duration.ofMillis(200)))
+                    .isInstanceOf(RevocationUrlRejectedException.class)
+                    .hasMessageContaining("within the time limit");
+        } finally {
+            resolver.release.countDown();
+        }
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+        assertThat(elapsedMillis).isLessThan(1500);
+        assertThat(resolver.calls.get()).isEqualTo(1); // resolved once, never retried
+    }
+
+    @Test
+    void anAlreadyExpiredDnsBudgetRejectsWithoutResolving() {
+        HangingResolver resolver = new HangingResolver();
+        assertThatThrownBy(() -> RevocationUrlGuard.resolve(
+                "http://slow.example.org/ee", false, resolver, java.time.Duration.ZERO))
+                .isInstanceOf(RevocationUrlRejectedException.class)
+                .hasMessageContaining("within the time limit");
+        assertThat(resolver.calls.get()).isZero();
+    }
+
+    @Test
+    void aFastResolverStillWorksUnderTheDnsTimeout() {
+        RevocationUrlGuard.ValidatedTarget target = RevocationUrlGuard.resolve(
+                "http://ocsp.example.org/ee", false, fixedResolver(ip("93.184.216.34")),
+                java.time.Duration.ofSeconds(1));
+        assertThat(target.address()).isEqualTo(ip("93.184.216.34"));
+    }
+
+    @Test
+    void whenTheResolverPoolIsSaturatedFurtherLookupsAreRejectedInsteadOfQueued() {
+        HangingResolver resolver = new HangingResolver();
+        try {
+            int rejected = 0;
+            for (int i = 0; i < RevocationUrlGuard.MAX_CONCURRENT_LOOKUPS + 4; i++) {
+                try {
+                    RevocationUrlGuard.resolve(
+                            "http://slow" + i + ".example.org/ee", false, resolver, java.time.Duration.ofMillis(20));
+                } catch (RevocationUrlRejectedException e) {
+                    if (e.getMessage().contains("busy")) {
+                        rejected++;
+                    }
+                }
+            }
+            assertThat(rejected).isGreaterThanOrEqualTo(4);
+            assertThat(resolver.calls.get()).isLessThanOrEqualTo(RevocationUrlGuard.MAX_CONCURRENT_LOOKUPS);
+        } finally {
+            resolver.release.countDown();
+        }
+    }
 }
