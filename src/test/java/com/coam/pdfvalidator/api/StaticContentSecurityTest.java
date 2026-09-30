@@ -221,4 +221,18 @@ class StaticContentSecurityTest {
         assertThat(js).doesNotContainPattern("\\.innerHTML\\s*=");
         assertThat(js.toLowerCase(java.util.Locale.ROOT)).doesNotContain("coam");
     }
+
+    /** T20: the UI says so when the page table or the revision count is capped (textContent only, no COAM). */
+    @Test
+    void theUiFlagsTruncatedPagesAndALowerBoundRevisionCount() throws Exception {
+        String js = mockMvc.perform(get("/render.js"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(js).contains("structure.pagesTruncated");
+        assertThat(js).contains("structure.revisionCountLowerBound");
+        assertThat(js).contains("Se muestran solo las primeras");
+        assertThat(js).doesNotContainPattern("\\.innerHTML\\s*=");
+        assertThat(js.toLowerCase(java.util.Locale.ROOT)).doesNotContain("coam");
+    }
 }

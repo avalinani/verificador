@@ -253,4 +253,44 @@ class PdfBoxDocumentReaderTest {
 
         assertThat(bounded.readPdfaDeclaration(pdf)).isEqualTo(PdfaDeclaration.NONE);
     }
+
+    /**
+     * T20: the page details used to be built for every page of the tree (and later serialized), whatever the
+     * page count -- a hostile page tree with millions of leaves meant millions of PageInfo objects and DTOs.
+     */
+    @Test
+    void pageDetailsAreCappedButTheTotalPageCountIsStillReported() throws Exception {
+        PdfBoxDocumentReader capped = new PdfBoxDocumentReader(
+                DecodedSizeGuard.Limits.DEFAULT, new StructureLimits(2, 1_000_000, 10_000));
+
+        DocumentStructure structure = capped.readStructure(TestPdfFactory.unsignedMultiPage(5));
+
+        assertThat(structure.pageCount()).isEqualTo(5);
+        assertThat(structure.pages()).hasSize(2);
+        assertThat(structure.pages()).extracting(PageInfo::number).containsExactly(1, 2);
+        assertThat(structure.pagesTruncated()).isTrue();
+    }
+
+    @Test
+    void aDocumentWithinThePageCapIsNotTruncated() throws Exception {
+        PdfBoxDocumentReader capped = new PdfBoxDocumentReader(
+                DecodedSizeGuard.Limits.DEFAULT, new StructureLimits(5, 1_000_000, 10_000));
+
+        DocumentStructure structure = capped.readStructure(TestPdfFactory.unsignedMultiPage(5));
+
+        assertThat(structure.pages()).hasSize(5);
+        assertThat(structure.pagesTruncated()).isFalse();
+        assertThat(structure.revisionCountLowerBound()).isFalse();
+    }
+
+    @Test
+    void aRevisionCountCappedByTheMarkerLimitIsFlaggedAsALowerBound() throws Exception {
+        PdfBoxDocumentReader capped = new PdfBoxDocumentReader(
+                DecodedSizeGuard.Limits.DEFAULT, new StructureLimits(1000, 1, 10_000));
+
+        DocumentStructure structure = capped.readStructure(TestPdfFactory.doublySigned());
+
+        assertThat(structure.revisionCountLowerBound()).isTrue();
+        assertThat(structure.revisionCount()).isGreaterThanOrEqualTo(1);
+    }
 }

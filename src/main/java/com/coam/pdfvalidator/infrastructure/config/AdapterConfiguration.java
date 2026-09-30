@@ -10,6 +10,7 @@ import com.coam.pdfvalidator.infrastructure.bouncycastle.BcSignatureVerifier;
 import com.coam.pdfvalidator.infrastructure.crypto.JcaHashCalculator;
 import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
 import com.coam.pdfvalidator.infrastructure.pdfbox.PdfBoxDocumentReader;
+import com.coam.pdfvalidator.infrastructure.pdfbox.StructureLimits;
 import com.coam.pdfvalidator.infrastructure.pki.PkixCertificateChainValidator;
 import com.coam.pdfvalidator.infrastructure.pki.TrustAnchorProvider;
 import com.coam.pdfvalidator.infrastructure.preflight.PreflightPdfaValidator;
@@ -57,7 +58,8 @@ public class AdapterConfiguration {
 
     @Bean
     public PdfDocumentReader pdfDocumentReader(AnalysisProperties analysis) {
-        return new PdfBoxDocumentReader(decodedSizeLimits(analysis));
+        return new PdfBoxDocumentReader(decodedSizeLimits(analysis),
+                new StructureLimits(analysis.maxPages(), analysis.maxRevisionMarkers(), analysis.maxRevisions()));
     }
 
     @Bean

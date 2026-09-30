@@ -384,7 +384,10 @@ function renderStructureCard(structure) {
 
   card.append(
     fact("Versión PDF", structure.headerVersion || "Desconocida"),
-    fact("Revisiones", String(structure.revisionCount)),
+    fact(
+      "Revisiones",
+      structure.revisionCountLowerBound ? `al menos ${structure.revisionCount}` : String(structure.revisionCount),
+    ),
   );
 
   if (structure.pages && structure.pages.length > 0) {
@@ -418,6 +421,12 @@ function renderStructureCard(structure) {
     }
     table.appendChild(tbody);
     card.appendChild(table);
+    if (structure.pagesTruncated) {
+      const note = document.createElement("p");
+      note.className = "anomaly-note";
+      note.textContent = `Se muestran solo las primeras ${structure.pages.length} páginas de ${structure.pageCount}.`;
+      card.appendChild(note);
+    }
   }
 
   return card;

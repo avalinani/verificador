@@ -50,4 +50,27 @@ class AnalysisPropertiesTest {
         assertThat(props.maxDecodedStreamSize()).isEqualTo(DataSize.ofMegabytes(1));
         assertThat(props.maxDecodedTotalSize()).isEqualTo(DataSize.ofMegabytes(64));
     }
+
+    @Test
+    void resourceCapsDefaultToValuesThatFitTheOneGigabyteHeap() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of()))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxPages()).isEqualTo(1000);
+        assertThat(props.maxRevisionMarkers()).isEqualTo(1_000_000);
+        assertThat(props.maxRevisions()).isEqualTo(10_000);
+    }
+
+    @Test
+    void resourceCapsAreConfigurable() {
+        AnalysisProperties props = new Binder(new MapConfigurationPropertySource(Map.of(
+                "pdfvalidator.analysis.max-pages", "10",
+                "pdfvalidator.analysis.max-revision-markers", "20",
+                "pdfvalidator.analysis.max-revisions", "30")))
+                .bindOrCreate("pdfvalidator.analysis", AnalysisProperties.class);
+
+        assertThat(props.maxPages()).isEqualTo(10);
+        assertThat(props.maxRevisionMarkers()).isEqualTo(20);
+        assertThat(props.maxRevisions()).isEqualTo(30);
+    }
 }
