@@ -202,4 +202,23 @@ class StaticContentSecurityTest {
         assertThat(html.split(Pattern.quote(expectedHint), -1)).hasSize(3);
         assertThat(html).doesNotContainPattern("hasta (?!" + megabytes + "&nbsp;MB)\\d+&nbsp;MB");
     }
+
+    /**
+     * T19: without a trusted timestamp the chain is validated at the analysis
+     * time, and the UI must say so with the exact agreed wording; an untrusted
+     * timestamp is flagged where it is shown. Rendering stays on
+     * {@code textContent} and the UI never mentions the organisation.
+     */
+    @Test
+    void theUiExplainsValidationAtCurrentTimeAndFlagsAnUntrustedTimestamp() throws Exception {
+        String js = mockMvc.perform(get("/render.js"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(js).contains("VALIDATED_AT_CURRENT_TIME: \"Sin sello de tiempo de confianza: se ha validado a fecha de hoy\"");
+        assertThat(js).contains("Sello de tiempo (TSA no de confianza)");
+        assertThat(js).contains("timestamp.trusted");
+        assertThat(js).doesNotContainPattern("\\.innerHTML\\s*=");
+        assertThat(js.toLowerCase(java.util.Locale.ROOT)).doesNotContain("coam");
+    }
 }

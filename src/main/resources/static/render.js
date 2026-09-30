@@ -44,6 +44,7 @@ const REASON_TEXT = {
   MODIFIED_AFTER_LAST_SIGNATURE: "El documento se modificó después de esta firma y ninguna firma posterior cubre el contenido final.",
   MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY: "El documento cambió después de esta firma y la firma posterior que cubre el contenido final no es de confianza.",
   COVERED_BY_LATER_SIGNATURE: "El documento cambió después de esta firma, pero una firma posterior válida cubre el contenido final (flujo normal de varias firmas).",
+  VALIDATED_AT_CURRENT_TIME: "Sin sello de tiempo de confianza: se ha validado a fecha de hoy",
   CHAIN_UNTRUSTED_ROOT: "La cadena de certificados no llega a una entidad de confianza reconocida.",
   CHAIN_INCOMPLETE: "Falta al menos un certificado intermedio en la cadena de confianza.",
   CHAIN_EXPIRED: "Algún certificado de la cadena estaba caducado en el momento de la validación.",
@@ -212,8 +213,8 @@ function renderSignatureCard(signature, index) {
   facts.className = "signature-facts";
   facts.append(
     fact("Emisor", signer ? commonNameOf(signer.issuer) : "-"),
-    fact("Fecha declarada", formatInstant(signature.claimedSigningTime)),
-    fact("Sello de tiempo", signature.timestamp?.present ? formatInstant(signature.timestamp.genTime) : "No presente"),
+    fact("Fecha declarada (no verificada)", formatInstant(signature.claimedSigningTime)),
+    timestampFact(signature.timestamp),
     fact("Integridad", INTEGRITY_TEXT[signature.integrity] || signature.integrity),
     fact("Cadena de confianza", CHAIN_STATUS_TEXT[signature.chainStatus] || signature.chainStatus),
     fact("Revocación", REVOCATION_STATE_TEXT[signature.revocation?.state] || signature.revocation?.state || "-"),
@@ -242,6 +243,16 @@ function renderSignatureCard(signature, index) {
   return card;
 }
 
+// A timestamp only fixes the validation time when its TSA is trusted; an
+// untrusted one is still shown, but labelled so it is not mistaken for proof.
+function timestampFact(timestamp) {
+  if (!timestamp?.present) {
+    return fact("Sello de tiempo", "No presente");
+  }
+  const label = timestamp.trusted ? "Sello de tiempo" : "Sello de tiempo (TSA no de confianza)";
+  return fact(label, formatInstant(timestamp.genTime));
+}
+
 function renderSignatureDetails(signature) {
   const details = document.createElement("details");
   details.className = "signature-details";
@@ -257,6 +268,13 @@ function renderSignatureDetails(signature) {
     ? "El rango firmado cubre todo el archivo."
     : "El rango firmado no llega al final del archivo (se añadió contenido después).";
   body.appendChild(coverage);
+
+  if (signature.timestamp?.present && signature.timestamp.note) {
+    const timestampNote = document.createElement("p");
+    timestampNote.className = "anomaly-note";
+    timestampNote.textContent = `Sello de tiempo: ${signature.timestamp.note}`;
+    body.appendChild(timestampNote);
+  }
 
   if (signature.chain && signature.chain.length > 0) {
     const chainHeading = document.createElement("p");
