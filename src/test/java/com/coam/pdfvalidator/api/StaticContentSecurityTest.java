@@ -6,7 +6,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
+
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.mock.web.MockMultipartFile;
@@ -177,5 +181,25 @@ class StaticContentSecurityTest {
         // path is the plain "application/json" one. Either way, bare -- no
         // charset parameter forced onto it.
         assertThat(result.getResponse().getContentType()).isEqualTo("application/problem+json");
+    }
+
+    /**
+     * T16: both drop zones ("Validar" and "Firmar") tell the user the upload
+     * limit, which must be the one the server actually enforces
+     * ({@code spring.servlet.multipart.max-file-size}) -- the hint once kept
+     * advertising 20 MB after the limit was raised to 80 MB.
+     */
+    @Test
+    void theDropzoneHintsAdvertiseTheConfiguredUploadLimit(
+            @Value("${spring.servlet.multipart.max-file-size}") String maxFileSize) throws Exception {
+        String megabytes = maxFileSize.replaceAll("(?i)mb$", "");
+        String expectedHint = "Solo archivos PDF, hasta " + megabytes + "&nbsp;MB.";
+
+        String html = mockMvc.perform(get("/index.html"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(html.split(Pattern.quote(expectedHint), -1)).hasSize(3);
+        assertThat(html).doesNotContainPattern("hasta (?!" + megabytes + "&nbsp;MB)\\d+&nbsp;MB");
     }
 }

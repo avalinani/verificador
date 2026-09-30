@@ -34,7 +34,7 @@ import java.util.Locale;
  * machinery that formats every other API error produces the 503 body. The
  * rejected request's body is never read, so the response carries {@code
  * Connection: close}: the container then drops the connection instead of
- * trying to drain up to 20 MB the client may still be sending.
+ * trying to drain up to 80 MB the client may still be sending.
  */
 public class AnalysisBulkheadFilter extends OncePerRequestFilter {
 
