@@ -188,6 +188,69 @@ class CompositeRevocationCheckerTest {
      * duplicating AIA/CDP-extraction logic in a test -- it is public
      * exactly for this kind of infra-internal reuse, see its own Javadoc.
      */
+    // ---- T21b: URL deduplication and per-method cap ----
+
+    private static CertificateInfo withUrls(CertificateInfo base, List<String> ocspUrls, List<String> crlUrls) {
+        return new CertificateInfo(base.subject(), base.commonName(), base.issuer(), base.serialNumberHex(),
+                base.notBefore(), base.notAfter(), base.signatureAlgorithm(), ocspUrls, crlUrls, base.encoded());
+    }
+
+    /** Registers {@code count} paths under {@code prefix} that count their hits and answer HTTP 500. */
+    private java.util.concurrent.atomic.AtomicInteger countHits(String prefix, int count) {
+        java.util.concurrent.atomic.AtomicInteger hits = new java.util.concurrent.atomic.AtomicInteger();
+        for (int i = 1; i <= count; i++) {
+            server.respondDynamically(prefix + i, "application/octet-stream", body -> {
+                hits.incrementAndGet();
+                throw new IllegalStateException("always fail");
+            });
+        }
+        return hits;
+    }
+
+    private List<String> urls(String prefix, int count) {
+        List<String> urls = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            urls.add(server.baseUrl() + prefix + i);
+        }
+        return urls;
+    }
+
+    @Test
+    void atMostThreeOcspUrlsAreContactedPerCertificate() {
+        TestPki.RevocationTestIdentity identity = TestPki.issueRevocationTestIdentity(null, null);
+        java.util.concurrent.atomic.AtomicInteger hits = countHits("/o", 6);
+        CertificateInfo signer = withUrls(toDomain(identity.signerCertificate()), urls("/o", 6), List.of());
+
+        RevocationStatus status = checker().check(signer, toDomain(identity.issuerCertificate()));
+
+        assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
+        assertThat(hits.get()).isEqualTo(3);
+    }
+
+    @Test
+    void atMostThreeCrlUrlsAreContactedPerCertificate() {
+        TestPki.RevocationTestIdentity identity = TestPki.issueRevocationTestIdentity(null, null);
+        java.util.concurrent.atomic.AtomicInteger hits = countHits("/c", 6);
+        CertificateInfo signer = withUrls(toDomain(identity.signerCertificate()), List.of(), urls("/c", 6));
+
+        RevocationStatus status = checker().check(signer, toDomain(identity.issuerCertificate()));
+
+        assertThat(status.state()).isEqualTo(RevocationState.UNKNOWN);
+        assertThat(hits.get()).isEqualTo(3);
+    }
+
+    @Test
+    void duplicateUrlsAreContactedOnlyOnce() {
+        TestPki.RevocationTestIdentity identity = TestPki.issueRevocationTestIdentity(null, null);
+        java.util.concurrent.atomic.AtomicInteger hits = countHits("/o", 1);
+        String url = server.baseUrl() + "/o1";
+        CertificateInfo signer = withUrls(toDomain(identity.signerCertificate()), List.of(url, url, url), List.of());
+
+        checker().check(signer, toDomain(identity.issuerCertificate()));
+
+        assertThat(hits.get()).isEqualTo(1);
+    }
+
     private static CertificateInfo toDomain(X509Certificate certificate) {
         return com.coam.pdfvalidator.infrastructure.bouncycastle.X509CertificateInfoMapper.toDomain(certificate);
     }

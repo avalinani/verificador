@@ -60,6 +60,26 @@ final class PinnedHttpClient {
     }
 
     /**
+     * Caps on the response head, so a hostile responder cannot make this
+     * server buffer arbitrarily large header or chunk-trailer blocks within
+     * the time limit: {@code maxLineBytes} bounds every single line (status
+     * line, header, chunk-size line, trailer), {@code maxHeaderCount} the
+     * number of header (or, separately, trailer) lines and {@code
+     * maxHeaderBytes} their combined size. Exceeding any of them is a
+     * {@link MalformedHttpResponseException} (mapped to {@code UNKNOWN}).
+     */
+    record Limits(int maxLineBytes, int maxHeaderCount, int maxHeaderBytes) {
+
+        static final Limits DEFAULT = new Limits(8 * 1024, 100, 64 * 1024);
+
+        Limits {
+            if (maxLineBytes < 1 || maxHeaderCount < 1 || maxHeaderBytes < 1) {
+                throw new IllegalArgumentException("header limits must be positive");
+            }
+        }
+    }
+
+    /**
      * Sends one request to {@code target.address()} (never re-resolving
      * {@code target.uri()}'s hostname), with a {@code Host} header carrying
      * the original hostname so name-based virtual hosting still works.
@@ -71,6 +91,14 @@ final class PinnedHttpClient {
     static Response send(
             RevocationUrlGuard.ValidatedTarget target, String method, byte[] requestBody,
             Map<String, String> extraHeaders, Duration timeout, long maxResponseBytes) throws IOException {
+        return send(target, method, requestBody, extraHeaders, timeout, maxResponseBytes, Limits.DEFAULT);
+    }
+
+    /** Same as above, with explicit {@link Limits} on the response head. */
+    static Response send(
+            RevocationUrlGuard.ValidatedTarget target, String method, byte[] requestBody,
+            Map<String, String> extraHeaders, Duration timeout, long maxResponseBytes, Limits limits)
+            throws IOException {
 
         String host = target.uri().getHost();
         int port = target.uri().getPort() != -1 ? target.uri().getPort() : 80;
@@ -98,7 +126,7 @@ final class PinnedHttpClient {
 
             writeRequest(socket.getOutputStream(), method, path, headers, requestBody);
 
-            return readResponse(socket, deadlineNanos, maxResponseBytes);
+            return readResponse(socket, deadlineNanos, maxResponseBytes, limits);
         }
     }
 
@@ -118,11 +146,11 @@ final class PinnedHttpClient {
         out.flush();
     }
 
-    private static Response readResponse(Socket socket, long deadlineNanos, long maxResponseBytes)
+    private static Response readResponse(Socket socket, long deadlineNanos, long maxResponseBytes, Limits limits)
             throws IOException {
         InputStream in = socket.getInputStream();
 
-        String statusLine = readLine(in, socket, deadlineNanos);
+        String statusLine = readLine(in, socket, deadlineNanos, limits.maxLineBytes());
         if (statusLine == null || !statusLine.startsWith("HTTP/1.")) {
             throw new MalformedHttpResponseException("malformed HTTP status line");
         }
@@ -138,8 +166,10 @@ final class PinnedHttpClient {
         }
 
         Map<String, String> responseHeaders = new LinkedHashMap<>();
+        HeaderBudget headerBudget = new HeaderBudget(limits, "header");
         String line;
-        while ((line = readLine(in, socket, deadlineNanos)) != null && !line.isEmpty()) {
+        while ((line = readLine(in, socket, deadlineNanos, limits.maxLineBytes())) != null && !line.isEmpty()) {
+            headerBudget.charge(line);
             int colon = line.indexOf(':');
             if (colon > 0) {
                 responseHeaders.put(line.substring(0, colon).trim().toLowerCase(java.util.Locale.ROOT),
@@ -147,16 +177,16 @@ final class PinnedHttpClient {
             }
         }
 
-        byte[] body = readBody(in, responseHeaders, maxResponseBytes, deadlineNanos, socket);
+        byte[] body = readBody(in, responseHeaders, maxResponseBytes, deadlineNanos, socket, limits);
         return new Response(statusCode, body);
     }
 
     private static byte[] readBody(
-            InputStream in, Map<String, String> headers, long maxResponseBytes, long deadlineNanos, Socket socket)
-            throws IOException {
+            InputStream in, Map<String, String> headers, long maxResponseBytes, long deadlineNanos, Socket socket,
+            Limits limits) throws IOException {
         String transferEncoding = headers.get("transfer-encoding");
         if (transferEncoding != null && transferEncoding.toLowerCase(java.util.Locale.ROOT).contains("chunked")) {
-            return readChunkedBody(in, maxResponseBytes, deadlineNanos, socket);
+            return readChunkedBody(in, maxResponseBytes, deadlineNanos, socket, limits);
         }
 
         String contentLengthHeader = headers.get("content-length");
@@ -189,11 +219,12 @@ final class PinnedHttpClient {
         return body;
     }
 
-    private static byte[] readChunkedBody(InputStream in, long maxResponseBytes, long deadlineNanos, Socket socket)
+    private static byte[] readChunkedBody(
+            InputStream in, long maxResponseBytes, long deadlineNanos, Socket socket, Limits limits)
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         while (true) {
-            String sizeLine = readLine(in, socket, deadlineNanos);
+            String sizeLine = readLine(in, socket, deadlineNanos, limits.maxLineBytes());
             if (sizeLine == null) {
                 throw new IOException("connection closed while reading a chunk size");
             }
@@ -210,9 +241,11 @@ final class PinnedHttpClient {
             }
             if (chunkSize == 0) {
                 // Trailing headers (if any), then the final blank line.
+                HeaderBudget trailerBudget = new HeaderBudget(limits, "trailer");
                 String trailer;
-                while ((trailer = readLine(in, socket, deadlineNanos)) != null && !trailer.isEmpty()) {
-                    // discarded
+                while ((trailer = readLine(in, socket, deadlineNanos, limits.maxLineBytes())) != null
+                        && !trailer.isEmpty()) {
+                    trailerBudget.charge(trailer); // discarded, but still bounded
                 }
                 break;
             }
@@ -232,7 +265,7 @@ final class PinnedHttpClient {
                 read += n;
             }
             buffer.write(chunk, 0, chunk.length);
-            readLine(in, socket, deadlineNanos); // trailing CRLF after each chunk's data
+            readLine(in, socket, deadlineNanos, limits.maxLineBytes()); // trailing CRLF after each chunk's data
         }
         return buffer.toByteArray();
     }
@@ -255,7 +288,8 @@ final class PinnedHttpClient {
      * under each read's own socket timeout can keep a single {@code readLine} call (a status
      * line, a header line, a chunk-trailer line, ...) alive far past the configured deadline.
      */
-    private static String readLine(InputStream in, Socket socket, long deadlineNanos) throws IOException {
+    private static String readLine(InputStream in, Socket socket, long deadlineNanos, int maxLineBytes)
+            throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         int previous = -1;
         while (true) {
@@ -269,7 +303,34 @@ final class PinnedHttpClient {
                 return new String(bytes, 0, bytes.length - 1, StandardCharsets.US_ASCII);
             }
             line.write(current);
+            if (line.size() > maxLineBytes) {
+                throw new MalformedHttpResponseException("HTTP line exceeds the size limit");
+            }
             previous = current;
+        }
+    }
+
+    /** Counts the lines and bytes of one header (or trailer) block against {@link Limits}. */
+    private static final class HeaderBudget {
+        private final Limits limits;
+        private final String kind;
+        private int count;
+        private long bytes;
+
+        HeaderBudget(Limits limits, String kind) {
+            this.limits = limits;
+            this.kind = kind;
+        }
+
+        void charge(String line) throws MalformedHttpResponseException {
+            count++;
+            bytes += line.length() + 2L;
+            if (count > limits.maxHeaderCount()) {
+                throw new MalformedHttpResponseException("too many HTTP " + kind + " lines");
+            }
+            if (bytes > limits.maxHeaderBytes()) {
+                throw new MalformedHttpResponseException("HTTP " + kind + " block exceeds the size limit");
+            }
         }
     }
 

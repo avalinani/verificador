@@ -555,6 +555,96 @@ class AnalyzePdfUseCaseTest {
                 RevocationState.NOT_CHECKED, null, "validated certification path unavailable"));
     }
 
+    // ---- T21a: every non-anchor certificate of the validated path is checked ----
+
+    /** Answers per certificate subject and records every (certificate, issuer) pair it was asked about. */
+    private static final class ScriptedRevocationChecker implements RevocationChecker {
+        private final java.util.Map<String, RevocationStatus> bySubject = new java.util.HashMap<>();
+        private final List<String> asked = new ArrayList<>();
+
+        ScriptedRevocationChecker answer(String subject, RevocationStatus status) {
+            bySubject.put(subject, status);
+            return this;
+        }
+
+        @Override
+        public RevocationStatus check(CertificateInfo certificate, CertificateInfo issuer) {
+            asked.add(certificate.subject() + " <- " + (issuer == null ? "none" : issuer.subject()));
+            return bySubject.getOrDefault(certificate.subject(),
+                    new RevocationStatus(RevocationState.UNKNOWN, null, "no answer scripted"));
+        }
+    }
+
+    private RevocationStatus analyzeThreeTierPath(ScriptedRevocationChecker checker) {
+        CertificateInfo leaf = certificate("leaf");
+        CertificateInfo intermediate = certificate("intermediate-ca");
+        CertificateInfo root = certificate("root-ca");
+        SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of(leaf, intermediate, root));
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.overrideValidatedPath(List.of(leaf, intermediate, root));
+        AnalyzePdfUseCase useCase = happyPathUseCaseWithSignatures(List.of(signature), chainValidator, checker);
+        return useCase.analyze("t.pdf", CONTENT, new AnalysisOptions(true)).signatures().get(0).revocation();
+    }
+
+    @Test
+    void aRevokedIntermediateMakesTheWholePathRevokedEvenWhenTheLeafIsGood() {
+        ScriptedRevocationChecker checker = new ScriptedRevocationChecker()
+                .answer("leaf", new RevocationStatus(RevocationState.GOOD, "http://ocsp/leaf", null))
+                .answer("intermediate-ca",
+                        new RevocationStatus(RevocationState.REVOKED, "http://ocsp/ca", "revoked at 2026-01-01T00:00:00Z"));
+
+        RevocationStatus revocation = analyzeThreeTierPath(checker);
+
+        assertThat(revocation.state()).isEqualTo(RevocationState.REVOKED);
+        assertThat(revocation.source()).isEqualTo("http://ocsp/ca");
+        assertThat(revocation.detail()).contains("intermediate-ca").contains("revoked at 2026-01-01T00:00:00Z");
+    }
+
+    @Test
+    void everyNonAnchorCertificateIsCheckedAgainstItsIssuerAndTheAnchorItselfIsNot() {
+        ScriptedRevocationChecker checker = new ScriptedRevocationChecker()
+                .answer("leaf", new RevocationStatus(RevocationState.GOOD, "l", null))
+                .answer("intermediate-ca", new RevocationStatus(RevocationState.GOOD, "c", null));
+
+        RevocationStatus revocation = analyzeThreeTierPath(checker);
+
+        assertThat(checker.asked).containsExactly("leaf <- intermediate-ca", "intermediate-ca <- root-ca");
+        assertThat(revocation.state()).isEqualTo(RevocationState.GOOD);
+        assertThat(revocation.source()).isEqualTo("l");
+    }
+
+    @Test
+    void anUnknownIntermediateMakesTheWholePathUnknownEvenWhenTheLeafIsGood() {
+        ScriptedRevocationChecker checker = new ScriptedRevocationChecker()
+                .answer("leaf", new RevocationStatus(RevocationState.GOOD, "l", null))
+                .answer("intermediate-ca", new RevocationStatus(RevocationState.UNKNOWN, null, "OCSP request timed out"));
+
+        RevocationStatus revocation = analyzeThreeTierPath(checker);
+
+        assertThat(revocation.state()).isEqualTo(RevocationState.UNKNOWN);
+        assertThat(revocation.detail()).contains("intermediate-ca").contains("OCSP request timed out");
+    }
+
+    @Test
+    void aRevokedIntermediateWinsOverAnUnknownLeaf() {
+        ScriptedRevocationChecker checker = new ScriptedRevocationChecker()
+                .answer("leaf", new RevocationStatus(RevocationState.UNKNOWN, null, "no OCSP/CRL URL available"))
+                .answer("intermediate-ca", new RevocationStatus(RevocationState.REVOKED, "c", "revoked"));
+
+        assertThat(analyzeThreeTierPath(checker).state()).isEqualTo(RevocationState.REVOKED);
+    }
+
+    @Test
+    void aLeafResultKeepsItsOriginalDetailTextUnchanged() {
+        ScriptedRevocationChecker checker = new ScriptedRevocationChecker()
+                .answer("leaf", new RevocationStatus(RevocationState.REVOKED, "l", "revoked at X"))
+                .answer("intermediate-ca", new RevocationStatus(RevocationState.GOOD, "c", null));
+
+        RevocationStatus revocation = analyzeThreeTierPath(checker);
+
+        assertThat(revocation).isEqualTo(new RevocationStatus(RevocationState.REVOKED, "l", "revoked at X"));
+    }
+
     @Test
     void revocationIsNotCheckedWhenTheSignatureHasNoCertificateChainEvenIfTheOptionIsEnabled() {
         SignatureReport signature = signatureWith(TimestampInfo.absent(), FIXED_NOW, List.of());

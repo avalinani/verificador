@@ -301,6 +301,18 @@ public final class TestPki {
             java.security.PublicKey intermediatePublicKey,
             Date notBefore,
             Date notAfter) throws Exception {
+        return buildIntermediateCertificate(
+                rootCertificate, rootPrivateKey, intermediatePublicKey, notBefore, notAfter, null, null);
+    }
+
+    private static X509Certificate buildIntermediateCertificate(
+            X509Certificate rootCertificate,
+            PrivateKey rootPrivateKey,
+            java.security.PublicKey intermediatePublicKey,
+            Date notBefore,
+            Date notAfter,
+            String ocspUrl,
+            String crlUrl) throws Exception {
 
         org.bouncycastle.asn1.x500.X500Name issuer = subjectName(rootCertificate);
         org.bouncycastle.asn1.x500.X500Name subject =
@@ -317,6 +329,21 @@ public final class TestPki {
         certBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(0));
         certBuilder.addExtension(Extension.keyUsage, true,
                 new KeyUsage(KeyUsage.keyCertSign | KeyUsage.cRLSign));
+        if (ocspUrl != null) {
+            certBuilder.addExtension(Extension.authorityInfoAccess, false,
+                    new AuthorityInformationAccess(
+                            AccessDescription.id_ad_ocsp,
+                            new GeneralName(GeneralName.uniformResourceIdentifier, ocspUrl)));
+        }
+        if (crlUrl != null) {
+            certBuilder.addExtension(Extension.cRLDistributionPoints, false,
+                    new CRLDistPoint(new DistributionPoint[] {
+                            new DistributionPoint(
+                                    new DistributionPointName(new GeneralNames(
+                                            new GeneralName(GeneralName.uniformResourceIdentifier, crlUrl))),
+                                    null, null)
+                    }));
+        }
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
@@ -359,6 +386,45 @@ public final class TestPki {
         return new JcaX509CertificateConverter()
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .getCertificate(holder);
+    }
+
+    /**
+     * A root -&gt; intermediate -&gt; end-entity chain whose intermediate and end-entity certificates both
+     * declare an OCSP URL (the responders are played by the test: the root signs for the intermediate, the
+     * intermediate for the end-entity), exposing the CA private keys -- T21's revocation-path tests.
+     */
+    public record ThreeTierRevocationIdentity(
+            X509Certificate rootCertificate,
+            X509Certificate intermediateCertificate,
+            X509Certificate endEntityCertificate,
+            PrivateKey rootPrivateKey,
+            PrivateKey intermediatePrivateKey) {
+    }
+
+    public static ThreeTierRevocationIdentity issueThreeTierRevocationIdentity(
+            String intermediateOcspUrl, String endEntityOcspUrl) {
+        try {
+            KeyPair rootKeyPair = generateRsaKeyPair();
+            KeyPair intermediateKeyPair = generateRsaKeyPair();
+            KeyPair eeKeyPair = generateRsaKeyPair();
+
+            Date notBefore = new Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000);
+            Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+            X509Certificate rootCertificate = buildRootCertificate(rootKeyPair, notBefore, notAfter);
+            X509Certificate intermediateCertificate = buildIntermediateCertificate(
+                    rootCertificate, rootKeyPair.getPrivate(), intermediateKeyPair.getPublic(), notBefore, notAfter,
+                    intermediateOcspUrl, null);
+            X509Certificate eeCertificate = buildEndEntityCertificate(
+                    intermediateCertificate, intermediateKeyPair.getPrivate(), eeKeyPair.getPublic(),
+                    notBefore, notAfter, endEntityOcspUrl, null);
+
+            return new ThreeTierRevocationIdentity(
+                    rootCertificate, intermediateCertificate, eeCertificate,
+                    rootKeyPair.getPrivate(), intermediateKeyPair.getPrivate());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build three-tier revocation test PKI", e);
+        }
     }
 
     /** A TSA identity whose certificate declares the {@code id-kp-timeStamping} extended key usage. */

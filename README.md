@@ -51,7 +51,7 @@ api ──► application: AnalyzePdfUseCase
             ├─► PdfDocumentReader         estructura, páginas, permisos, XMP
             ├─► SignatureVerifier         /ByteRange + CMS + RFC 3161
             ├─► CertificateChainValidator PKIX contra trust store
-            ├─► RevocationChecker         OCSP/CRL (opcional, timeout 2 s)
+            ├─► RevocationChecker         OCSP/CRL (opcional, toda la ruta, plazo total 6 s)
             ├─► PdfaConformanceValidator  preflight PDF/A-1b
             └─► SignatureVerdictPolicy    veredicto por firma + global (§2.10)
    ◄── PdfAnalysisReportDto (JSON) / ProblemDetail (error)
@@ -201,12 +201,21 @@ La revocación responde a "¿el emisor ha anulado este certificado?". Es una fun
 **Orden y semántica:**
 
 1. Sin URL OCSP ni CRL (extensiones AIA/CDP) o sin emisor → `UNKNOWN`.
-2. Se prueba OCSP con cada URL declarada, en orden, hasta un resultado concluyente (`GOOD`/`REVOKED`).
-3. Si OCSP no fue concluyente y hay URL CRL, se prueba CRL igual.
+2. Se prueba OCSP con cada URL declarada (sin repetidas y como mucho 3), en orden, hasta un resultado concluyente (`GOOD`/`REVOKED`).
+3. Si OCSP no fue concluyente y hay URL CRL, se prueba CRL igual (mismas reglas).
 4. Si ninguno fue concluyente → `UNKNOWN` con un motivo que combina ambos intentos.
 5. Cualquier fallo de red, protocolo o criptografía se traduce a `UNKNOWN` con un motivo estable y no sensible (el detalle se registra por log, solo el nombre de la clase de la excepción).
 
-Cada petición tiene un *timeout* de 2 s y un límite de respuesta de 10 MB, configurables (`pdfvalidator.revocation.*`, §4).
+**Toda la ruta, no solo el firmante (T21).** Se comprueba cada certificado de la ruta validada (§2.7) **excepto el ancla de confianza**, cada uno frente a su emisor: el firmante y las CA intermedias. Antes solo se miraba el firmante, así que una intermedia revocada con el firmante todavía `GOOD` daba `VALID`. El resultado se agrega así: cualquier `REVOKED` → `REVOKED` (la política de veredicto lo lleva a `INVALID`; la comprobación se detiene en el primero); si no, cualquier `UNKNOWN` o resultado no concluyente → `UNKNOWN` (`NOT_ADMITTED`, *fail-closed* como antes); solo si **todos** son `GOOD` el resultado es `GOOD`. El texto de detalle del firmante no cambia; el de una CA lleva el prefijo `CA certificate '<sujeto>': …` para saber qué certificado provoca el resultado. El ancla no se comprueba: no hay nadie por encima que pueda revocarla y su confianza es una decisión de configuración local (§2.7). Consecuencia deliberada: una CA intermedia sin URL OCSP/CDP deja el resultado en `UNKNOWN`.
+
+**Presupuesto acotado (T21).** Un certificado hostil o mal emitido no puede provocar esperas ni tráfico saliente arbitrarios:
+
+- Las URLs de cada certificado se deduplican y se limitan a **3 por método** (OCSP y CRL).
+- Cada petición (resolución DNS + conexión + respuesta) tiene un tope de **2 s**, y además toda la comprobación de revocación de una firma —OCSP y CRL de todos los certificados de la ruta— comparte **un único plazo de 6 s** (`Deadline`). Agotado, no se hace ningún intento más y el resultado es `UNKNOWN` con el motivo *revocation time budget exhausted*.
+- La resolución DNS corre **bajo ese plazo**: se ejecuta en un grupo acotado de 16 hilos demonio y, si el DNS no responde a tiempo, la URL se rechaza (*host could not be resolved within the time limit*); si el grupo está saturado por consultas atascadas, se rechaza en vez de encolar. Se sigue resolviendo **una sola vez** y conectando a esa dirección (arriba).
+- Las respuestas HTTP tienen tope de tamaño (10 MB de cuerpo) y también de **cabeceras**: línea de estado, cabecera, tamaño de fragmento y *trailer* ≤ 8 KB; ≤ 100 cabeceras (y, aparte, 100 *trailers* en una respuesta `chunked`); ≤ 64 KB de cabeceras en conjunto. Superarlos es una respuesta mal formada → `UNKNOWN`, nunca una excepción hacia el cliente.
+
+Todos los límites son configurables (`pdfvalidator.revocation.*`, §4).
 
 **Verificación real de la respuesta:**
 
@@ -216,7 +225,7 @@ Cada petición tiene un *timeout* de 2 s y un límite de respuesta de 10 MB, con
 **Guarda SSRF con conexión anclada.** Las URLs OCSP/CRL vienen de extensiones de un certificado potencialmente hostil, así que `RevocationUrlGuard`:
 
 - Solo acepta `http` (nunca `https`, ver §10).
-- Resuelve el host **una sola vez** y descarta las direcciones privadas o reservadas: *loopback*, enlace local (incluida la de metadatos de nube `169.254.169.254`), RFC 1918, `0.0.0.0/8`, CGNAT, multidifusión e IPv6 *unique-local*, también disfrazadas como IPv4 mapeada en IPv6.
+- Resuelve el host **una sola vez** y descarta las direcciones privadas o reservadas: *loopback*, enlace local (incluida la de metadatos de nube `169.254.169.254`), RFC 1918, `0.0.0.0/8`, CGNAT, multidifusión e IPv6 *unique-local*, también disfrazadas dentro de IPv6: IPv4 mapeada (`::ffff:a.b.c.d`), IPv4-compatible (`::a.b.c.d`), NAT64 (`64:ff9b::/96`; el prefijo de uso local `64:ff9b:1::/48` se rechaza entero) y 6to4 (`2002::/16`) (T21: estas tres últimas formas no se normalizaban y saltaban la lista). Teredo no se decodifica. Un pentest dinámico confirmó el bloqueo de `127.0.0.1`, `169.254.169.254`, `[::1]`, `[::ffff:127.0.0.1]`, `0.0.0.0`, `2130706433` y `localhost`.
 - Devuelve la dirección elegida (`ValidatedTarget`) y `PinnedHttpClient`, un cliente HTTP/1.1 mínimo sobre `java.net.Socket`, conecta exactamente a ella y nunca vuelve a resolver el nombre. Así un DNS hostil que responda distinto en dos resoluciones (*DNS rebinding*) no puede sortear la guarda. Nunca sigue redirecciones.
 - El filtro de direcciones privadas solo se desactiva con un constructor de solo-test, inalcanzable desde el cableado de producción.
 
@@ -277,7 +286,7 @@ El veredicto resume en una sola palabra qué se puede concluir de cada firma, co
 
 - **Confianza del sello y `validationTime` de la cadena (T19).** Antes de validar la cadena del firmante, `assessTimestamp` decide si el sello es de confianza (§2.6), validando la cadena de la TSA en su `genTime` a través del mismo puerto. El `validationTime` del firmante es el `genTime` **solo si el sello es de confianza**; si no, el instante actual del `Clock`. La fecha auto-declarada (`claimedSigningTime`) no interviene. Si la validación de la cadena de la TSA lanza una excepción, el sello queda como no de confianza y el resto de la firma se conserva.
 - **PDF/A combinado.** Se lee la declaración XMP antes de invocar el validador formal. Si declara PDF/A-2 o -3 (`part != 1`), no se llama a *preflight* y el informe es `NOT_VALIDATED` con la incidencia `PDFA_PART_NOT_SUPPORTED`, indicando que solo se valida formalmente PDF/A-1b. Si declara PDF/A-1 o nada, se usa el resultado formal.
-- **Revocación.** Con `checkRevocation=false`, cada firma recibe `notChecked()`. Con `true`, solo se llama al `RevocationChecker` cuando la cadena es `TRUSTED`; en otro caso se informa `NOT_CHECKED` con *"revocation not checked: certificate chain is not trusted"*, y el certificado y su emisor salen de `validatedPath` (§2.8).
+- **Revocación.** Con `checkRevocation=false`, cada firma recibe `notChecked()`. Con `true`, solo se llama al `RevocationChecker` cuando la cadena es `TRUSTED`; en otro caso se informa `NOT_CHECKED` con *"revocation not checked: certificate chain is not trusted"*, y los certificados a comprobar (todos los de la ruta salvo el ancla, cada uno con su emisor) salen de `validatedPath` (§2.8).
 - **Documento cifrado o corrupto: se propaga, no se atrapa.** `EncryptedPdfException` e `InvalidPdfException` salen de `analyze(...)`: no hay informe parcial razonable para un documento que no se pudo abrir. La capa REST las mapea a `422` (§2.13).
 - **El fallo de una sección no pierde el resto.** Una excepción inesperada del validador PDF/A se informa como `NOT_VALIDATED`; una del verificador de firmas, como lista vacía; y una del enriquecimiento de una firma (cadena + revocación) deja esa firma con sus campos de integridad intactos y añade una nota a `anomaly`. En los dos primeros casos se añade además un `SectionError` (`PDFA`/`SIGNATURES`) al informe. Solo el cálculo de hashes carece de guarda: no puede fallar de forma significativa. El texto que llega al cliente es siempre fijo (*"PDF/A-1b validation failed unexpectedly"*, ...); el detalle real va al log.
 - **Veredicto final.** Tras enriquecer todas las firmas, una última pasada con `SignatureVerdictPolicy.evaluateAll(...)` (necesita verlas juntas, §2.10). `overallVerdict()` y `modifiedAfterLastSignature()` se calculan bajo demanda a partir de esa lista.
@@ -578,8 +587,13 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 | `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |
-| `pdfvalidator.revocation.timeout` | *Timeout* por petición OCSP/CRL (§2.8) | `2s` |
+| `pdfvalidator.revocation.timeout` | Tope por petición OCSP/CRL (DNS + conexión + respuesta) (§2.8) | `2s` |
+| `pdfvalidator.revocation.total-timeout` | Un único plazo para toda la comprobación de revocación de una firma (todos los certificados de la ruta, OCSP y CRL); agotado, `UNKNOWN` | `6s` |
 | `pdfvalidator.revocation.max-response-bytes` | Tamaño máximo aceptado de una respuesta OCSP/CRL | `10MB` |
+| `pdfvalidator.revocation.max-urls-per-method` | URLs AIA (OCSP) / CDP (CRL) que se prueban por certificado, tras quitar repetidas | `3` |
+| `pdfvalidator.revocation.max-header-line-bytes` | Longitud máxima de una línea HTTP de la respuesta (estado, cabecera, tamaño de fragmento, *trailer*) | `8KB` |
+| `pdfvalidator.revocation.max-headers` | Número máximo de cabeceras (y, aparte, de *trailers* `chunked`) | `100` |
+| `pdfvalidator.revocation.max-header-bytes` | Tamaño conjunto máximo de las cabeceras (y de los *trailers*) | `64KB` |
 | `management.endpoints.web.exposure.include` | Endpoints de Actuator expuestos | `health,info` |
 
 ## 5. Estructura del proyecto
@@ -659,7 +673,7 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Datos del certificado firmante y su cadena (sujeto, emisor, fechas, URLs OCSP/CRL); DN legible y `commonName` propio (§2.5) | ✅ |
 | Sello de tiempo RFC 3161 (sello de firma; imprint, firma y confianza de la TSA) | ✅ |
 | Cadena de confianza contra almacén configurable (trust store) | ✅ |
-| Revocación OCSP / CRL (opcional, timeout 2 s, solo para cadena `TRUSTED`, guarda SSRF con anclaje de conexión) | ✅ |
+| Revocación OCSP / CRL (opcional, toda la ruta validada menos el ancla, plazo total 6 s, solo para cadena `TRUSTED`, guarda SSRF con anclaje de conexión) | ✅ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ✅ |
 | Orquestación completa del análisis (`AnalyzePdfUseCase`): hashes, estructura, PDF/A combinado, firmas enriquecidas con cadena/revocación, aislamiento de fallos por sección | ✅ |
@@ -681,7 +695,7 @@ El proyecto se desarrolla con **TDD** (primero el test en rojo, luego la impleme
 
 Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una CA de pruebas en memoria firma documentos, y a partir de ellos se crean variantes manipuladas, con actualización incremental, rotadas, cifradas o corruptas. Así los tests son reproducibles y no dependen de ficheros con datos personales (los dos PDFs reales firmados usados para reproducir casos de FNMT y Camerfirma nunca se incorporaron al repositorio).
 
-**Estado actual:** 426 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
+**Estado actual:** 472 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
 
 | Suite | Qué comprueba |
 |---|---|
@@ -706,7 +720,8 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `SignatureVerdictPolicyTest` | Cada fila de la tabla de decisión (§2.10), el peor veredicto entre varias firmas, `NO_SIGNATURES`, y la regla de cobertura por firma posterior admitida/no admitida (incluidas tres firmas mezcladas) |
 | `RevocationUrlGuardTest` | Solo `http`; cada rango privado/reservado rechazado (incluida IPv4 mapeada en IPv6); resolución única del host y elección de la primera dirección permitida |
 | `OcspClientTest`, `CrlClientTest`, `PinnedHttpClientTest` | Contra un servidor HTTP real de test (`TestHttpServer`) con respuestas OCSP/CRL reales y firmadas (`TestRevocationResponder`): `GOOD`, `REVOKED`, estado desconocido, firma inválida, *timeout*, CRL caducada, error HTTP, sin URL, y conexión anclada a la dirección de una única resolución |
-| `CompositeRevocationCheckerTest` | Orden OCSP → CRL, sin URLs, emisor `null`, y envoltorio de seguridad que registra solo el nombre de la clase de una excepción inesperada |
+| `CompositeRevocationCheckerTest` | Orden OCSP → CRL, sin URLs, emisor `null`, envoltorio de seguridad que registra solo el nombre de la clase de una excepción inesperada, y URLs deduplicadas y limitadas a 3 por método (T21) |
+| `CompositeRevocationBudgetTest`, `DeadlineAndLimitsTest`, `RevocationStatusAggregateTest` | T21, con reloj falso (sin dormir segundos): plazo total compartido por todos los certificados de la ruta, intermedia revocada con firmante `GOOD`, firmante revocado sin contactar la CA, ruta toda `GOOD`, intermedia sin URLs, DNS lento acotado, agregación de estados y valores por defecto/validación de las propiedades |
 | `PdfAnalysisControllerTest` | *Slice* `@WebMvcTest`: 200 con el informe mapeado, `checkRevocation` reenviado, 400 (ausente, vacío, sin cabecera PDF), 422 (corrupto, cifrado), 500 sin filtrar el mensaje, y `IOException` leyendo la subida → 500 (también a través de la petición completa, sin invocar al caso de uso) |
 | `PdfAnalysisExceptionHandlerTest`, `MaxUploadSizeExceptionHandler*Test`, `AnalysisBusyExceptionHandlerTest` | Estado y `type` de cada error; el detalle de un fallo inesperado nunca contiene el mensaje original; `413` real con cuerpo `ProblemDetail` (servidor embebido en `RANDOM_PORT`, límite rebajado a 1 KB, porque `MockMvc` no aplica el límite del contenedor) |
 | `AnalysisBulkheadTest`, `AnalysisBulkheadIntegrationTest`, `AnalysisPropertiesTest` | Permisos del *bulkhead*, `503` `busy` con `Retry-After` y `Connection: close` y todas las variantes de URL (`;jsessionid`, `%61nalyze`, barra final, mayúsculas, segmentos de punto) contra el servidor real |
@@ -721,7 +736,7 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 
 | Herramienta | Qué comprueba | Informe | Resultado actual (2026-09-30) |
 |---|---|---|---|
-| **JaCoCo** (`check`) | Cobertura mínima del conjunto («trinquete»: si baja, falla la compilación) | `target/site/jacoco/index.html` | Líneas 90,33 % y ramas 78,66 % medidas; umbrales **88 %** y **75 %** (propiedades `jacoco.min.line` / `jacoco.min.branch` del `pom.xml`) |
+| **JaCoCo** (`check`) | Cobertura mínima del conjunto («trinquete»: si baja, falla la compilación) | `target/site/jacoco/index.html` | Líneas 91,05 % y ramas 79,01 % medidas; umbrales **88 %** y **75 %** (propiedades `jacoco.min.line` / `jacoco.min.branch` del `pom.xml`) |
 | **SpotBugs + FindSecBugs** | Patrones de error y de inseguridad (umbral *Medium*, esfuerzo *Max*) | `target/spotbugsXml.xml` | 24 avisos: 20 `EI_EXPOSE_REP/REP2` (DTO `record` con listas/arrays mutables), 1 posible NPE en `PdfAnalysisController` (línea 89), y 3 de seguridad/mala práctica en el cliente de revocación y la verificación CMS (`UNENCRYPTED_SOCKET` en `PinnedHttpClient`, `UNSAFE_HASH_EQUALS` en `CmsSignatureVerification`, `DMI_RANDOM_USED_ONLY_ONCE` en `OcspClient`) |
 | **PMD** | Buenas prácticas y complejidad (`config/pmd/ruleset.xml`: *quickstart* más complejidad ciclomática/cognitiva/NPath, `GodClass`, `NcssCount`) | `target/pmd.xml` | 32 infracciones; las más frecuentes: `CyclomaticComplexity` (11), `PreserveStackTrace` (5), `SimplifyBooleanReturns` (3) |
 | **CPD** | Código duplicado (mínimo 100 tokens) | `target/cpd.xml` | 1 duplicado (21 líneas) entre `PdfBoxDocumentReader` y `PreflightPdfaValidator` |
@@ -851,6 +866,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-09-30 | **(T19)** Endurecimiento de seguridad, bloque 2: tiempo de validación de confianza. Un sello de tiempo solo es de confianza si su TSA declara `id-kp-timeStamping` y su cadena llega a un ancla en el `genTime` (y este no es futuro); la cadena del firmante se valida en ese `genTime` solo entonces, y si no a fecha de hoy. La fecha auto-declarada por el firmante ya no se usa nunca. Nuevo motivo `VALIDATED_AT_CURRENT_TIME`, campo `timestamp.trusted` en la API y textos de la interfaz («Sin sello de tiempo de confianza: se ha validado a fecha de hoy»; «Sello de tiempo (TSA no de confianza)»). Sustituye a la precedencia anterior (§10). |
 | 2026-09-30 | **(T20)** Límites de recursos ante PDF hostiles: `RevisionCounter` deja de acumular millones de posiciones (arrays primitivos con tope `max-revision-markers`/`max-revisions`, `revisionCountLowerBound`); detalle por página limitado a `max-pages` con `pagesTruncated` y aviso en la interfaz; campos de firma limitados a `max-signature-fields`, con `ANALYSIS_INCOMPLETE` (nunca `VALID`) si quedan sin analizar, certificados por CMS (`max-certificates-per-signature`) y longitud de cadena (`max-chain-length`) acotados; límite de incidencias PDF/A aplicado durante la recogida (`max-pdfa-issues`, `TRUNCATED` exacto hasta 1 000 omitidas y «at least N» después). Campos DTO aditivos: `structure.pagesTruncated`, `structure.revisionCountLowerBound`. §2.3, 2.4, 2.5, 2.9, 2.10, 4, 10. |
 | 2026-09-30 | **(T22)** Interfaz «Validar»: las páginas se agrupan por rotación y tamaño en desplegables cerrados por defecto con rangos de páginas («1–12, 15, 20–22») y una tarjeta nueva «Recortes» lista las páginas con `CropBox` distinto del `MediaBox` (§2.14). Sin cambios en el backend. |
+| 2026-09-30 | **(T21)** Endurecimiento de la revocación (§2.8) a raíz de una auditoría del código. (a) Se comprueba **cada certificado de la ruta validada salvo el ancla**, no solo el firmante: una CA intermedia revocada con el firmante `GOOD` daba `VALID`; ahora cualquier `REVOKED` revoca la ruta, cualquier `UNKNOWN` la deja en `UNKNOWN` (*fail-closed*) y el detalle nombra la CA responsable. (b) **Un único plazo por firma** (`total-timeout`, 6 s) compartido por OCSP y CRL de todos los certificados, más deduplicación y tope de 3 URLs por método: antes cada URL tenía su propio *timeout* y un certificado con muchas URLs alargaba la espera y el tráfico saliente. (c) La **resolución DNS** corre bajo el plazo, en un grupo acotado de 16 hilos (antes un DNS lento bloqueaba más allá del *timeout*), conservando la resolución única y la conexión anclada. (d) Tope de longitud de línea (8 KB), número (100) y tamaño total (64 KB) de cabeceras y *trailers* `chunked`. (e) La guarda SSRF no normalizaba IPv4-compatible, NAT64 ni 6to4: `::127.0.0.1`, `64:ff9b::7f00:1` y `2002:7f00:1::` no se rechazaban (confirmado con un test en rojo) y ahora sí. Todos los límites son propiedades `pdfvalidator.revocation.*` (§4). `./mvnw -B verify` en verde, 472 tests, JaCoCo 91.05 % líneas / 79.01 % ramas. |
 
 ## 12. Repositorio y licencia
 

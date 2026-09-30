@@ -45,7 +45,33 @@ final class RevocationUrlGuard {
     record ValidatedTarget(URI uri, InetAddress address) {
     }
 
+    /** Upper bound on simultaneously running (or abandoned but still blocked) DNS lookups. */
+    static final int MAX_CONCURRENT_LOOKUPS = 16;
+
+    /**
+     * Runs the (blocking, uninterruptible) resolver on a small bounded pool
+     * of daemon threads so the caller can stop waiting at its deadline. The
+     * pool has no queue: when all {@link #MAX_CONCURRENT_LOOKUPS} threads are
+     * busy -- e.g. abandoned lookups still stuck on a hostile authoritative
+     * server -- new lookups are refused instead of piling up.
+     */
+    private static final java.util.concurrent.ExecutorService LOOKUP_POOL =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    0, MAX_CONCURRENT_LOOKUPS, 30, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.SynchronousQueue<>(),
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "revocation-dns");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+
+    /** {@link #resolve(String, boolean, HostResolver, java.time.Duration)} with a 2 s DNS bound (test convenience). */
     static ValidatedTarget resolve(String urlString, boolean allowPrivateAddresses, HostResolver resolver) {
+        return resolve(urlString, allowPrivateAddresses, resolver, java.time.Duration.ofSeconds(2));
+    }
+
+    static ValidatedTarget resolve(
+            String urlString, boolean allowPrivateAddresses, HostResolver resolver, java.time.Duration dnsTimeout) {
         URI uri;
         try {
             uri = new URI(urlString);
@@ -64,12 +90,7 @@ final class RevocationUrlGuard {
             throw new RevocationUrlRejectedException("URL has no host");
         }
 
-        InetAddress[] addresses;
-        try {
-            addresses = resolver.resolve(host);
-        } catch (UnknownHostException e) {
-            throw new RevocationUrlRejectedException("host could not be resolved");
-        }
+        InetAddress[] addresses = resolveWithinDeadline(host, resolver, dnsTimeout);
 
         for (InetAddress candidate : addresses) {
             if (allowPrivateAddresses || !isPrivateOrReserved(candidate)) {
@@ -81,17 +102,57 @@ final class RevocationUrlGuard {
     }
 
     /**
+     * The single resolution of {@code host}, bounded by {@code timeout}
+     * (the caller's remaining deadline): a slow or hostile resolver can no
+     * longer keep the request alive past its budget. The lookup is still
+     * performed exactly once -- resolve-once-and-pin is unchanged.
+     */
+    private static InetAddress[] resolveWithinDeadline(
+            String host, HostResolver resolver, java.time.Duration timeout) {
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new RevocationUrlRejectedException("host could not be resolved within the time limit");
+        }
+        java.util.concurrent.Future<InetAddress[]> lookup;
+        try {
+            lookup = LOOKUP_POOL.submit(() -> resolver.resolve(host));
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            throw new RevocationUrlRejectedException("DNS resolver busy, refusing to queue another lookup");
+        }
+        try {
+            return lookup.get(timeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            lookup.cancel(true);
+            throw new RevocationUrlRejectedException("host could not be resolved within the time limit");
+        } catch (InterruptedException e) {
+            lookup.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new RevocationUrlRejectedException("host resolution was interrupted");
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new RevocationUrlRejectedException("host could not be resolved");
+        }
+    }
+
+    /**
      * Covers loopback, wildcard/any-local, link-local (incl. the {@code
      * 169.254.169.254} cloud-metadata address), IPv4 RFC 1918 private
      * ranges, IPv6 unique-local ({@code fc00::/7}), IPv4 {@code 0.0.0.0/8},
      * CGNAT ({@code 100.64.0.0/10}), and multicast -- both directly and
-     * through an IPv4-mapped IPv6 address (e.g. {@code ::ffff:10.0.0.1}),
-     * which is normalized to its embedded IPv4 address first so it cannot
-     * slip past the IPv4-specific checks above.
+     * through every IPv6 form that embeds an IPv4 address (see {@link
+     * #embeddedIpv4}): the address is normalized to its embedded IPv4 address
+     * first so it cannot slip past the IPv4-specific checks above. The NAT64
+     * local-use prefix {@code 64:ff9b:1::/48} (RFC 8215) is rejected
+     * wholesale. Teredo ({@code 2001::/32}) is not decoded: it does not
+     * carry a routable target address for an HTTP client on this host.
      */
     private static boolean isPrivateOrReserved(InetAddress address) {
-        if (address instanceof Inet6Address v6 && isIpv4Mapped(v6)) {
-            return isPrivateOrReserved(toIpv4(v6));
+        if (address instanceof Inet6Address v6) {
+            byte[] embedded = embeddedIpv4(v6.getAddress());
+            if (embedded != null) {
+                return isPrivateOrReserved(toIpv4(embedded));
+            }
+            if (isNat64LocalUse(v6.getAddress())) {
+                return true;
+            }
         }
 
         if (address.isLoopbackAddress() || address.isAnyLocalAddress()
@@ -117,20 +178,49 @@ final class RevocationUrlGuard {
         return false;
     }
 
-    private static boolean isIpv4Mapped(Inet6Address address) {
-        byte[] bytes = address.getAddress();
+    /**
+     * The IPv4 address embedded in an IPv6 address, or {@code null} when it
+     * carries none: IPv4-mapped {@code ::ffff:a.b.c.d}, IPv4-compatible
+     * (deprecated) {@code ::a.b.c.d}, the NAT64 well-known prefix {@code
+     * 64:ff9b::/96} (RFC 6052) and 6to4 {@code 2002::/16} (RFC 3056, the
+     * IPv4 address sits in bits 16-47).
+     */
+    private static byte[] embeddedIpv4(byte[] b) {
+        boolean firstTenZero = true;
         for (int i = 0; i < 10; i++) {
-            if (bytes[i] != 0) {
-                return false;
+            firstTenZero &= b[i] == 0;
+        }
+        if (firstTenZero && (b[10] & 0xFF) == 0xFF && (b[11] & 0xFF) == 0xFF) {
+            return Arrays.copyOfRange(b, 12, 16); // ::ffff:0:0/96
+        }
+        boolean firstTwelveZero = firstTenZero && b[10] == 0 && b[11] == 0;
+        if (firstTwelveZero) {
+            return Arrays.copyOfRange(b, 12, 16); // ::/96 (also ::1 and ::, which map to 0.0.0.x)
+        }
+        if (b[0] == 0x00 && b[1] == 0x64 && (b[2] & 0xFF) == 0xFF && (b[3] & 0xFF) == 0x9B) {
+            boolean restZero = true;
+            for (int i = 4; i < 12; i++) {
+                restZero &= b[i] == 0;
+            }
+            if (restZero) {
+                return Arrays.copyOfRange(b, 12, 16); // 64:ff9b::/96
             }
         }
-        return (bytes[10] & 0xFF) == 0xFF && (bytes[11] & 0xFF) == 0xFF;
+        if ((b[0] & 0xFF) == 0x20 && b[1] == 0x02) {
+            return Arrays.copyOfRange(b, 2, 6); // 2002::/16
+        }
+        return null;
     }
 
-    private static InetAddress toIpv4(Inet6Address address) {
-        byte[] bytes = address.getAddress();
+    /** {@code 64:ff9b:1::/48}: NAT64 local-use translation prefix, private by definition. */
+    private static boolean isNat64LocalUse(byte[] b) {
+        return b[0] == 0x00 && b[1] == 0x64 && (b[2] & 0xFF) == 0xFF && (b[3] & 0xFF) == 0x9B
+                && b[4] == 0x00 && b[5] == 0x01;
+    }
+
+    private static InetAddress toIpv4(byte[] octets) {
         try {
-            return InetAddress.getByAddress(Arrays.copyOfRange(bytes, 12, 16));
+            return InetAddress.getByAddress(octets);
         } catch (UnknownHostException e) {
             // Unreachable: a 4-byte address is always a valid raw address.
             throw new IllegalStateException(e);
