@@ -37,6 +37,7 @@ Stateless web service (TFM) that audits a PDF in one pass: signature integrity (
 - [x] T12c Bounded concurrency: bulkhead (max 2 analyses, 5 s wait, 503 busy + Retry-After), uploads on tmpfs, CI load test (branch `feat/bounded-concurrency`)
 - [x] T12d Fix T12c review findings: bulkhead URI-variant bypass, Connection: close on 503, CI load-test robustness/OOM check/95% headroom guard, busy-only UI message, PDFBox font log level (branch `feat/bounded-concurrency`)
 - [ ] T13 README (all TFM sections + slides URL), slides, JaCoCo
+- [x] T15 README clarity: fix stale facts, reorder/simplify section 2, move development history out of "Cómo funciona" (branch `docs/readme-clarity`)
 
 ## Acceptance
 `./mvnw verify` green (unit, integration, ArchUnit, JaCoCo ≥ 80% on domain/application/infrastructure); manual upload scenarios per plan; deployed URL in README.
@@ -885,6 +886,13 @@ Commits (`feat/ui-polish`): `85a12e0` fix: format certificate distinguished name
 - User decision: official profile 2 GB / 80 MB (commits by the earlier agent 84fc681, af054e1, 184dd63, b16c480; parent: README justification ed727b1, tmpfs 160→256 MB ff933ef after review found zero headroom for 2×81 MB uploads). Reviews approved. CI run 36552141663 (ff933ef, 79 MB synthetic PDF, 5 concurrent, max-concurrent=2, 2 GB): 5×200, sampled peak 669.4 MiB, memory.peak 1256.7/2048 MiB (61.4%), oom_kill 0, restarts 0.
 - VPS (OVH, 162.19.26.67): SSH password auth disabled by the earlier agent (key only). Needs redeploy to pick up the 256 MB tmpfs.
 - [ ] T12f: bounded upload time / thread hold during 30 s acquire wait (Tomcat connection-timeout, maybe a smaller Tomcat thread pool vs. bulkhead), AnalysisProperties Javadoc defaults, task-id collision in this doc.
+
+## Progress / Evidence (T15)
+- T15 README clarity rewrite. Route: delegated direct (writer trigger: single ~930-line document needing broad reading and a full rewrite). Branch `docs/readme-clarity`, changes left uncommitted in the working tree.
+- Stale facts fixed against the code: header "pendiente la presentación" (slides are in `docs/PDF-Inspector-TFM.pdf`, §9); "Firmar" tab described as disabled (it works, `index.html` tab `tab-firmar`); 20 MB limit (real: 80 MB, `dom.js` `MAX_FILE_SIZE_BYTES`, `application.yml` 80MB/81MB); `REASON_TEXT` lives in `render.js`, not `app.js`; config table default `20MB` -> `80MB`; forward-looking "llega en T08/T09/T10" phrases rewritten in present tense; §4 Docker/memory text rewritten for the official 2 GB / `-Xmx1024m` / 80 MB / `max-concurrent=2` / `acquire-timeout 30s` / tmpfs 256 MB profile (Dockerfile, docker-compose.yml, application.yml, ci.yml); 512 MB measurements kept only as the labelled earlier profile in §10.
+- Section 2 renumbered in reading order (2.1 flujo, 2.2 dominio, 2.3 estructura, 2.4 firmas, 2.5 certificados, 2.6 sellos, 2.7 cadena, 2.8 revocación, 2.9 PDF/A, 2.10 veredicto, 2.11 orquestación, 2.12 ArchUnit, 2.13 API, 2.14 «Validar», 2.15 «Firmar»); all `§2.N` cross-references updated; old 2.15-2.17 (polish history) folded into 2.5/2.9/2.14. Development-history narration moved out; decisions with rationale condensed in §10; one new §11 row (2026-09-30). §7 test table consolidated to one row per suite.
+- Size: 932 lines / 212 KB before -> 801 lines / 120 KB after (line target of 500-600 not reached: sections 3-13 were to stay structurally intact).
+- Checks: cross-reference script (every `§2.N` has a `### 2.N` heading), index anchors match `##` headings, stale-phrase grep clean apart from labelled history, `git diff --stat` README.md only (+ this file).
 
 ## Next step
 T13 README/slides. Pending: VM deploy (needs user authorization of a destination); first real CI run of the `docker` job (smoke + load test) to record the measured peak memory in the README (no local Docker daemon).
