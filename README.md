@@ -332,6 +332,8 @@ Permite firmar un PDF con el propio certificado del usuario (DNIe, FNMT, ...) us
 | Motor PDF | Apache PDFBox | 3.0.8 |
 | Validación PDF/A | Apache PDFBox *preflight* (PDF/A-1b) | 3.0.8 |
 | Criptografía | Bouncy Castle `bcprov` / `bcpkix` (jdk18on) | 1.86 |
+| Servidor embebido | Apache Tomcat (sobrescrito, ver «Dependencias parcheadas» en §10) | 11.0.26 |
+| Serialización JSON | Jackson 3 / Jackson 2 (esta última vía springdoc; sobrescritas, ver §10) | 3.1.7 / 2.21.6 |
 | Documentación API | springdoc-openapi (Swagger UI) | 3.1.1 |
 | Tests | JUnit 5, AssertJ, Mockito, ArchUnit | — / 1.5.1 |
 | Cobertura | JaCoCo | — |
@@ -752,6 +754,8 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 - **CSP ampliada con lo estrictamente necesario, nunca `'unsafe-eval'`/`'unsafe-inline'` para scripts.** AutoScript no usa `eval()`/`Function()` ni genera `<script>` en línea. Solo hicieron falta `connect-src wss://127.0.0.1:* https://127.0.0.1:*` (cliente WebSocket y su alternativa de compatibilidad, a un puerto local dinámico) y `frame-src 'self' afirma:` (el `<iframe>` oculto que Firefox/Safari usan para lanzar AutoFirma).
 - **Página única con pestañas, no un `firmar.html` separado**, para reutilizar cabecera, tema, filtro CSP y `render.js` para «Validar este PDF». `switchTab` vive en `dom.js`, el módulo hoja del que dependen `app.js` y `sign.js`, para evitar un ciclo de importación entre ES *modules*.
 
+- **Dependencias parcheadas por encima de lo que gestiona Spring Boot (T18b).** Spring Boot 4.1.1, la última versión, gestiona Tomcat 11.0.24 y Jackson 3.1.5 / 2.21.5, que OSV.dev marca como vulnerables: Tomcat (CVE-2026-65905, CVE-2026-65182, CVE-2026-68525, corregidas en 11.0.25), `tools.jackson.core:jackson-databind` (CVE-2026-68497, CVE-2026-83557, CVE-2026-19032, corregidas en 3.1.6) y `com.fasterxml.jackson.core:jackson-databind` 2.21.5 (corregida en 2.21.6; llega por springdoc/swagger-core). El `pom.xml` sobrescribe las propiedades de versión del BOM de Spring Boot (`tomcat.version=11.0.26`, `jackson-bom.version=3.1.7`, `jackson-2-bom.version=2.21.6`) y `PatchedDependenciesTest` falla si una versión resuelta baja de la primera corregida. Consultadas las 114 dependencias resueltas contra OSV.dev el 2026-09-30, ninguna tiene vulnerabilidades conocidas. Cuando Spring Boot gestione versiones parcheadas, cada sobrescritura se retira.
+
 ## 11. Historial de cambios
 
 | Fecha | Cambio |
@@ -789,6 +793,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-09-29 | **(T12h)** HTTPS con Caddy y Let's Encrypt versionado en `deploy/` (`Caddyfile` con HSTS y `docker-compose.caddy.yml` en red del host); la aplicación publica el 8963 solo en `127.0.0.1`, de modo que el único acceso externo es <https://vps-651608c6.vps.ovh.net/>. |
 | 2026-09-30 | README reorganizado para facilitar la comprensión: datos desactualizados corregidos (perfil de 2 GB / 80 MB, pestaña «Firmar», presentación entregada), sección 2 reordenada en orden de lectura y con introducción sencilla en cada apartado, e historial de desarrollo trasladado a §10 y §11. |
 | 2026-09-30 | **(T16)** La indicación de las zonas de subida («Validar» y «Firmar») decía «hasta 20 MB» aunque el límite real es 80 MB; corregida y protegida con un test que la compara con `spring.servlet.multipart.max-file-size`. Diapositivas con capturas reales de ambas pantallas, hechas con PDF y certificados de demostración. |
+| 2026-09-30 | **(T18)** Endurecimiento de seguridad, bloque 1, a raíz de un pentest y una auditoría del código. (a) Una bomba de descompresión (PDF de 510 KB con un flujo `/FlateDecode` de 500 MB) agotaba el *heap* en *preflight* y, con `ExitOnOutOfMemoryError`, reiniciaba el contenedor: `DecodedSizeGuard` decodifica los flujos en *streaming* con límites (`max-decoded-stream-size` 32 MB, `max-decoded-total-size` 2 GB) y el PDF/A pasa a `NOT_VALIDATED` (`DOCUMENT_TOO_COMPLEX`) con el resto del informe intacto (§2.9). (b) Tomcat 11.0.26 y Jackson 3.1.7 / 2.21.6 por CVE conocidas (§10). (c) `checkRevocation=notabool` devuelve `400` (`invalid-parameter`) en vez de `500`. (d) `X-Content-Type-Options: nosniff` y `Referrer-Policy: no-referrer` en todas las respuestas (§2.14). |
 
 ## 12. Repositorio y licencia
 

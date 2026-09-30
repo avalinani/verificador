@@ -23,6 +23,15 @@
     <bouncycastle.version>1.86</bouncycastle.version>
     <springdoc.version>3.1.1</springdoc.version>
     <archunit.version>1.5.1</archunit.version>
+    <!-- T18b: overrides of the versions managed by Spring Boot 4.1.1 (the latest
+         release), which OSV.dev flags. Remove each one once Boot manages a
+         patched version; PatchedDependenciesTest guards the minimums.
+         tomcat.version: 11.0.24 -> 11.0.26 (CVE-2026-65905, CVE-2026-65182, CVE-2026-68525).
+         jackson-bom.version (Jackson 3): 3.1.5 -> 3.1.7 (CVE-2026-68497, CVE-2026-83557, CVE-2026-19032).
+         jackson-2-bom.version (Jackson 2, via springdoc/swagger-core): 2.21.5 -> 2.21.6. -->
+    <tomcat.version>11.0.26</tomcat.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
+    <jackson-2-bom.version>2.21.6</jackson-2-bom.version>
   </properties>
 
   <dependencies>
