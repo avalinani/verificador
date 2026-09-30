@@ -25,6 +25,7 @@ import com.coam.pdfvalidator.domain.port.RevocationChecker;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -111,6 +112,9 @@ import java.util.Objects;
 public final class AnalyzePdfUseCase {
 
     private static final System.Logger LOGGER = System.getLogger(AnalyzePdfUseCase.class.getName());
+
+    /** How far ahead of the injected clock a timestamp genTime may be and still be trusted. */
+    private static final Duration TIMESTAMP_FUTURE_TOLERANCE = Duration.ofMinutes(5);
 
     private final HashCalculator hashCalculator;
     private final PdfDocumentReader pdfDocumentReader;
@@ -241,7 +245,8 @@ public final class AnalyzePdfUseCase {
     }
 
     /**
-     * Validates {@code signature}'s certificate chain at {@link
+     * Assesses the signature timestamp trust ({@link #assessTimestamp}),
+     * validates the signer certificate chain at {@link
      * #resolveValidationTime}, and (if requested) checks revocation, then
      * returns the enriched report via {@link
      * SignatureReport#withChainAndRevocation}. Both steps are guarded
@@ -252,9 +257,10 @@ public final class AnalyzePdfUseCase {
      * unmappable certificate) -- see the class Javadoc's "Resilience"
      * section.
      */
-    private SignatureReport enrich(SignatureReport signature, AnalysisOptions options) {
+    private SignatureReport enrich(SignatureReport extracted, AnalysisOptions options) {
+        SignatureReport signature = extracted.withTimestamp(assessTimestamp(extracted.timestamp()));
         try {
-            Instant validationTime = resolveValidationTime(signature);
+            Instant validationTime = resolveValidationTime(signature.timestamp());
             ChainStatus chainStatus = certificateChainValidator.validate(signature.chain(), validationTime);
             RevocationStatus revocation = resolveRevocation(signature, chainStatus, validationTime, options);
             return signature.withChainAndRevocation(chainStatus, revocation);
@@ -267,20 +273,68 @@ public final class AnalyzePdfUseCase {
     }
 
     /**
-     * The instant chain validation (and expiry) is checked against: a valid
-     * RFC 3161 signature timestamp's {@code genTime} when present and both
-     * its imprint and TSA signature verify (an independently-verifiable
-     * claim), otherwise the signature's own self-declared {@code
-     * claimedSigningTime}, otherwise "now" ({@link Clock#instant()}) --
-     * exactly the precedence documented on {@code
-     * PkixCertificateChainValidator}'s Javadoc and README section 2.7.
+     * Decides whether {@code timestamp} may be used as the validation time
+     * (T19 security decision: a token verified only against the certificate
+     * it carries proves nothing, since anybody can mint a TSA and write any
+     * {@code genTime}). It is trusted only when all of these hold:
+     * <ul>
+     *   <li>imprint and TSA signature are valid;</li>
+     *   <li>the TSA certificate carries {@code id-kp-timeStamping};</li>
+     *   <li>{@code genTime} is not later than "now" plus {@link
+     *       #TIMESTAMP_FUTURE_TOLERANCE} (a TSA clock slightly ahead is
+     *       tolerated, a forged far-future time is not);</li>
+     *   <li>the TSA chain is {@link ChainStatus#TRUSTED} at {@code genTime}
+     *       according to the same {@link CertificateChainValidator} used for
+     *       signers (revocation of the TSA certificate is not checked).</li>
+     * </ul>
+     * An untrusted timestamp keeps its data in the report with an explanatory
+     * note, but never influences {@link #resolveValidationTime}.
      */
-    private Instant resolveValidationTime(SignatureReport signature) {
-        TimestampInfo timestamp = signature.timestamp();
-        if (timestamp.isPresent() && timestamp.imprintValid() && timestamp.signatureValid()) {
-            return timestamp.genTime();
+    private TimestampInfo assessTimestamp(TimestampInfo timestamp) {
+        if (!timestamp.isPresent()) {
+            return timestamp;
         }
-        return signature.claimedSigningTimeOptional().orElseGet(clock::instant);
+        String failure = timestampTrustFailure(timestamp);
+        return failure == null
+                ? timestamp.withTrust(true, null)
+                : timestamp.withTrust(false, "TSA not trusted: " + failure);
+    }
+
+    /** {@code null} when the timestamp is trusted, otherwise a short reason. */
+    private String timestampTrustFailure(TimestampInfo timestamp) {
+        if (!timestamp.imprintValid() || !timestamp.signatureValid()) {
+            return "the token imprint or signature is not valid";
+        }
+        if (!timestamp.tsaTimeStampingEku()) {
+            return "the TSA certificate lacks the id-kp-timeStamping extended key usage";
+        }
+        if (timestamp.genTime().isAfter(clock.instant().plus(TIMESTAMP_FUTURE_TOLERANCE))) {
+            return "the timestamp time is in the future";
+        }
+        if (timestamp.tsaChain().isEmpty()) {
+            return "the TSA certificate chain is unavailable";
+        }
+        try {
+            ChainStatus tsaChainStatus = certificateChainValidator.validate(timestamp.tsaChain(), timestamp.genTime());
+            return tsaChainStatus == ChainStatus.TRUSTED
+                    ? null
+                    : "the TSA certificate chain is " + tsaChainStatus + " at the timestamp time";
+        } catch (RuntimeException e) {
+            LOGGER.log(System.Logger.Level.WARNING, "TSA chain validation failed unexpectedly", e);
+            return "the TSA certificate chain could not be validated";
+        }
+    }
+
+    /**
+     * The instant the signer chain is validated at: the {@code genTime} of a
+     * <em>trusted</em> timestamp (ETSI-style: the signature provably existed
+     * then), otherwise "now" ({@link Clock#instant()}). The signer-declared
+     * signing time ({@code /M} or the CMS {@code signingTime}) is
+     * informational only and is never used here -- whoever holds a key can
+     * write any date into it (README section 2.7).
+     */
+    private Instant resolveValidationTime(TimestampInfo assessedTimestamp) {
+        return assessedTimestamp.trusted() ? assessedTimestamp.genTime() : clock.instant();
     }
 
     /**

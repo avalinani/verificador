@@ -39,6 +39,9 @@ import java.util.Objects;
  *     was appended)</td>
  *     <td>falls through to chain/revocation below, with an informational
  *     {@code COVERED_BY_LATER_SIGNATURE} reason added</td><td>--</td></tr>
+ * <tr><td>no trusted timestamp (added before any row below)</td><td>--</td>
+ *     <td>{@code VALIDATED_AT_CURRENT_TIME} (informational: the chain was
+ *     validated at the analysis time, not at a timestamp genTime)</td></tr>
  * <tr><td>{@code chainStatus != TRUSTED}</td><td>NOT_ADMITTED</td>
  *     <td>{@code CHAIN_UNTRUSTED_ROOT} / {@code CHAIN_INCOMPLETE} /
  *     {@code CHAIN_EXPIRED} / {@code CHAIN_NOT_CHECKED}</td></tr>
@@ -103,6 +106,7 @@ public final class SignatureVerdictPolicy {
     public static final String REASON_MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY =
             "MODIFIED_AFTER_SIGNING_BY_UNADMITTED_PARTY";
     public static final String REASON_COVERED_BY_LATER_SIGNATURE = "COVERED_BY_LATER_SIGNATURE";
+    public static final String REASON_VALIDATED_AT_CURRENT_TIME = "VALIDATED_AT_CURRENT_TIME";
     public static final String REASON_CHAIN_UNTRUSTED_ROOT = "CHAIN_UNTRUSTED_ROOT";
     public static final String REASON_CHAIN_INCOMPLETE = "CHAIN_INCOMPLETE";
     public static final String REASON_CHAIN_EXPIRED = "CHAIN_EXPIRED";
@@ -206,6 +210,12 @@ public final class SignatureVerdictPolicy {
                     // revocation merits below.
                 }
             }
+        }
+
+        // The chain below was validated at the current time unless a TRUSTED
+        // timestamp fixed an earlier instant (T19): say so, informationally.
+        if (!signature.timestamp().trusted()) {
+            reasons.add(REASON_VALIDATED_AT_CURRENT_TIME);
         }
 
         SignatureVerdict chainVerdict = switch (signature.chainStatus()) {

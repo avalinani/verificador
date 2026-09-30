@@ -37,10 +37,11 @@ import java.util.Set;
  *
  * <p>{@code validate}'s {@code chain} parameter is expected in the
  * signer-first order {@code BcSignatureVerifier} already produces (end-entity
- * first, its issuer next, and so on); the caller (the use case, in T08)
- * decides {@code validationTime} -- the signing time from a valid RFC 3161
- * timestamp if present, otherwise the signature's own claimed signing time,
- * otherwise "now".
+ * first, its issuer next, and so on); the caller (the use case)
+ * decides {@code validationTime}: the {@code genTime} of a <em>trusted</em>
+ * RFC 3161 timestamp (whose TSA chain this same validator has validated at
+ * that {@code genTime}), otherwise "now". The signer-declared signing time
+ * is never used (T19).
  *
  * <h2>Mapping a PKIX failure to a specific {@link ChainStatus}</h2>
  * A successful {@link CertPathBuilder#build} means the presented chain

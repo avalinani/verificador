@@ -23,6 +23,7 @@ import com.coam.pdfvalidator.domain.model.SectionError;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.SignatureVerdict;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.policy.SignatureVerdictPolicy;
 import com.coam.pdfvalidator.domain.port.CertificateChainValidator;
 import com.coam.pdfvalidator.domain.port.HashCalculator;
 import com.coam.pdfvalidator.domain.port.PdfDocumentReader;
@@ -140,6 +141,10 @@ class AnalyzePdfUseCaseTest {
         private final RuntimeException toThrow;
         private final List<Instant> capturedValidationTimes = new ArrayList<>();
         private List<CertificateInfo> validatedPathOverride;
+        private List<CertificateInfo> tsaChain = List.of();
+        private ChainStatus tsaStatus = ChainStatus.NOT_CHECKED;
+        private final List<Instant> capturedTsaValidationTimes = new ArrayList<>();
+        private RuntimeException tsaToThrow;
 
         FakeCertificateChainValidator(ChainStatus status) {
             this(status, null);
@@ -159,8 +164,26 @@ class AnalyzePdfUseCaseTest {
             this.validatedPathOverride = validatedPath;
         }
 
+        /** Chains equal to {@code chain} are answered with {@code status} (and recorded separately): the TSA chain. */
+        void tsaChainIs(List<CertificateInfo> chain, ChainStatus status) {
+            this.tsaChain = chain;
+            this.tsaStatus = status;
+        }
+
+        void tsaChainThrows(List<CertificateInfo> chain, RuntimeException exception) {
+            this.tsaChain = chain;
+            this.tsaToThrow = exception;
+        }
+
         @Override
         public ChainStatus validate(List<CertificateInfo> chain, Instant validationTime) {
+            if (!tsaChain.isEmpty() && chain.equals(tsaChain)) {
+                capturedTsaValidationTimes.add(validationTime);
+                if (tsaToThrow != null) {
+                    throw tsaToThrow;
+                }
+                return tsaStatus;
+            }
             capturedValidationTimes.add(validationTime);
             if (toThrow != null) {
                 throw toThrow;
@@ -290,46 +313,157 @@ class AnalyzePdfUseCaseTest {
         assertThat(report.analyzedAt()).isEqualTo(FIXED_NOW);
     }
 
-    // ---- validationTime selection (3 cases) ----
+    // ---- validationTime selection: only a TRUSTED timestamp moves it away from "now" (T19) ----
 
-    @Test
-    void validationTimeUsesTheTimestampGenTimeWhenTheTimestampIsFullyValid() {
-        Instant genTime = Instant.parse("2025-01-01T00:00:00Z");
-        TimestampInfo validTimestamp =
-                new TimestampInfo(genTime, "TSA", true, true, null, null, List.of(), true, true);
-        SignatureReport signature = signatureWith(validTimestamp, Instant.parse("2024-01-01T00:00:00Z"), List.of());
-        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
+    private static final List<CertificateInfo> TSA_CHAIN = List.of(certificate("tsa"), certificate("tsa-root"));
+    private static final Instant GEN_TIME = Instant.parse("2025-01-01T00:00:00Z");
 
-        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
-                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+    private static TimestampInfo timestamp(
+            Instant genTime, boolean imprintValid, boolean signatureValid, boolean timeStampingEku) {
+        return new TimestampInfo(genTime, "TSA", imprintValid, signatureValid, TSA_CHAIN.get(0), null,
+                TSA_CHAIN, timeStampingEku, false);
+    }
 
-        assertThat(chainValidator.capturedValidationTimes).containsExactly(genTime);
+    private static FakeCertificateChainValidator chainValidatorWithTsaStatus(ChainStatus tsaStatus) {
+        FakeCertificateChainValidator validator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
+        validator.tsaChainIs(TSA_CHAIN, tsaStatus);
+        return validator;
+    }
+
+    private static SignatureReport analyzeOne(SignatureReport signature, FakeCertificateChainValidator validator) {
+        return happyPathUseCaseWithSignatures(
+                List.of(signature), validator, new FakeRevocationChecker(RevocationStatus.notChecked()))
+                .analyze("t.pdf", CONTENT, new AnalysisOptions(false)).signatures().get(0);
     }
 
     @Test
-    void validationTimeFallsBackToClaimedSigningTimeWhenTheTimestampIsNotValid() {
+    void aTrustedTimestampGenTimeIsTheValidationTimeOfTheSignerChain() {
+        FakeCertificateChainValidator chainValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+        SignatureReport signature = signatureWith(
+                timestamp(GEN_TIME, true, true, true), Instant.parse("2024-01-01T00:00:00Z"), List.of());
+
+        SignatureReport result = analyzeOne(signature, chainValidator);
+
+        assertThat(chainValidator.capturedTsaValidationTimes).containsExactly(GEN_TIME);
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(GEN_TIME);
+        assertThat(result.timestamp().trusted()).isTrue();
+    }
+
+    @Test
+    void aTimestampWhoseTsaChainIsNotTrustedNeverMovesTheValidationTimeAndIsReportedUntrusted() {
+        FakeCertificateChainValidator chainValidator = chainValidatorWithTsaStatus(ChainStatus.UNTRUSTED_ROOT);
+        SignatureReport signature = signatureWith(timestamp(GEN_TIME, true, true, true), null, List.of());
+
+        SignatureReport result = analyzeOne(signature, chainValidator);
+
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+        assertThat(result.timestamp().trusted()).isFalse();
+        assertThat(result.timestamp().note()).contains("TSA not trusted").contains("UNTRUSTED_ROOT");
+    }
+
+    @Test
+    void theClaimedSigningTimeIsNeverUsedAsTheValidationTime() {
         Instant claimedSigningTime = Instant.parse("2024-01-01T00:00:00Z");
-        // imprintValid=false: the timestamp is present but not trustworthy.
-        TimestampInfo invalidTimestamp = new TimestampInfo(
-                Instant.parse("2025-01-01T00:00:00Z"), "TSA", false, true, null, "imprint mismatch", List.of(), true, false);
-        SignatureReport signature = signatureWith(invalidTimestamp, claimedSigningTime, List.of());
+        SignatureReport signature = signatureWith(TimestampInfo.absent(), claimedSigningTime, List.of());
         FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
 
-        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
-                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+        SignatureReport result = analyzeOne(signature, chainValidator);
 
-        assertThat(chainValidator.capturedValidationTimes).containsExactly(claimedSigningTime);
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+        assertThat(result.claimedSigningTime()).isEqualTo(claimedSigningTime);
     }
 
     @Test
-    void validationTimeFallsBackToClockNowWhenNeitherTimestampNorClaimedSigningTimeIsAvailable() {
+    void validationTimeIsNowWhenThereIsNeitherATimestampNorAClaimedSigningTime() {
         SignatureReport signature = signatureWith(TimestampInfo.absent(), null, List.of());
         FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
 
-        happyPathUseCaseWithSignatures(List.of(signature), chainValidator, new FakeRevocationChecker(
-                RevocationStatus.notChecked())).analyze("t.pdf", CONTENT, new AnalysisOptions(false));
+        analyzeOne(signature, chainValidator);
 
         assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+    }
+
+    @Test
+    void aTimestampWithAnInvalidImprintOrTsaSignatureIsNotTrustedEvenIfItsChainIs() {
+        for (TimestampInfo timestamp : List.of(
+                timestamp(GEN_TIME, false, true, true), timestamp(GEN_TIME, true, false, true))) {
+            FakeCertificateChainValidator chainValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+
+            SignatureReport result = analyzeOne(signatureWith(timestamp, null, List.of()), chainValidator);
+
+            assertThat(result.timestamp().trusted()).isFalse();
+            assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+        }
+    }
+
+    @Test
+    void aTsaCertificateWithoutTheTimeStampingEkuIsNotTrustedEvenIfItsChainIs() {
+        FakeCertificateChainValidator chainValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+
+        SignatureReport result = analyzeOne(
+                signatureWith(timestamp(GEN_TIME, true, true, false), null, List.of()), chainValidator);
+
+        assertThat(result.timestamp().trusted()).isFalse();
+        assertThat(result.timestamp().note()).contains("TSA not trusted").contains("id-kp-timeStamping");
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+    }
+
+    @Test
+    void aGenTimeMoreThanFiveMinutesInTheFutureIsNotTrustedButFourMinutesIsTolerated() {
+        Instant tooFar = FIXED_NOW.plusSeconds(5 * 60 + 1);
+        Instant tolerated = FIXED_NOW.plusSeconds(4 * 60);
+
+        FakeCertificateChainValidator rejectedValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+        SignatureReport rejected = analyzeOne(
+                signatureWith(timestamp(tooFar, true, true, true), null, List.of()), rejectedValidator);
+        FakeCertificateChainValidator toleratedValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+        SignatureReport accepted = analyzeOne(
+                signatureWith(timestamp(tolerated, true, true, true), null, List.of()), toleratedValidator);
+
+        assertThat(rejected.timestamp().trusted()).isFalse();
+        assertThat(rejected.timestamp().note()).contains("TSA not trusted").contains("future");
+        assertThat(rejectedValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+        assertThat(accepted.timestamp().trusted()).isTrue();
+        assertThat(toleratedValidator.capturedValidationTimes).containsExactly(tolerated);
+    }
+
+    @Test
+    void aTimestampWithoutAnyTsaChainIsNotTrusted() {
+        TimestampInfo noChain = new TimestampInfo(GEN_TIME, "TSA", true, true, null, null, List.of(), true, false);
+        FakeCertificateChainValidator chainValidator = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+
+        SignatureReport result = analyzeOne(signatureWith(noChain, null, List.of()), chainValidator);
+
+        assertThat(result.timestamp().trusted()).isFalse();
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+    }
+
+    @Test
+    void anUnexpectedFailureValidatingTheTsaChainMakesTheTimestampUntrustedInsteadOfLosingTheSignature() {
+        FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.TRUSTED);
+        chainValidator.tsaChainThrows(TSA_CHAIN, new IllegalStateException("boom"));
+
+        SignatureReport result = analyzeOne(
+                signatureWith(timestamp(GEN_TIME, true, true, true), null, List.of()), chainValidator);
+
+        assertThat(result.timestamp().trusted()).isFalse();
+        assertThat(result.chainStatus()).isEqualTo(ChainStatus.TRUSTED);
+        assertThat(chainValidator.capturedValidationTimes).containsExactly(FIXED_NOW);
+    }
+
+    @Test
+    void theCurrentTimeReasonIsReportedExactlyWhenNoTrustedTimestampExists() {
+        FakeCertificateChainValidator trustedEverywhere = chainValidatorWithTsaStatus(ChainStatus.TRUSTED);
+        SignatureReport untimestamped = analyzeOne(
+                signatureWith(TimestampInfo.absent(), null, List.of()),
+                new FakeCertificateChainValidator(ChainStatus.TRUSTED));
+        SignatureReport timestamped = analyzeOne(
+                signatureWith(timestamp(GEN_TIME, true, true, true), null, List.of()), trustedEverywhere);
+
+        assertThat(untimestamped.verdictReasons())
+                .contains(SignatureVerdictPolicy.REASON_VALIDATED_AT_CURRENT_TIME);
+        assertThat(timestamped.verdictReasons())
+                .doesNotContain(SignatureVerdictPolicy.REASON_VALIDATED_AT_CURRENT_TIME);
     }
 
     // ---- revocation flag on/off ----
