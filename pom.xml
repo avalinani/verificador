@@ -24,6 +24,9 @@
     <springdoc.version>3.1.1</springdoc.version>
     <archunit.version>1.5.1</archunit.version>
     <jacoco.min.line>0.88</jacoco.min.line>
+    <spotbugs.plugin.version>4.10.4.1</spotbugs.plugin.version>
+    <spotbugs.version>4.10.4</spotbugs.version>
+    <findsecbugs.version>1.14.0</findsecbugs.version>
     <jacoco.min.branch>0.75</jacoco.min.branch>
   </properties>
 
@@ -157,6 +160,43 @@
                 </rule>
               </rules>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!-- Static analysis, report-only for now (failOnError=false): bug patterns plus
+             the FindSecBugs security detectors. Reports: target/spotbugsXml.xml and
+             target/spotbugs.html. Gate later by flipping failOnError. -->
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <version>${spotbugs.plugin.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs</artifactId>
+            <version>${spotbugs.version}</version>
+          </dependency>
+        </dependencies>
+        <configuration>
+          <effort>Max</effort>
+          <threshold>Medium</threshold>
+          <failOnError>false</failOnError>
+          <xmlOutput>true</xmlOutput>
+          <plugins>
+            <plugin>
+              <groupId>com.h3xstream.findsecbugs</groupId>
+              <artifactId>findsecbugs-plugin</artifactId>
+              <version>${findsecbugs.version}</version>
+            </plugin>
+          </plugins>
+        </configuration>
+        <executions>
+          <execution>
+            <id>spotbugs-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
