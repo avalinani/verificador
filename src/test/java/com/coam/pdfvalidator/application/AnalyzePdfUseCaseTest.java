@@ -296,7 +296,7 @@ class AnalyzePdfUseCaseTest {
     void validationTimeUsesTheTimestampGenTimeWhenTheTimestampIsFullyValid() {
         Instant genTime = Instant.parse("2025-01-01T00:00:00Z");
         TimestampInfo validTimestamp =
-                new TimestampInfo(genTime, "TSA", true, true, null, null);
+                new TimestampInfo(genTime, "TSA", true, true, null, null, List.of(), true, true);
         SignatureReport signature = signatureWith(validTimestamp, Instant.parse("2024-01-01T00:00:00Z"), List.of());
         FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
 
@@ -311,7 +311,7 @@ class AnalyzePdfUseCaseTest {
         Instant claimedSigningTime = Instant.parse("2024-01-01T00:00:00Z");
         // imprintValid=false: the timestamp is present but not trustworthy.
         TimestampInfo invalidTimestamp = new TimestampInfo(
-                Instant.parse("2025-01-01T00:00:00Z"), "TSA", false, true, null, "imprint mismatch");
+                Instant.parse("2025-01-01T00:00:00Z"), "TSA", false, true, null, "imprint mismatch", List.of(), true, false);
         SignatureReport signature = signatureWith(invalidTimestamp, claimedSigningTime, List.of());
         FakeCertificateChainValidator chainValidator = new FakeCertificateChainValidator(ChainStatus.NOT_CHECKED);
 

@@ -98,6 +98,33 @@ class SignatureTimestampVerifierTest {
         assertThat(result.isPresent()).isTrue();
         assertThat(result.noteOptional()).isPresent();
         assertThat(result.note()).contains("timeStamping");
+        assertThat(result.tsaTimeStampingEku()).isFalse();
+        assertThat(result.trusted()).isFalse();
+    }
+
+    @Test
+    void aGenuineTokenReportsTheTsaChainOrderedTsaFirstAndTheTimeStampingEku() throws Exception {
+        SignerInformation original = signerInformationWithTimestamp();
+        TimeStampToken token = extractToken(original);
+        X509CertificateHolder tsaHolder =
+                (X509CertificateHolder) token.getCertificates().getMatches(token.getSID()).iterator().next();
+
+        TimestampInfo result = SignatureTimestampVerifier.verify(original, new BouncyCastleProvider());
+
+        assertThat(result.tsaTimeStampingEku()).isTrue();
+        assertThat(result.tsaChain()).hasSize(2);
+        assertThat(result.tsaChain().get(0).encoded()).isEqualTo(tsaHolder.getEncoded());
+        assertThat(result.tsaChain().get(0).subject()).contains("Spike Test TSA");
+        assertThat(result.tsaChain().get(1).subject()).isEqualTo(result.tsaChain().get(1).issuer());
+    }
+
+    @Test
+    void theAdapterNeverDeclaresATimestampTrustedItselfBecauseTrustIsDecidedByTheApplicationLayer() throws Exception {
+        TimestampInfo result =
+                SignatureTimestampVerifier.verify(signerInformationWithTimestamp(), new BouncyCastleProvider());
+
+        assertThat(result.signatureValid()).isTrue();
+        assertThat(result.trusted()).isFalse();
     }
 
     /**
