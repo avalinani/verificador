@@ -905,6 +905,7 @@ Checks: visual readback of each screenshot (no COAM, no personal data); slides P
 - T16a evidence: throwaway generator outside the repo (demo root "CA Raíz de Demostración", signer "Ana García (demo)", demo TSA); API check: signed -> VALID (INTACT, TRUSTED, timestamp), modified -> INVALID (MODIFIED_AFTER_SIGNING, MODIFIED_AFTER_LAST_SIGNATURE).
 - T16b found a real UI bug: both drop-zone hints said "hasta 20 MB" while the enforced limit is 80 MB. TDD: `StaticContentSecurityTest#theDropzoneHintsAdvertiseTheConfiguredUploadLimit` RED against the old hint (expected 2 matches, got 0), GREEN after fixing `index.html`; stale "20 MB" in `AnalysisBulkheadFilter` Javadoc fixed. `./mvnw verify`: green, 356 tests. Screenshots (Validar valid, Validar modified, Firmar) read back: no COAM, only demo data.
 - T16c: slides artifact version 6 adds `demo-validar` and `demo-firmar` after `ui` (15 slides). User re-exported PDF and PPTX (15 slides each; pages 8-9 carry the screenshots, checked by text extraction and embedded images); copied to `docs/PDF-Inspector-TFM.pdf` and `docs/PDF-Inspector-TFM.pptx`, linked from README §9. Known stale fact in slide 11: "353 tests" (now 356).
+- VPS redeployed with master a4ccb07 (user-authorized): code swapped via `git archive` (previous copy kept as `~/pdf-validator.bak-20260930-0641`), `docker compose up -d --build`, container healthy; public `index.html` shows "hasta 80 MB" in both drop zones; demo PDF analysis over HTTPS returns 200.
 
 ## Next step
-T16 slides screenshots (in progress). Afterwards: optional T14 TSL auto-load; optional T12f follow-ups.
+T16 done (PR #19 pending merge: slides PDF/PPTX). Afterwards: optional T14 TSL auto-load; optional T12f follow-ups.
