@@ -655,7 +655,7 @@ El proyecto se desarrolla con **TDD** (primero el test en rojo, luego la impleme
 
 Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una CA de pruebas en memoria firma documentos, y a partir de ellos se crean variantes manipuladas, con actualización incremental, rotadas, cifradas o corruptas. Así los tests son reproducibles y no dependen de ficheros con datos personales (los dos PDFs reales firmados usados para reproducir casos de FNMT y Camerfirma nunca se incorporaron al repositorio).
 
-**Estado actual:** 354 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
+**Estado actual:** 379 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
 
 | Suite | Qué comprueba |
 |---|---|
