@@ -19,6 +19,13 @@ import {
   signaturesList,
   documentDetails,
 } from "./dom.js";
+import {
+  groupPagesBySize,
+  describeGroup,
+  formatPageRanges,
+  findCropGroups,
+  formatPoints,
+} from "./pages.js";
 
 // ---------------------------------------------------------------------
 // Reason code / enum -> Spanish text
@@ -82,8 +89,6 @@ const PDFA_STATUS_TEXT = {
   NON_COMPLIANT: "No conforme con PDF/A-1b",
   NOT_VALIDATED: "No validado",
 };
-
-const ORIENTATION_TEXT = { PORTRAIT: "Vertical", LANDSCAPE: "Horizontal", SQUARE: "Cuadrada" };
 
 const PERMISSION_TEXT = {
   PRINT: "Imprimir",
@@ -339,6 +344,7 @@ function renderDocumentDetails(report) {
   documentDetails.append(
     renderHashesCard(report.hashes),
     renderStructureCard(report.structure),
+    renderCropCard(report.structure),
     renderSecurityCard(report.security),
     renderPdfaCard(report.pdfa),
   );
@@ -391,44 +397,87 @@ function renderStructureCard(structure) {
   );
 
   if (structure.pages && structure.pages.length > 0) {
-    const table = document.createElement("table");
-    table.className = "pages-table";
-    const thead = document.createElement("thead");
-    const headRow = document.createElement("tr");
-    ["Página", "Rotación", "Orientación", "Tamaño"].forEach((label) => {
-      const th = document.createElement("th");
-      th.textContent = label;
-      headRow.appendChild(th);
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-
-    const tbody = document.createElement("tbody");
-    for (const page of structure.pages) {
-      const row = document.createElement("tr");
-      const cells = [
-        String(page.number),
-        page.rotationValid ? `${page.rawRotation}°` : `${page.rawRotation}° (no válida)`,
-        ORIENTATION_TEXT[page.orientation] || page.orientation,
-        `${Math.round(page.mediaBox.width)} x ${Math.round(page.mediaBox.height)}`,
-      ];
-      for (const value of cells) {
-        const td = document.createElement("td");
-        td.textContent = value;
-        row.appendChild(td);
-      }
-      tbody.appendChild(row);
-    }
-    table.appendChild(tbody);
-    card.appendChild(table);
-    if (structure.pagesTruncated) {
-      const note = document.createElement("p");
-      note.className = "anomaly-note";
-      note.textContent = `Se muestran solo las primeras ${structure.pages.length} páginas de ${structure.pageCount}.`;
-      card.appendChild(note);
-    }
+    card.appendChild(renderPageGroups(groupPagesBySize(structure.pages)));
+    appendTruncationNote(card, structure);
   }
 
+  return card;
+}
+
+function appendTruncationNote(card, structure) {
+  if (!structure.pagesTruncated) return;
+  const note = document.createElement("p");
+  note.className = "anomaly-note";
+  note.textContent = `Se muestran solo las primeras ${structure.pages.length} páginas de ${structure.pageCount}.`;
+  card.appendChild(note);
+}
+
+function renderPageGroups(groups) {
+  const list = document.createElement("div");
+  list.className = "page-groups";
+  for (const group of groups) {
+    const details = document.createElement("details");
+    details.className = "page-group";
+    const summary = document.createElement("summary");
+    summary.textContent = describeGroup(group);
+    if (!group.rotationValid) {
+      const marker = document.createElement("span");
+      marker.className = "page-group-flag";
+      marker.textContent = "Rotación no válida";
+      summary.append(" ", marker);
+    }
+    details.appendChild(summary);
+    const pages = document.createElement("p");
+    pages.className = "page-group-pages";
+    pages.textContent = `${group.numbers.length === 1 ? "Página" : "Páginas"}: ${formatPageRanges(group.numbers)}`;
+    details.appendChild(pages);
+    list.appendChild(details);
+  }
+  return list;
+}
+
+function renderCropCard(structure) {
+  const card = document.createElement("div");
+  card.className = "detail-card";
+  const heading = document.createElement("h4");
+  heading.textContent = "Recortes";
+  card.appendChild(heading);
+
+  const groups = findCropGroups(structure.pages || []);
+  if (groups.length === 0) {
+    const none = document.createElement("p");
+    none.className = "inline-fact";
+    none.textContent = "Ninguna página tiene recorte.";
+    card.appendChild(none);
+  } else {
+    const list = document.createElement("ul");
+    list.className = "crop-list";
+    for (const group of groups) {
+      const item = document.createElement("li");
+      item.className = "crop-item";
+      const title = document.createElement("div");
+      title.className = "crop-item-pages";
+      title.textContent = `${group.numbers.length === 1 ? "Página" : "Páginas"} ${formatPageRanges(group.numbers)}`;
+      const sizes = document.createElement("div");
+      sizes.textContent =
+        `Tamaño de página: ${formatPoints(group.pageWidth)} × ${formatPoints(group.pageHeight)} pt · ` +
+        `Tamaño visible: ${formatPoints(group.visibleWidth)} × ${formatPoints(group.visibleHeight)} pt`;
+      const sides = document.createElement("div");
+      sides.className = "crop-item-sides";
+      sides.textContent =
+        `Recorte: izquierda ${formatPoints(group.left)} · abajo ${formatPoints(group.bottom)} · ` +
+        `derecha ${formatPoints(group.right)} · arriba ${formatPoints(group.top)} pt`;
+      item.append(title, sizes, sides);
+      list.appendChild(item);
+    }
+    card.appendChild(list);
+  }
+  if (structure.pagesTruncated) {
+    const note = document.createElement("p");
+    note.className = "anomaly-note";
+    note.textContent = `Solo se han comprobado las primeras ${(structure.pages || []).length} páginas de ${structure.pageCount}.`;
+    card.appendChild(note);
+  }
   return card;
 }
 

@@ -825,17 +825,43 @@ a { color: var(--color-accent); }
 .copy-button:hover { background: var(--color-neutral-bg); color: var(--color-text); }
 .copy-button[data-copied="true"] { color: var(--color-success-icon); }
 
-table.pages-table {
-  width: 100%;
-  border-collapse: collapse;
+/* T22: pages grouped by size/rotation (native <details>, closed by default)
+   and the crop list. Only existing tokens; text markers, not colour alone. */
+.page-groups { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+.page-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
   font-size: 12.5px;
+  min-width: 0;
 }
-.pages-table th, .pages-table td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--color-border);
+.page-group summary {
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  overflow-wrap: anywhere;
 }
-.pages-table th { color: var(--color-text-muted); font-weight: 600; }
+.page-group[open] summary { border-bottom: 1px solid var(--color-border); font-weight: 600; }
+.page-group-pages {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.page-group-flag {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-weight: 600;
+}
+.crop-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); font-size: 12.5px; }
+.crop-item { padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.crop-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.crop-item-pages { font-weight: 600; }
+.crop-item-sides { color: var(--color-text-muted); }
 
 .inline-fact { margin: 0 0 var(--space-3); font-size: 13px; }
 .permission-label { font-size: 13px; margin-bottom: var(--space-2); }
