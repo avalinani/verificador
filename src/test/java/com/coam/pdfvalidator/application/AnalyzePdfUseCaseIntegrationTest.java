@@ -36,7 +36,7 @@ class AnalyzePdfUseCaseIntegrationTest {
     @Test
     void aValidlySignedAndTimestampedPdfProducesACoherentFullReport() throws Exception {
         TestPki.IssuedIdentity identity = TestPki.issueSigningIdentity();
-        TestPki.TsaIdentity tsaIdentity = TestPki.issueTsaIdentity();
+        TestPki.TsaIdentity tsaIdentity = TestPki.issueTsaIdentityUnder(identity);
         byte[] unsigned = TestPdfSigner.createSimplePdf();
         byte[] pdf = TestPdfSigner.signWithTimestamp(unsigned, identity, tsaIdentity);
 
@@ -68,5 +68,8 @@ class AnalyzePdfUseCaseIntegrationTest {
         assertThat(signature.timestamp().isPresent()).isTrue();
         assertThat(signature.timestamp().imprintValid()).isTrue();
         assertThat(signature.timestamp().signatureValid()).isTrue();
+        // The TSA is issued under the same trusted root: the timestamp itself is trusted (T19).
+        assertThat(signature.timestamp().trusted()).isTrue();
+        assertThat(signature.verdict()).isEqualTo(com.coam.pdfvalidator.domain.model.SignatureVerdict.VALID);
     }
 }
