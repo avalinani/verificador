@@ -129,7 +129,7 @@ public class PdfAnalysisReportMapper {
         CertificateInfoDto tsaCertificate = timestamp.tsaCertificate() != null ? toDto(timestamp.tsaCertificate()) : null;
         return new TimestampInfoDto(
                 timestamp.genTime(), timestamp.tsaName(), timestamp.isPresent(), timestamp.imprintValid(),
-                timestamp.signatureValid(), tsaCertificate, timestamp.note());
+                timestamp.signatureValid(), tsaCertificate, timestamp.note(), timestamp.trusted());
     }
 
     private CertificateInfoDto toDto(CertificateInfo certificate) {
