@@ -284,7 +284,7 @@ final class CmsSignatureVerification {
             }
             byte[] actualDigest = digestCalculator.getDigest();
             byte[] claimedDigest = messageDigestAttributeValue(signedAttributes);
-            if (claimedDigest == null || !java.util.Arrays.equals(actualDigest, claimedDigest)) {
+            if (!java.util.Arrays.equals(actualDigest, claimedDigest)) {
                 throw new CMSSignerDigestMismatchException(
                         "message-digest attribute value does not match calculated value");
             }
@@ -306,7 +306,7 @@ final class CmsSignatureVerification {
     private static byte[] messageDigestAttributeValue(AttributeTable signedAttributes) {
         Attribute attribute = signedAttributes.get(CMSAttributes.messageDigest);
         if (attribute == null) {
-            return null;
+            return new byte[0]; // absent: never equal to a real digest, so the caller reports a mismatch
         }
         return ASN1OctetString.getInstance(attribute.getAttrValues().getObjectAt(0)).getOctets();
     }

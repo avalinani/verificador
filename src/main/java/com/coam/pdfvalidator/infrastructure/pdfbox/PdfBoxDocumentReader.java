@@ -47,7 +47,7 @@ import java.util.regex.Pattern;
  * <p>A plain class, constructor-injectable; Spring wiring is added in a
  * later task.
  */
-public class PdfBoxDocumentReader implements PdfDocumentReader {
+public final class PdfBoxDocumentReader implements PdfDocumentReader {
 
     private final DecodedSizeGuard.Limits limits;
     private final StructureLimits structureLimits;

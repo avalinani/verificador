@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -236,17 +237,22 @@ final class RevisionCounter {
 
     private static int indexOf(byte[] haystack, byte[] needle, int fromIndex, int limit, ScanStats stats) {
         int last = Math.min(limit, haystack.length) - needle.length;
-        outer:
         for (int i = Math.max(fromIndex, 0); i <= last; i++) {
             stats.steps++;
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
-                }
+            if (matchesAt(haystack, needle, i)) {
+                return i;
             }
-            return i;
         }
         return -1;
+    }
+
+    private static boolean matchesAt(byte[] haystack, byte[] needle, int offset) {
+        for (int j = 0; j < needle.length; j++) {
+            if (haystack[offset + j] != needle[j]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -269,16 +275,16 @@ final class RevisionCounter {
 
         /** Every marker position, or {@code null} as soon as any keyword occurs more than {@code max} times. */
         static MarkerPositions scan(byte[] pdf, int max, ScanStats stats) {
-            int[] stream = allOffsetsOf(pdf, STREAM_KEYWORD, max, stats);
-            if (stream == null) {
+            Optional<int[]> stream = allOffsetsOf(pdf, STREAM_KEYWORD, max, stats);
+            if (stream.isEmpty()) {
                 return null;
             }
-            int[] startxref = allOffsetsOf(pdf, STARTXREF, max, stats);
-            if (startxref == null) {
+            Optional<int[]> startxref = allOffsetsOf(pdf, STARTXREF, max, stats);
+            if (startxref.isEmpty()) {
                 return null;
             }
-            int[] prev = allOffsetsOf(pdf, PREV, max, stats);
-            return prev == null ? null : new MarkerPositions(stream, startxref, prev);
+            Optional<int[]> prev = allOffsetsOf(pdf, PREV, max, stats);
+            return prev.isEmpty() ? null : new MarkerPositions(stream.get(), startxref.get(), prev.get());
         }
 
         /** The smallest element of {@code sorted} that is {@code >= from}, or {@code -1} if none. */
@@ -299,9 +305,9 @@ final class RevisionCounter {
 
     /**
      * All occurrences of {@code needle}, in a primitive array grown on demand (an offset is an {@code int}: the
-     * upload limit keeps a file well below 2 GB), or {@code null} once there are more than {@code max} of them.
+     * upload limit keeps a file well below 2 GB), or empty once there are more than {@code max} of them.
      */
-    private static int[] allOffsetsOf(byte[] pdf, byte[] needle, int max, ScanStats stats) {
+    private static Optional<int[]> allOffsetsOf(byte[] pdf, byte[] needle, int max, ScanStats stats) {
         int[] offsets = new int[16];
         int size = 0;
         int from = 0;
@@ -311,14 +317,15 @@ final class RevisionCounter {
                 break;
             }
             if (size == max) {
-                return null;
+                return Optional.empty();
             }
             if (size == offsets.length) {
                 offsets = java.util.Arrays.copyOf(offsets, (int) Math.min(max, 2L * offsets.length));
             }
-            offsets[size++] = idx;
+            offsets[size] = idx;
+            size++;
             from = idx + 1;
         }
-        return java.util.Arrays.copyOf(offsets, size);
+        return Optional.of(java.util.Arrays.copyOf(offsets, size));
     }
 }
