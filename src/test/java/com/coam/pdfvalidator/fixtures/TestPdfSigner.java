@@ -156,6 +156,20 @@ public final class TestPdfSigner {
     }
 
     /**
+     * Same as {@link #signWithTimestamp(byte[], TestPki.IssuedIdentity, TestPki.TsaIdentity)}, but the timestamp
+     * token was requested with {@code certReq=false}, so it carries no certificate at all (RFC 3161 section 2.4.1).
+     * {@code extraSignatureCertificates} are added to the signature's own CMS {@code certificates} set (empty:
+     * the TSA certificate is nowhere in the document).
+     */
+    public static byte[] signWithCertificateLessTimestamp(
+            byte[] unsignedPdf, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
+            List<X509Certificate> extraSignatureCertificates) throws IOException {
+        return sign(unsignedPdf, identity, PDSignature.SUBFILTER_ETSI_CADES_DETACHED.getName(),
+                content -> createDetachedCmsWithTimestamp(
+                        content, identity, tsaIdentity, false, new Date(), false, extraSignatureCertificates), 8);
+    }
+
+    /**
      * Same as {@link #signWithTimestamp(byte[], TestPki.IssuedIdentity, TestPki.TsaIdentity)}, but the TSA
      * stamps {@code genTime} instead of "now" -- what a forger with any TSA of
      * their own can do, and what a genuine TSA did if the signature is old.
@@ -476,6 +490,13 @@ public final class TestPdfSigner {
     private static byte[] createDetachedCmsWithTimestamp(
             InputStream content, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
             boolean tamperImprint, Date genTime) throws IOException {
+        return createDetachedCmsWithTimestamp(content, identity, tsaIdentity, tamperImprint, genTime, true, List.of());
+    }
+
+    private static byte[] createDetachedCmsWithTimestamp(
+            InputStream content, TestPki.IssuedIdentity identity, TestPki.TsaIdentity tsaIdentity,
+            boolean tamperImprint, Date genTime, boolean tokenCarriesTsaCertificates,
+            List<X509Certificate> extraCmsCertificates) throws IOException {
         try {
             byte[] contentBytes = content.readAllBytes();
 
@@ -495,7 +516,9 @@ public final class TestPdfSigner {
                                     .build())
                             .build(contentSigner, signerCertificate));
 
-            generator.addCertificates(new JcaCertStore(identity.chain()));
+            List<X509Certificate> signatureCertificates = new java.util.ArrayList<>(identity.chain());
+            signatureCertificates.addAll(extraCmsCertificates);
+            generator.addCertificates(new JcaCertStore(signatureCertificates));
 
             CMSTypedData cmsData = new CMSProcessableByteArray(contentBytes);
             CMSSignedData signedData = generator.generate(cmsData, false);
@@ -505,7 +528,7 @@ public final class TestPdfSigner {
                     ? "this is not the real signature value".getBytes(java.nio.charset.StandardCharsets.UTF_8)
                     : signerInformation.getSignature();
 
-            TimeStampToken token = issueTimeStampToken(imprintSource, tsaIdentity, genTime);
+            TimeStampToken token = issueTimeStampToken(imprintSource, tsaIdentity, genTime, tokenCarriesTsaCertificates);
 
             AttributeTable existingUnsignedAttributes = signerInformation.getUnsignedAttributes();
             Hashtable<ASN1ObjectIdentifier, Attribute> unsignedAttributeTable =
@@ -526,7 +549,7 @@ public final class TestPdfSigner {
 
     /** Issues a genuine RFC 3161 timestamp token over the SHA-256 digest of {@code imprintSource}. */
     private static TimeStampToken issueTimeStampToken(
-            byte[] imprintSource, TestPki.TsaIdentity tsaIdentity, Date genTime)
+            byte[] imprintSource, TestPki.TsaIdentity tsaIdentity, Date genTime, boolean certReq)
             throws IOException, OperatorCreationException, CMSException, TSPException, CertificateEncodingException {
         byte[] imprint;
         try {
@@ -538,7 +561,7 @@ public final class TestPdfSigner {
         TimeStampRequestGenerator requestGenerator = new TimeStampRequestGenerator();
         // RFC 3161: a TSA only embeds its certificate in the response when
         // the request's certReq flag asks for it.
-        requestGenerator.setCertReq(true);
+        requestGenerator.setCertReq(certReq);
         TimeStampRequest request = requestGenerator.generate(TSPAlgorithms.SHA256, imprint);
 
         DigestCalculator digestCalculator = new JcaDigestCalculatorProviderBuilder()
@@ -556,7 +579,9 @@ public final class TestPdfSigner {
 
         TimeStampTokenGenerator tokenGenerator = new TimeStampTokenGenerator(
                 tsaSignerInfoGenerator, digestCalculator, new ASN1ObjectIdentifier("1.2.3.4.1"));
-        tokenGenerator.addCertificates(new JcaCertStore(tsaIdentity.chain()));
+        if (certReq) {
+            tokenGenerator.addCertificates(new JcaCertStore(tsaIdentity.chain()));
+        }
 
         return tokenGenerator.generate(request, BigInteger.valueOf(System.currentTimeMillis()), genTime);
     }

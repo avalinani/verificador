@@ -10,6 +10,7 @@ import com.coam.pdfvalidator.domain.model.SignatureExtraction;
 import com.coam.pdfvalidator.domain.model.SignatureReport;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
 import com.coam.pdfvalidator.domain.port.SignatureVerifier;
+import com.coam.pdfvalidator.domain.port.TrustedCertificateSource;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
@@ -53,13 +54,23 @@ public final class BcSignatureVerifier implements SignatureVerifier {
 
     private final Provider bcProvider = new BouncyCastleProvider();
     private final SignatureLimits limits;
+    private final TrustedCertificateSource trustedCertificates;
 
     public BcSignatureVerifier() {
         this(SignatureLimits.DEFAULT);
     }
 
     public BcSignatureVerifier(SignatureLimits limits) {
+        this(limits, TrustedCertificateSource.none());
+    }
+
+    /**
+     * @param trustedCertificates where a timestamp authority certificate that the RFC 3161 token does not carry
+     *                            may additionally be looked up (T26a); a lookup source only, never a trust decision
+     */
+    public BcSignatureVerifier(SignatureLimits limits, TrustedCertificateSource trustedCertificates) {
         this.limits = java.util.Objects.requireNonNull(limits, "limits");
+        this.trustedCertificates = java.util.Objects.requireNonNull(trustedCertificates, "trustedCertificates");
     }
 
     @Override
@@ -189,7 +200,7 @@ public final class BcSignatureVerifier implements SignatureVerifier {
         }
 
         CmsSignatureVerification.Result cms =
-                CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider, limits);
+                CmsSignatureVerification.verify(byteRange.signedBytes(), byteRange.cmsDer(), bcProvider, limits, trustedCertificates);
 
         // A CMS that parsed must not be reported with an empty chain merely
         // because verification failed, or because one certificate's data
