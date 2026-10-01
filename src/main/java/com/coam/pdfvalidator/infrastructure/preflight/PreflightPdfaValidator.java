@@ -8,6 +8,7 @@ import com.coam.pdfvalidator.domain.model.PdfaValidationStatus;
 import com.coam.pdfvalidator.domain.port.PdfaConformanceValidator;
 
 import com.coam.pdfvalidator.infrastructure.pdfbox.DecodedSizeGuard;
+import com.coam.pdfvalidator.infrastructure.pdfbox.PdfaDeclarationParser;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.io.RandomAccessRead;
@@ -20,10 +21,6 @@ import org.apache.pdfbox.preflight.PreflightDocument;
 import org.apache.pdfbox.preflight.ValidationResult;
 import org.apache.pdfbox.preflight.exception.SyntaxValidationException;
 import org.apache.pdfbox.preflight.parser.PreflightParser;
-import org.apache.xmpbox.XMPMetadata;
-import org.apache.xmpbox.schema.PDFAIdentificationSchema;
-import org.apache.xmpbox.xml.DomXmpParser;
-import org.apache.xmpbox.xml.XmpParsingException;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -213,32 +210,15 @@ public final class PreflightPdfaValidator implements PdfaConformanceValidator {
     /**
      * Reads the {@code pdfaid} XMP identification directly from the
      * already-parsed {@link PreflightDocument}, independently of {@code
-     * PdfDocumentReader.readPdfaDeclaration} -- deliberately duplicated
-     * (rather than shared across infrastructure packages) to keep each
-     * adapter package self-contained, matching this codebase's existing
-     * convention (no {@code infrastructure.*} package depends on another).
+     * PdfDocumentReader.readPdfaDeclaration} -- through the shared
+     * {@link PdfaDeclarationParser}, so both adapters agree on the declaration.
      */
     private PdfaDeclaration readDeclaration(PDDocument document) {
         PDMetadata metadata = document.getDocumentCatalog().getMetadata();
         if (metadata == null) {
             return PdfaDeclaration.NONE;
         }
-        try {
-            byte[] xmpBytes = DecodedSizeGuard.decode(metadata.getCOSObject(), limits.maxStreamBytes());
-            XMPMetadata xmp = new DomXmpParser().parse(xmpBytes);
-            PDFAIdentificationSchema schema = xmp.getPDFAIdentificationSchema();
-            if (schema == null) {
-                return PdfaDeclaration.NONE;
-            }
-            Integer part = schema.getPart();
-            String conformance = schema.getConformance();
-            if (part == null || conformance == null) {
-                return PdfaDeclaration.NONE;
-            }
-            return new PdfaDeclaration(part, conformance);
-        } catch (IOException | XmpParsingException e) {
-            return PdfaDeclaration.NONE;
-        }
+        return PdfaDeclarationParser.parse(metadata, limits.maxStreamBytes());
     }
 
     private static List<PdfaIssue> syntaxErrorIssues(SyntaxValidationException e, int maxIssues) {

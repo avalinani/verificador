@@ -86,17 +86,9 @@ final class OcspClient {
      * shared {@code deadline}; once that is spent, the remaining URLs are not contacted at all.
      */
     RevocationStatus check(X509Certificate certificate, X509Certificate issuer, List<String> urls, Deadline deadline) {
-        RevocationStatus last = unknown(null, "no OCSP URL available for this certificate");
-        for (String url : urls) {
-            if (deadline.expired()) {
-                return unknown(null, Deadline.EXHAUSTED_DETAIL);
-            }
-            last = checkOne(certificate, issuer, url, deadline.capped(limits.timeout()));
-            if (last.state() != RevocationState.UNKNOWN) {
-                return last;
-            }
-        }
-        return last;
+        return UrlFallback.firstConclusive(
+                urls, deadline, limits.timeout(), "no OCSP URL available for this certificate",
+                (url, attempt) -> checkOne(certificate, issuer, url, attempt));
     }
 
     private RevocationStatus checkOne(

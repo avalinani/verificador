@@ -24,10 +24,6 @@ import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
-import org.apache.xmpbox.XMPMetadata;
-import org.apache.xmpbox.schema.PDFAIdentificationSchema;
-import org.apache.xmpbox.xml.DomXmpParser;
-import org.apache.xmpbox.xml.XmpParsingException;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -115,30 +111,9 @@ public final class PdfBoxDocumentReader implements PdfDocumentReader {
             if (metadata == null) {
                 return PdfaDeclaration.NONE;
             }
-            return parsePdfaDeclaration(metadata);
+            return PdfaDeclarationParser.parse(metadata, limits.maxStreamBytes());
         } catch (IOException e) {
             throw new InvalidPdfException("Failed to close PDF document after reading its PDF/A declaration", e);
-        }
-    }
-
-    private PdfaDeclaration parsePdfaDeclaration(PDMetadata metadata) {
-        try {
-            byte[] xmpBytes = DecodedSizeGuard.decode(metadata.getCOSObject(), limits.maxStreamBytes());
-            XMPMetadata xmp = new DomXmpParser().parse(xmpBytes);
-            PDFAIdentificationSchema schema = xmp.getPDFAIdentificationSchema();
-            if (schema == null) {
-                return PdfaDeclaration.NONE;
-            }
-            Integer part = schema.getPart();
-            String conformance = schema.getConformance();
-            if (part == null || conformance == null) {
-                return PdfaDeclaration.NONE;
-            }
-            return new PdfaDeclaration(part, conformance);
-        } catch (IOException | XmpParsingException e) {
-            // Malformed or unparseable XMP is not itself the PDF content: treat
-            // it as "no PDF/A declaration" rather than aborting the analysis.
-            return PdfaDeclaration.NONE;
         }
     }
 
