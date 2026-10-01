@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Project PMD ruleset: PMD's curated "quickstart" set (widely-agreed rules with low noise)
      plus a few rules excluded because they conflict with the project's conventions.
-     Report-only for now (failOnViolation=false in pom.xml). -->
+     Gate in pom.xml: the build fails on priority 1-2 violations; priority 3 is report-only. -->
 <ruleset name="pdf-validator"
          xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SpotBugs exclusions. Each match is deliberately narrow (class + bug pattern, plus the method
+     where one is enough) and states why the finding is not a defect. Do not add broad wildcards:
+     a new finding must either be fixed or get its own justified entry here. -->
+<FindBugsFilter>
+
+  <!-- OCSP (RFC 6960 appendix A.1) and CRL (RFC 5280 section 4.2.1.13) distribution points are
+       plain http:// by design: the payload is signed by the CA or by its delegated responder and
+       that signature is verified before the response is used, so TLS would add no integrity. The
+       classic risk of a raw socket, SSRF, is handled elsewhere: RevocationUrlGuard accepts only
+       http, resolves the host once and rejects private/loopback/link-local targets, and
+       PinnedHttpClient connects to that pinned address (no second DNS lookup). -->
+  <Match>
+    <Class name="com.coam.pdfvalidator.infrastructure.revocation.PinnedHttpClient"/>
+    <Method name="send"/>
+    <Bug pattern="UNENCRYPTED_SOCKET"/>
+  </Match>
+
+  <!-- Arrays.equals on two message digests of the signed attributes: both values are public (the
+       digest is stored in the signature itself), there is no secret whose comparison timing could
+       leak, so a constant-time comparison buys nothing here. -->
+  <Match>
+    <Class name="com.coam.pdfvalidator.infrastructure.bouncycastle.CmsSignatureVerification"/>
+    <Method name="verifyWithMislabeledDigestAlgorithm"/>
+    <Bug pattern="UNSAFE_HASH_EQUALS"/>
+  </Match>
+
+</FindBugsFilter>
