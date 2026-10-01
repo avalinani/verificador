@@ -1028,5 +1028,12 @@ Gate evidence (temporary probes, never committed, files removed): `a == new Stri
 Checks: `./mvnw -B verify` green, 485 tests (477 before, +7 `DtoDefensiveCopyTest`, +1 controller), ArchUnit green, JaCoCo line 91.27 % / branch 79.37 % (ratchet 88/75), ~1 min.
 Commits: see `git log --oneline master..HEAD` on the branch (fix(api) x2, fix(revocation), fix, refactor x2, build gate, docs).
 
+## T25 Slides refresh
+Objective: bring the presentation up to date with the security work and the new UI.
+- [x] T25a Demo PDFs regenerated outside the repo (demo PKI; RFC 3161 request with certReq=true so the TSA certificate is in the token; 4 pages: A4, A4 rotated 90°, A4, A3 landscape with CropBox). Local run with the demo anchor: signed -> VALID with a trusted timestamp; modified -> INVALID.
+- [x] T25b Screenshots (Playwright, light theme): Validar valid/modified, document card with page groups and crops. Read back: demo data only, no COAM.
+- [x] T25c Slides artifact version 10 (17 slides): demo-validar screenshots replaced, new demo-documento and security slides, quality slide with 486 tests and the quality gates.
+- [x] T25d User re-exported PDF and PPTX (17 slides each; slide 12 shows 486, slide 13 is the security slide); copied to `docs/`, README §9 and §11 updated.
+
 ## Next step
-T19, T20 and T22 are merged and deployed to the VPS; T21 is merged (PR #26); T23 (audit leftovers) is on `fix/audit-leftovers`, pending PR and merge, and the Docker pinning is verified only by CI. After both, redeploy to the VPS (the user authorizes each redeploy). T24 (static analysis triage and gating) is on `chore/static-analysis-triage`, pending PR and merge. Remaining: slides refresh with new screenshots and a security slide. Optional: T14 TSL auto-load; look up the TSA certificate also in the signature CMS / trust store when the token carries none; optional T12f follow-ups.
+All audit work (T18-T24) merged and deployed (master 7aeadf9 on the VPS). T25 slides refresh on `docs/slides-refresh`, pending PR and merge. Optional: T14 TSL auto-load (would also add TSA services); look up the TSA certificate also in the signature CMS / trust store when the token carries none; optional T12f follow-ups.
