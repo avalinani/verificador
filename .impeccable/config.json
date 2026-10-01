@@ -11,6 +11,15 @@
         ],
         "createdAt": "2026-09-28T12:19:45.352Z",
         "reason": "Agent: established a deliberate multi-tier spacing rhythm on the existing --space-* scale (2/4px micro pairs like icon+text and label+sublabel, 8/12px component-internal, 16/24px medium groups, 32/48px section breaks between verdict/signatures/document-details and between the form and results panels); the detector's raw frequency count is dominated by legitimate tight micro-groupings and border/outline widths, not repeated section spacing"
+      },
+      {
+        "rule": "border-accent-on-rounded",
+        "value": "*",
+        "files": [
+          ".playwright-mcp/deck/project/slides/security.html"
+        ],
+        "createdAt": "2026-10-01T12:08:37.318Z",
+        "reason": "agent decision: the 8px top accent on rounded cards is the deck's existing card pattern (tamper and limits slides, published since 2026-09-29); security.html reuses it for consistency"
       }
     ]
   }
