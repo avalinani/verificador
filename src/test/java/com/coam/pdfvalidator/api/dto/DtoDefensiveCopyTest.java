@@ -66,6 +66,16 @@ class DtoDefensiveCopyTest {
         assertThatThrownBy(() -> dto.permissions().add("x")).isInstanceOf(UnsupportedOperationException.class);
     }
 
+    /** The JSON permissions array must keep the mapper's order, not a per-JVM randomized one. */
+    @Test
+    void securityInfoKeepsThePermissionOrder() {
+        List<String> order = List.of("PRINT", "MODIFY", "EXTRACT_CONTENT", "MODIFY_ANNOTATIONS",
+                "FILL_IN_FORM", "EXTRACT_FOR_ACCESSIBILITY", "ASSEMBLE_DOCUMENT", "PRINT_FAITHFUL");
+        SecurityInfoDto dto = new SecurityInfoDto(false, new java.util.LinkedHashSet<>(order));
+
+        assertThat(dto.permissions()).containsExactlyElementsOf(order);
+    }
+
     @Test
     void pdfaReportSnapshotsItsIssues() {
         List<PdfaIssueDto> issues = new ArrayList<>();
