@@ -17,6 +17,6 @@ public interface TrustedCertificateSource {
 
     /** A source with no certificates. */
     static TrustedCertificateSource none() {
-        return () -> List.of();
+        return List::of;
     }
 }
