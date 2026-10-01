@@ -733,7 +733,7 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 
 ### Herramientas de calidad de código
 
-`./mvnw verify` ejecuta, además de los tests, las herramientas siguientes, y **todas son una puerta** (T24): JaCoCo falla por debajo de su umbral, SpotBugs falla ante cualquier aviso de nivel *Medium* o superior que no esté en la lista de exclusiones justificadas, PMD falla ante infracciones de prioridad 1 y 2 (las de prioridad 3, casi todas de complejidad, solo se informan) y CPD falla ante cualquier duplicado de 100 tokens o más. Duración de `verify`: ~1 min 50 s en total.
+`./mvnw verify` ejecuta, además de los tests, las herramientas siguientes, y **todas son una puerta** (T24): JaCoCo falla por debajo de su umbral, SpotBugs falla ante cualquier aviso de nivel *Medium* o superior que no esté en la lista de exclusiones justificadas, PMD falla ante infracciones de prioridad 1 y 2 (las de prioridad 3, casi todas de complejidad, solo se informan) y CPD falla ante cualquier duplicado de 100 tokens o más. Duración de `verify`: ~1 min en total.
 
 | Herramienta | Qué comprueba | Informe | Resultado actual (2026-10-01) |
 |---|---|---|---|
