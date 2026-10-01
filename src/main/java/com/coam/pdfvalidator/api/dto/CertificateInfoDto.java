@@ -20,4 +20,8 @@ public record CertificateInfoDto(
         List<String> ocspUrls,
         List<String> crlUrls,
         String sha256Fingerprint) {
+    public CertificateInfoDto {
+        ocspUrls = List.copyOf(ocspUrls);
+        crlUrls = List.copyOf(crlUrls);
+    }
 }

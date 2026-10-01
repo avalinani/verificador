@@ -7,4 +7,7 @@ import java.util.Set;
  * grants (e.g. {@code "PRINT"}, {@code "MODIFY"}, {@code "EXTRACT_CONTENT"}).
  */
 public record SecurityInfoDto(boolean encrypted, Set<String> permissions) {
+    public SecurityInfoDto {
+        permissions = Set.copyOf(permissions);
+    }
 }

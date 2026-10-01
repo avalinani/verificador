@@ -34,4 +34,8 @@ public record PdfAnalysisReportDto(
         List<SectionErrorDto> sectionErrors,
         String overallVerdict,
         boolean modifiedAfterLastSignature) {
+    public PdfAnalysisReportDto {
+        signatures = List.copyOf(signatures);
+        sectionErrors = List.copyOf(sectionErrors);
+    }
 }

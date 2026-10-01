@@ -25,4 +25,7 @@ public record DocumentStructureDto(
         int revisionCount,
         boolean pagesTruncated,
         boolean revisionCountLowerBound) {
+    public DocumentStructureDto {
+        pages = List.copyOf(pages);
+    }
 }
