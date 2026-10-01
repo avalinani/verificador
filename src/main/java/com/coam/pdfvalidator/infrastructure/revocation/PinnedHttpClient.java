@@ -146,6 +146,8 @@ final class PinnedHttpClient {
         out.flush();
     }
 
+    // The stream is owned by the socket, which the caller (send) closes with try-with-resources.
+    @SuppressWarnings("PMD.CloseResource")
     private static Response readResponse(Socket socket, long deadlineNanos, long maxResponseBytes, Limits limits)
             throws IOException {
         InputStream in = socket.getInputStream();
@@ -162,7 +164,7 @@ final class PinnedHttpClient {
         try {
             statusCode = Integer.parseInt(statusParts[1]);
         } catch (NumberFormatException e) {
-            throw new MalformedHttpResponseException("malformed HTTP status line: non-numeric status code");
+            throw new MalformedHttpResponseException("malformed HTTP status line: non-numeric status code", e);
         }
 
         Map<String, String> responseHeaders = new LinkedHashMap<>();
@@ -198,7 +200,7 @@ final class PinnedHttpClient {
         try {
             contentLength = Long.parseLong(contentLengthHeader.trim());
         } catch (NumberFormatException e) {
-            throw new MalformedHttpResponseException("malformed Content-Length header");
+            throw new MalformedHttpResponseException("malformed Content-Length header", e);
         }
         if (contentLength < 0) {
             throw new MalformedHttpResponseException("negative Content-Length");
@@ -234,7 +236,7 @@ final class PinnedHttpClient {
             try {
                 chunkSize = Integer.parseInt(hex, 16);
             } catch (NumberFormatException e) {
-                throw new MalformedHttpResponseException("malformed chunk size");
+                throw new MalformedHttpResponseException("malformed chunk size", e);
             }
             if (chunkSize < 0) {
                 throw new MalformedHttpResponseException("negative chunk size");
@@ -338,6 +340,10 @@ final class PinnedHttpClient {
     static final class MalformedHttpResponseException extends IOException {
         MalformedHttpResponseException(String message) {
             super(message);
+        }
+
+        MalformedHttpResponseException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

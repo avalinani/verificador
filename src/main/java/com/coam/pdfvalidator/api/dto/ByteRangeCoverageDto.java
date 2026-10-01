@@ -8,4 +8,7 @@ import java.util.List;
  * convenience flag.
  */
 public record ByteRangeCoverageDto(List<Long> ranges, long fileLength, boolean coversWholeDocument) {
+    public ByteRangeCoverageDto {
+        ranges = List.copyOf(ranges);
+    }
 }

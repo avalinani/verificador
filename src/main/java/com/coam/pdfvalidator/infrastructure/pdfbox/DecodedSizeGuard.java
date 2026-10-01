@@ -81,6 +81,10 @@ public final class DecodedSizeGuard {
         LimitExceededException(String message) {
             super(message);
         }
+
+        LimitExceededException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     /**
@@ -89,6 +93,8 @@ public final class DecodedSizeGuard {
      * that cannot be decoded for other reasons (corrupt data, unknown filter)
      * are skipped: reporting those is the consumers' job.
      */
+    // The document, its COS objects and streams are owned (and closed) by the caller's PDDocument.
+    @SuppressWarnings("PMD.CloseResource")
     public static void check(PDDocument document, Limits limits) throws LimitExceededException {
         COSDocument cosDocument = document.getDocument();
         long total = 0;
@@ -106,8 +112,8 @@ public final class DecodedSizeGuard {
             } catch (LimitExceededException e) {
                 throw new LimitExceededException(totalIsTheBound
                         ? "The document exceeds the total decoded size limit of " + limits.maxTotalBytes() + " bytes"
-                        : "A stream exceeds the decoded size limit of " + limits.maxStreamBytes() + " bytes");
-            } catch (IOException | RuntimeException e) {
+                        : "A stream exceeds the decoded size limit of " + limits.maxStreamBytes() + " bytes", e);
+            } catch (IOException | RuntimeException ignored) {
                 // Corrupt or unsupported stream data: not a size problem.
             }
         }
@@ -141,6 +147,9 @@ public final class DecodedSizeGuard {
      * or 0 when the first filter is not an expansion filter. Intermediate
      * stages of a chain are buffered up to {@code stageCap}, never more.
      */
+    // 'in' is re-pointed at each stage's buffer; every stage stream is closed before reassignment and
+    // the last one in the finally block, which a try-with-resources cannot express.
+    @SuppressWarnings("PMD.CloseResource")
     private static long decode(COSStream stream, long cap, long stageCap, OutputStream terminal) throws IOException {
         List<COSName> filters = filterNames(stream);
         if (filters.isEmpty() || !EXPANDING_FILTERS.contains(filters.get(0))) {

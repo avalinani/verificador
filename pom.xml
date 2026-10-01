@@ -177,9 +177,10 @@
         </executions>
       </plugin>
       <plugin>
-        <!-- Static analysis, report-only for now (failOnError=false): bug patterns plus
-             the FindSecBugs security detectors. Reports: target/spotbugsXml.xml and
-             target/spotbugs.html. Gate later by flipping failOnError. -->
+        <!-- Static analysis, a build gate: bug patterns plus the FindSecBugs security detectors,
+             failing `verify` on any finding at or above the Medium threshold. Justified false
+             positives live in config/spotbugs/exclude.xml, each with its reason. Reports:
+             target/spotbugsXml.xml and target/spotbugs.html. -->
         <groupId>com.github.spotbugs</groupId>
         <artifactId>spotbugs-maven-plugin</artifactId>
         <version>${spotbugs.plugin.version}</version>
@@ -193,7 +194,8 @@
         <configuration>
           <effort>Max</effort>
           <threshold>Medium</threshold>
-          <failOnError>false</failOnError>
+          <failOnError>true</failOnError>
+          <excludeFilterFile>config/spotbugs/exclude.xml</excludeFilterFile>
           <xmlOutput>true</xmlOutput>
           <plugins>
             <plugin>
@@ -214,9 +216,11 @@
         </executions>
       </plugin>
       <plugin>
-        <!-- PMD (bad practices, complexity, design) + CPD (copy/paste detection), report-only
-             for now. Reports: target/pmd.xml, target/site/pmd.html, target/cpd.xml. PMD is
-             pinned to a release that parses Java 25. Ruleset: config/pmd/ruleset.xml. -->
+        <!-- PMD (bad practices, complexity, design) + CPD (copy/paste detection). PMD fails the
+             build on priority 1-2 violations; priority 3 (mostly the complexity rules) stays
+             reported only. CPD fails on any duplicate of 100+ tokens. Reports: target/pmd.xml,
+             target/site/pmd.html, target/cpd.xml. PMD is pinned to a release that parses Java 25.
+             Ruleset: config/pmd/ruleset.xml. -->
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-pmd-plugin</artifactId>
         <version>${pmd.plugin.version}</version>
@@ -237,8 +241,9 @@
           <rulesets>
             <ruleset>config/pmd/ruleset.xml</ruleset>
           </rulesets>
-          <printFailingErrors>false</printFailingErrors>
-          <failOnViolation>false</failOnViolation>
+          <printFailingErrors>true</printFailingErrors>
+          <failOnViolation>true</failOnViolation>
+          <failurePriority>2</failurePriority>
           <minimumTokens>100</minimumTokens>
           <excludeFromFailureFile></excludeFromFailureFile>
         </configuration>

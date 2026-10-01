@@ -55,6 +55,8 @@ final class OcspClient {
 
     private static final System.Logger LOG = System.getLogger(OcspClient.class.getName());
     private static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
+    /** One shared instance: SecureRandom is thread-safe, and re-seeding a fresh one per request is wasteful. */
+    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
 
     private final RevocationLimits limits;
     private final boolean allowPrivateAddresses;
@@ -84,17 +86,9 @@ final class OcspClient {
      * shared {@code deadline}; once that is spent, the remaining URLs are not contacted at all.
      */
     RevocationStatus check(X509Certificate certificate, X509Certificate issuer, List<String> urls, Deadline deadline) {
-        RevocationStatus last = unknown(null, "no OCSP URL available for this certificate");
-        for (String url : urls) {
-            if (deadline.expired()) {
-                return unknown(null, Deadline.EXHAUSTED_DETAIL);
-            }
-            last = checkOne(certificate, issuer, url, deadline.capped(limits.timeout()));
-            if (last.state() != RevocationState.UNKNOWN) {
-                return last;
-            }
-        }
-        return last;
+        return UrlFallback.firstConclusive(
+                urls, deadline, limits.timeout(), "no OCSP URL available for this certificate",
+                (url, attempt) -> checkOne(certificate, issuer, url, attempt));
     }
 
     private RevocationStatus checkOne(
@@ -113,7 +107,7 @@ final class OcspClient {
             certId = new JcaCertificateID(
                     new JcaDigestCalculatorProviderBuilder().setProvider(bcProvider).build().get(CertificateID.HASH_SHA1),
                     issuer, certificate.getSerialNumber());
-            new SecureRandom().nextBytes(nonce);
+            NONCE_RANDOM.nextBytes(nonce);
             OCSPReqBuilder reqBuilder = new OCSPReqBuilder();
             reqBuilder.addRequest(certId);
             reqBuilder.setRequestExtensions(new Extensions(
@@ -147,11 +141,11 @@ final class OcspClient {
             return unknown(url, "OCSP request failed (unexpected error)");
         }
 
-        return evaluate(certificate, issuer, url, certId, nonce, responseBytes);
+        return evaluate(issuer, url, certId, nonce, responseBytes);
     }
 
     private RevocationStatus evaluate(
-            X509Certificate certificate, X509Certificate issuer, String url,
+            X509Certificate issuer, String url,
             CertificateID certId, byte[] requestNonce, byte[] responseBytes) {
         BasicOCSPResp basicResp;
         try {

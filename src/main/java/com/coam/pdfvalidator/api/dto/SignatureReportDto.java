@@ -39,4 +39,8 @@ public record SignatureReportDto(
         String anomaly,
         String verdict,
         List<String> verdictReasons) {
+    public SignatureReportDto {
+        chain = List.copyOf(chain);
+        verdictReasons = List.copyOf(verdictReasons);
+    }
 }

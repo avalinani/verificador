@@ -294,9 +294,6 @@ public final class SignatureVerdictPolicy {
      */
     public static boolean documentModifiedAfterLastSignature(List<SignatureReport> signatures) {
         Objects.requireNonNull(signatures, "signatures");
-        if (signatures.isEmpty()) {
-            return false;
-        }
-        return signatures.stream().noneMatch(s -> s.coverage().coversWholeDocument());
+        return !signatures.isEmpty() && signatures.stream().noneMatch(s -> s.coverage().coversWholeDocument());
     }
 }

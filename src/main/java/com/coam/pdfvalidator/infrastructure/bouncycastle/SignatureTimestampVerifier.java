@@ -200,6 +200,8 @@ final class SignatureTimestampVerifier {
      * failure of an issuer ends the chain there (the validator then reports
      * an incomplete chain, so the timestamp is simply not trusted).
      */
+    // 'hop' bounds the chain depth (at most one hop per candidate); the loop does not iterate the candidates.
+    @SuppressWarnings("PMD.ForLoopCanBeForeach")
     private static List<CertificateInfo> mapTsaChain(
             X509Certificate tsaCertificate, CertificateInfo tsaCertificateInfo, TimeStampToken token,
             Provider bcProvider) {
@@ -223,7 +225,7 @@ final class SignatureTimestampVerifier {
                 chain.add(X509CertificateInfoMapper.toDomain(issuer));
                 current = issuer;
             }
-        } catch (CertificateException | RuntimeException e) {
+        } catch (CertificateException | RuntimeException ignored) {
             // Keep whatever part of the chain was mapped; an incomplete chain is simply not trusted.
         }
         return chain;

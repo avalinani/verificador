@@ -12,4 +12,7 @@ import java.util.List;
  *               issues} for the {@code PDFA_PART_NOT_SUPPORTED} code)
  */
 public record PdfaReportDto(PdfaDeclarationDto declaration, String status, List<PdfaIssueDto> issues) {
+    public PdfaReportDto {
+        issues = List.copyOf(issues);
+    }
 }
