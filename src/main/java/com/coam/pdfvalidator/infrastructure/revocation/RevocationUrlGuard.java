@@ -76,11 +76,11 @@ final class RevocationUrlGuard {
         try {
             uri = new URI(urlString);
         } catch (URISyntaxException e) {
-            throw new RevocationUrlRejectedException("malformed URL");
+            throw new RevocationUrlRejectedException("malformed URL", e);
         }
 
         String scheme = uri.getScheme();
-        if (scheme == null || !scheme.equalsIgnoreCase("http")) {
+        if (!"http".equalsIgnoreCase(scheme)) {
             throw new RevocationUrlRejectedException(
                     "unsupported URL scheme (only http is supported for revocation checking)");
         }
@@ -116,19 +116,19 @@ final class RevocationUrlGuard {
         try {
             lookup = LOOKUP_POOL.submit(() -> resolver.resolve(host));
         } catch (java.util.concurrent.RejectedExecutionException e) {
-            throw new RevocationUrlRejectedException("DNS resolver busy, refusing to queue another lookup");
+            throw new RevocationUrlRejectedException("DNS resolver busy, refusing to queue another lookup", e);
         }
         try {
             return lookup.get(timeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
         } catch (java.util.concurrent.TimeoutException e) {
             lookup.cancel(true);
-            throw new RevocationUrlRejectedException("host could not be resolved within the time limit");
+            throw new RevocationUrlRejectedException("host could not be resolved within the time limit", e);
         } catch (InterruptedException e) {
             lookup.cancel(true);
             Thread.currentThread().interrupt();
-            throw new RevocationUrlRejectedException("host resolution was interrupted");
+            throw new RevocationUrlRejectedException("host resolution was interrupted", e);
         } catch (java.util.concurrent.ExecutionException e) {
-            throw new RevocationUrlRejectedException("host could not be resolved");
+            throw new RevocationUrlRejectedException("host could not be resolved", e);
         }
     }
 
@@ -147,7 +147,7 @@ final class RevocationUrlGuard {
     private static boolean isPrivateOrReserved(InetAddress address) {
         if (address instanceof Inet6Address v6) {
             byte[] embedded = embeddedIpv4(v6.getAddress());
-            if (embedded != null) {
+            if (embedded.length != 0) {
                 return isPrivateOrReserved(toIpv4(embedded));
             }
             if (isNat64LocalUse(v6.getAddress())) {
@@ -165,21 +165,16 @@ final class RevocationUrlGuard {
         if (bytes.length == 4) {
             int firstOctet = bytes[0] & 0xFF;
             int secondOctet = bytes[1] & 0xFF;
-            if (firstOctet == 0) {
-                return true; // 0.0.0.0/8
-            }
-            return firstOctet == 100 && secondOctet >= 64 && secondOctet <= 127; // 100.64.0.0/10 (CGNAT)
+            // 0.0.0.0/8, or 100.64.0.0/10 (CGNAT)
+            return firstOctet == 0 || (firstOctet == 100 && secondOctet >= 64 && secondOctet <= 127);
         }
-        if (bytes.length == 16) {
-            // Unique local addresses, fc00::/7: the top 7 bits of the first
-            // byte are 1111110 (0xFC or 0xFD as the first byte).
-            return (bytes[0] & 0xFE) == 0xFC;
-        }
-        return false;
+        // Unique local addresses, fc00::/7: the top 7 bits of the first
+        // byte are 1111110 (0xFC or 0xFD as the first byte).
+        return bytes.length == 16 && (bytes[0] & 0xFE) == 0xFC;
     }
 
     /**
-     * The IPv4 address embedded in an IPv6 address, or {@code null} when it
+     * The IPv4 address embedded in an IPv6 address, or an empty array when it
      * carries none: IPv4-mapped {@code ::ffff:a.b.c.d}, IPv4-compatible
      * (deprecated) {@code ::a.b.c.d}, the NAT64 well-known prefix {@code
      * 64:ff9b::/96} (RFC 6052) and 6to4 {@code 2002::/16} (RFC 3056, the
@@ -209,7 +204,7 @@ final class RevocationUrlGuard {
         if ((b[0] & 0xFF) == 0x20 && b[1] == 0x02) {
             return Arrays.copyOfRange(b, 2, 6); // 2002::/16
         }
-        return null;
+        return new byte[0];
     }
 
     /** {@code 64:ff9b:1::/48}: NAT64 local-use translation prefix, private by definition. */

@@ -13,4 +13,9 @@ final class RevocationUrlRejectedException extends RuntimeException {
     RevocationUrlRejectedException(String message) {
         super(message);
     }
+
+    /** Keeps the underlying failure for the logs; callers still only ever surface {@link #getMessage()}. */
+    RevocationUrlRejectedException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }
