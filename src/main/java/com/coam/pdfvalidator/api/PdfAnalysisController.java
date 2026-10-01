@@ -24,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 /**
  * The single REST endpoint of this service: upload a PDF, get back its full
@@ -86,8 +87,10 @@ public class PdfAnalysisController {
                     "The uploaded content does not start with a recognizable %PDF- header.");
         }
 
+        // A part sent without a file name has a null original name; the report simply carries an empty one.
+        String originalFilename = Objects.requireNonNullElse(file.getOriginalFilename(), "");
         PdfAnalysisReport report = analyzePdfUseCase.analyze(
-                file.getOriginalFilename(), content, new AnalysisOptions(checkRevocation));
+                originalFilename, content, new AnalysisOptions(checkRevocation));
         return mapper.toDto(report);
     }
 
@@ -135,15 +138,20 @@ public class PdfAnalysisController {
      */
     private static boolean looksLikePdf(byte[] content) {
         int window = Math.min(content.length, HEADER_SEARCH_WINDOW);
-        outer:
         for (int i = 0; i <= window - PDF_HEADER.length; i++) {
-            for (int j = 0; j < PDF_HEADER.length; j++) {
-                if (content[i + j] != PDF_HEADER[j]) {
-                    continue outer;
-                }
+            if (headerStartsAt(content, i)) {
+                return true;
             }
-            return true;
         }
         return false;
+    }
+
+    private static boolean headerStartsAt(byte[] content, int offset) {
+        for (int j = 0; j < PDF_HEADER.length; j++) {
+            if (content[offset + j] != PDF_HEADER[j]) {
+                return false;
+            }
+        }
+        return true;
     }
 }

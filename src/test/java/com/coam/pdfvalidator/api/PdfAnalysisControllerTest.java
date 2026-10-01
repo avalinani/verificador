@@ -96,6 +96,29 @@ class PdfAnalysisControllerTest {
         verify(analyzePdfUseCase).analyze(eq("test.pdf"), eq(PDF_BYTES), eq(new AnalysisOptions(true)));
     }
 
+    /**
+     * T24 (SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE): {@link MultipartFile#getOriginalFilename()} may
+     * return {@code null} for a part sent without a file name; the use case rejects a null name, so the
+     * controller must hand it an empty one instead of turning a valid upload into an unexpected 500.
+     */
+    @Test
+    void aPartWithoutAFileNameIsAnalysedWithAnEmptyName() {
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenReturn(minimalReport());
+        MultipartFile unnamed = mock(MultipartFile.class);
+        try {
+            when(unnamed.isEmpty()).thenReturn(false);
+            when(unnamed.getBytes()).thenReturn(PDF_BYTES);
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+        when(unnamed.getOriginalFilename()).thenReturn(null);
+
+        new PdfAnalysisController(analyzePdfUseCase, new PdfAnalysisReportMapper()).analyze(unnamed, false);
+
+        verify(analyzePdfUseCase).analyze(eq(""), eq(PDF_BYTES), eq(new AnalysisOptions(false)));
+    }
+
     @Test
     void checkRevocationDefaultsToFalseWhenOmitted() throws Exception {
         when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
