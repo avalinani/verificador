@@ -1,6 +1,20 @@
 # HTTPS reverse proxy for the PDF validator (Caddy obtains and renews the
 # Let's Encrypt certificate by itself). Replace the hostname with your own.
 # No ACME email is configured on purpose (Caddy works without one).
+
+# Global options: bound how long a client may take to send its upload (T26b). The app takes one of its
+# few analysis permits (max-concurrent) before it reads the multipart body, so a client that sends the body
+# slowly would hold a permit for as long as the connection lives. read_body is a hard cap on the whole
+# upload, like Go's http.Server.ReadTimeout (an 80 MB file needs about 1.1 Mbit/s to fit in 10 minutes). Do not
+# add "read_body_idle" without checking the pinned Caddy version: 2.11.4 rejects it and fails to load the file.
+{
+	servers {
+		timeouts {
+			read_body 10m
+		}
+	}
+}
+
 vps-651608c6.vps.ovh.net {
 	encode zstd gzip
 

@@ -238,6 +238,52 @@ class AnalysisBulkheadIntegrationTest {
     }
 
     /**
+     * The bulkhead is scoped by content type, so a request that is not {@code multipart/*} never competes for
+     * the permit (T26b): with the only permit held, a health check, a request without a content type and a
+     * non-multipart POST to the upload path are all answered by the application, never by the bulkhead.
+     */
+    @Test
+    void nonMultipartRequestsAreNeverLimitedWhileThePermitIsHeld() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(analyzePdfUseCase.analyze(anyString(), any(byte[].class), any(AnalysisOptions.class)))
+                .thenAnswer(invocation -> {
+                    entered.countDown();
+                    if (!release.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test latch never released");
+                    }
+                    return report();
+                });
+        CompletableFuture<HttpResponse<String>> first =
+                client.sendAsync(request(), HttpResponse.BodyHandlers.ofString());
+        assertThat(entered.await(10, TimeUnit.SECONDS)).as("first analysis started").isTrue();
+
+        try {
+            HttpResponse<String> health = client.send(
+                    HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + "/actuator/health")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> json = client.send(
+                    HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + ANALYZE))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString("{}")).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> noContentType = client.send(
+                    HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + ANALYZE))
+                            .POST(HttpRequest.BodyPublishers.noBody()).build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertThat(health.statusCode()).as("health check").isEqualTo(200);
+            assertThat(json.statusCode()).as("JSON POST to the upload path").isNotEqualTo(503);
+            assertThat(json.body()).doesNotContain("urn:pdfvalidator:error:busy");
+            assertThat(noContentType.statusCode()).as("POST without a content type").isNotEqualTo(503);
+            assertThat(noContentType.body()).doesNotContain("urn:pdfvalidator:error:busy");
+        } finally {
+            release.countDown();
+            first.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
      * A small unread body would let Tomcat keep the connection alive and drain
      * it; the 503 must ask for the connection to be closed explicitly, not
      * only rely on Tomcat's swallow limit for large bodies.

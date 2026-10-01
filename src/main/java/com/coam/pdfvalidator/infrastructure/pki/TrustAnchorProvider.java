@@ -1,5 +1,9 @@
 package com.coam.pdfvalidator.infrastructure.pki;
 
+import com.coam.pdfvalidator.domain.model.CertificateInfo;
+import com.coam.pdfvalidator.domain.port.TrustedCertificateSource;
+import com.coam.pdfvalidator.infrastructure.bouncycastle.X509CertificateInfoMapper;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.DirectoryStream;
@@ -42,7 +46,7 @@ import java.util.Set;
  * whoever assembles a {@link PkixCertificateChainValidator} (a test, or a
  * future {@code @Configuration} class) passes them directly.
  */
-public final class TrustAnchorProvider {
+public final class TrustAnchorProvider implements TrustedCertificateSource {
 
     private static final System.Logger LOGGER = System.getLogger(TrustAnchorProvider.class.getName());
 
@@ -131,6 +135,23 @@ public final class TrustAnchorProvider {
 
     public Set<TrustAnchor> trustAnchors() {
         return trustAnchors;
+    }
+
+    /** The anchor certificates mapped to the domain type, for adapters that look a certificate up by identity. */
+    @Override
+    public List<CertificateInfo> trustedCertificates() {
+        List<CertificateInfo> certificates = new ArrayList<>();
+        for (TrustAnchor anchor : trustAnchors) {
+            X509Certificate certificate = anchor.getTrustedCert();
+            if (certificate != null) {
+                try {
+                    certificates.add(X509CertificateInfoMapper.toDomain(certificate));
+                } catch (RuntimeException e) {
+                    LOGGER.log(System.Logger.Level.WARNING, "A trust anchor could not be mapped for lookup", e);
+                }
+            }
+        }
+        return certificates;
     }
 
     public int size() {

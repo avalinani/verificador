@@ -2,6 +2,7 @@ package com.coam.pdfvalidator.infrastructure.bouncycastle;
 
 import com.coam.pdfvalidator.domain.model.CertificateInfo;
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.port.TrustedCertificateSource;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.cms.Attribute;
 import org.bouncycastle.asn1.cms.AttributeTable;
@@ -11,7 +12,6 @@ import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.KeyPurposeId;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cms.SignerId;
 import org.bouncycastle.cms.SignerInformation;
 import org.bouncycastle.cms.SignerInformationVerifier;
 import org.bouncycastle.cms.jcajce.JcaSimpleSignerInfoVerifierBuilder;
@@ -21,7 +21,6 @@ import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
 import org.bouncycastle.tsp.TSPException;
 import org.bouncycastle.tsp.TimeStampToken;
 import org.bouncycastle.tsp.TimeStampTokenInfo;
-import org.bouncycastle.util.Store;
 
 import java.io.IOException;
 import java.security.Provider;
@@ -31,7 +30,6 @@ import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
@@ -55,8 +53,10 @@ import java.util.Objects;
  *       bytes (not the document content: a signature timestamp seals the
  *       signature itself, proving it existed at that time).</li>
  *   <li><b>TSA signature</b>: the token's own CMS signature must verify
- *       against the TSA certificate embedded in the token ({@link
- *       TimeStampToken#validate}).</li>
+ *       against the TSA certificate ({@link TimeStampToken#validate}): the
+ *       one embedded in the token or, for a token requested with {@code
+ *       certReq=false}, one found by {@link TsaCertificateLocator} in the
+ *       signature's own CMS or the configured trust anchors (T26a).</li>
  * </ol>
  *
  * <p>Neither part says the TSA is <em>trustworthy</em>: the certificate that
@@ -94,6 +94,17 @@ final class SignatureTimestampVerifier {
     }
 
     static TimestampInfo verify(SignerInformation signerInformation, Provider bcProvider) {
+        return verify(signerInformation, bcProvider, List.of(), TrustedCertificateSource.none());
+    }
+
+    /**
+     * @param signatureCertificates the certificates of the signature's own CMS {@code SignedData}, where a TSA
+     *                              certificate the token does not carry may be found (T26a)
+     * @param trustedCertificates   the configured trust anchors, the second place such a certificate may be found
+     */
+    static TimestampInfo verify(
+            SignerInformation signerInformation, Provider bcProvider, List<X509Certificate> signatureCertificates,
+            TrustedCertificateSource trustedCertificates) {
         AttributeTable unsignedAttributes = signerInformation.getUnsignedAttributes();
         if (unsignedAttributes == null) {
             return TimestampInfo.absent();
@@ -109,20 +120,22 @@ final class SignatureTimestampVerifier {
                 return malformed("Signature timestamp attribute has no value");
             }
             TimeStampToken token = new TimeStampToken(ContentInfo.getInstance(values[0]));
-            return verifyToken(token, signerInformation.getSignature(), bcProvider);
+            return verifyToken(token, signerInformation.getSignature(), bcProvider,
+                    new TsaCertificateLocator(bcProvider, signatureCertificates, trustedCertificates));
         } catch (IOException | TSPException | RuntimeException e) {
             logFailure("Malformed RFC 3161 timestamp token", e);
             return malformed("Malformed RFC 3161 timestamp token");
         }
     }
 
-    private static TimestampInfo verifyToken(TimeStampToken token, byte[] signatureValue, Provider bcProvider)
+    private static TimestampInfo verifyToken(
+            TimeStampToken token, byte[] signatureValue, Provider bcProvider, TsaCertificateLocator locator)
             throws IOException {
         TimeStampTokenInfo info = token.getTimeStampInfo();
         Instant genTime = info.getGenTime().toInstant();
         boolean imprintValid = imprintMatches(info, signatureValue, bcProvider);
 
-        X509Certificate tsaCertificate = findTsaCertificate(token, bcProvider);
+        X509Certificate tsaCertificate = locator.find(token);
         boolean signatureValid = false;
         String note = null;
         CertificateInfo tsaCertificateInfo = null;
@@ -139,7 +152,7 @@ final class SignatureTimestampVerifier {
             tsaCertificateInfo = mapping.certificateInfo();
             note = appendNote(note, mapping.failureNote());
             if (tsaCertificateInfo != null) {
-                tsaChain = mapTsaChain(tsaCertificate, tsaCertificateInfo, token, bcProvider);
+                tsaChain = mapTsaChain(tsaCertificate, tsaCertificateInfo, token, bcProvider, locator);
             }
 
             try {
@@ -204,7 +217,7 @@ final class SignatureTimestampVerifier {
     @SuppressWarnings("PMD.ForLoopCanBeForeach")
     private static List<CertificateInfo> mapTsaChain(
             X509Certificate tsaCertificate, CertificateInfo tsaCertificateInfo, TimeStampToken token,
-            Provider bcProvider) {
+            Provider bcProvider, TsaCertificateLocator locator) {
         List<CertificateInfo> chain = new ArrayList<>();
         chain.add(tsaCertificateInfo);
         try {
@@ -213,6 +226,10 @@ final class SignatureTimestampVerifier {
             for (X509CertificateHolder holder : token.getCertificates().getMatches(null)) {
                 candidates.add(converter.getCertificate(holder));
             }
+            // A certificate-less token (T26a): the issuers come from the signature's CMS and the trust anchors.
+            // Extra candidates are harmless: the walk only follows issuer-to-subject links and the chain
+            // validator, not this walk, decides what is trusted.
+            candidates.addAll(locator.issuerCandidates());
             X509Certificate current = tsaCertificate;
             for (int hop = 0; hop < candidates.size(); hop++) {
                 if (current.getIssuerX500Principal().equals(current.getSubjectX500Principal())) {
@@ -258,21 +275,6 @@ final class SignatureTimestampVerifier {
             // An unsupported or malformed imprint algorithm is simply an
             // invalid imprint, not a reason to fail the whole timestamp.
             return false;
-        }
-    }
-
-    private static X509Certificate findTsaCertificate(TimeStampToken token, Provider bcProvider) {
-        try {
-            Store<X509CertificateHolder> certificates = token.getCertificates();
-            SignerId signerId = token.getSID();
-            Collection<X509CertificateHolder> matches = certificates.getMatches(signerId);
-            if (matches.isEmpty()) {
-                return null;
-            }
-            X509CertificateHolder holder = matches.iterator().next();
-            return new JcaX509CertificateConverter().setProvider(bcProvider).getCertificate(holder);
-        } catch (CertificateException | RuntimeException e) {
-            return null;
         }
     }
 

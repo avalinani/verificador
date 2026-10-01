@@ -64,9 +64,10 @@ public class AdapterConfiguration {
     }
 
     @Bean
-    public SignatureVerifier signatureVerifier(AnalysisProperties analysis) {
+    public SignatureVerifier signatureVerifier(AnalysisProperties analysis, TrustAnchorProvider trustAnchorProvider) {
         return new BcSignatureVerifier(new SignatureLimits(
-                analysis.maxSignatureFields(), analysis.maxCertificatesPerSignature(), analysis.maxChainLength()));
+                analysis.maxSignatureFields(), analysis.maxCertificatesPerSignature(), analysis.maxChainLength()),
+                trustAnchorProvider);
     }
 
     @Bean

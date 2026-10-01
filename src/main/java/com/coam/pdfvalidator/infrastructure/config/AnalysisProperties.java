@@ -10,8 +10,10 @@ import java.time.Duration;
 /**
  * Concurrency limit for PDF analyses (T12c bulkhead).
  *
- * @param maxConcurrent  maximum analyses running at once (default 1, sized for a small VM; see the README memory budget)
- * @param acquireTimeout how long a request waits for a slot before a 503 (default 5 s)
+ * @param maxConcurrent  maximum analyses running at once (2 in the shipped {@code application.yml}, sized for the
+ *                       2 GB VM; 1 when the property is absent altogether; see the README memory budget)
+ * @param acquireTimeout how long a request waits for a slot before a 503 (30 s in the shipped {@code application.yml};
+ *                       5 s when the property is absent altogether)
  * @param maxDecodedStreamSize maximum decoded size of one (non-image) PDF stream (default 32 MB); larger streams make
  *                       the PDF/A check report {@code DOCUMENT_TOO_COMPLEX} instead of inflating them (T18a)
  * @param maxDecodedTotalSize maximum decoded size of all streams of one PDF together (default 2 GB); bounds inflate CPU

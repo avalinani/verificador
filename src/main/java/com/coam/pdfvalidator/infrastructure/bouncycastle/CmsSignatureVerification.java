@@ -30,6 +30,7 @@ import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
 import org.bouncycastle.util.Store;
 
 import com.coam.pdfvalidator.domain.model.TimestampInfo;
+import com.coam.pdfvalidator.domain.port.TrustedCertificateSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -141,6 +142,12 @@ final class CmsSignatureVerification {
     }
 
     static Result verify(byte[] signedBytes, byte[] cmsDer, Provider bcProvider, SignatureLimits limits) {
+        return verify(signedBytes, cmsDer, bcProvider, limits, TrustedCertificateSource.none());
+    }
+
+    static Result verify(
+            byte[] signedBytes, byte[] cmsDer, Provider bcProvider, SignatureLimits limits,
+            TrustedCertificateSource trustedCertificates) {
         CMSSignedData signedData;
         try {
             ContentInfo contentInfo = readContentInfo(cmsDer);
@@ -165,13 +172,13 @@ final class CmsSignatureVerification {
 
         X509Certificate signerCertificate;
         List<X509Certificate> chain;
+        List<X509Certificate> allCertificates = new ArrayList<>();
         String truncationNote = null;
         try {
             signerCertificate = toJavaCertificate(signerHolder, bcProvider);
             // T20: at most maxCertificatesPerSignature certificates are converted and ordered -- the signer
             // first, then the others in container order -- so a CMS stuffed with certificates costs a bounded
             // amount of work. Dropping one can only make the chain incomplete (fail closed), never trusted.
-            List<X509Certificate> allCertificates = new ArrayList<>();
             allCertificates.add(signerCertificate);
             int total = 0;
             for (X509CertificateHolder holder : certificateStore.getMatches(null)) {
@@ -190,7 +197,8 @@ final class CmsSignatureVerification {
             return Result.unparseable("CMS container could not be parsed: certificate data unreadable");
         }
 
-        TimestampInfo timestamp = SignatureTimestampVerifier.verify(signerInformation, bcProvider);
+        TimestampInfo timestamp = SignatureTimestampVerifier.verify(
+                signerInformation, bcProvider, allCertificates, trustedCertificates);
         String certificateValidityNote = certificateValidityAtSigningTimeNote(signerInformation, signerCertificate);
         boolean digestOidMislabeled = DigestAlgorithmOidNormalizer.isSignatureAlgorithmOid(
                 signerInformation.getDigestAlgorithmID().getAlgorithm());
