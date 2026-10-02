@@ -13,3 +13,7 @@ src/main/resources/static/vendor/autofirma/* -text
 Dockerfile text eol=lf
 .dockerignore text eol=lf
 docker-compose.yml text eol=lf
+
+# Generated trust store (T14): byte-identical on every OS, so a re-run with unchanged
+# trusted lists leaves no diff, locally or in the weekly CI job.
+src/main/resources/truststore/** text eol=lf
