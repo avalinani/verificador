@@ -6,6 +6,7 @@ import com.coam.pdfvalidator.infrastructure.bouncycastle.X509CertificateInfoMapp
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,22 +22,22 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Loads X.509 certificates as {@link TrustAnchor}s for {@link
- * PkixCertificateChainValidator}, from up to three sources: a fixed list of
- * bundled anchors on the classpath ({@code truststore/*.pem}, documented with
- * their provenance in {@code truststore/SOURCES.md}), an optional external
+ * PkixCertificateChainValidator}, from up to three sources: the bundled
+ * anchors on the classpath (the files listed in {@code truststore/index.txt},
+ * generated from the EU trusted lists and documented with their provenance
+ * in {@code truststore/SOURCES.md}), an optional external
  * directory of certificate files (one certificate per file; PEM or DER), and
  * an optional PKCS#12 keystore file. All three are additive: every source
  * that is configured contributes its certificates to the same trust anchor
  * set.
  *
- * <p><b>An anchor need not be a self-signed root</b>: most bundled anchors
- * are self-signed roots, but the EU Trusted Lists model (eIDAS) publishes
- * the qualified ISSUING CA as the trusted service, which is not always the
- * same as its own (possibly unpublished) root -- see {@code
- * ac-camerfirma-for-legal-persons-2016.pem} in {@code SOURCES.md}. {@link
+ * <p><b>An anchor need not be a self-signed root</b>: the EU Trusted Lists
+ * model (eIDAS) publishes the qualified ISSUING CA (and the TSA unit) as the
+ * trusted service, which is usually not a self-signed root. {@link
  * PkixCertificateChainValidator} supports this (a non-self-signed anchor
  * still resolves to {@code TRUSTED} via the JDK's own PKIX path builder;
  * verified by {@code PkixCertificateChainValidatorTest}).
@@ -51,39 +52,17 @@ public final class TrustAnchorProvider implements TrustedCertificateSource {
     private static final System.Logger LOGGER = System.getLogger(TrustAnchorProvider.class.getName());
 
     /**
-     * Bundled root certificate files under the classpath {@code truststore/}
-     * folder. Listed explicitly (rather than scanned) because classpath
-     * directory listing behaves differently between an exploded classes
-     * directory and a packaged jar; see {@code truststore/SOURCES.md} for
-     * each root's provenance and independent fingerprint verification.
+     * The list of bundled anchor files under the classpath {@code truststore/}
+     * folder, one file name per line ({@code #} starts a comment). Read
+     * instead of scanning the folder because classpath directory listing
+     * behaves differently between an exploded classes directory and a
+     * packaged jar. The folder, this index and {@code SOURCES.md} are
+     * generated together from the EU trusted lists by the maintainer tool
+     * {@code com.coam.pdfvalidator.tools.tsl.TslSync} (T14).
      */
-    private static final List<String> BUNDLED_ROOT_FILES = List.of(
-            "truststore/ac-raiz-fnmt-rcm.pem",
-            "truststore/ac-raiz-fnmt-rcm-servidores-seguros.pem",
-            "truststore/accvraiz1.pem",
-            "truststore/firmaprofesional-ac-raiz.pem",
-            "truststore/izenpe-com.pem",
-            "truststore/ac-raiz-dnie-2.pem",
-            // Not self-signed: per the eIDAS/EU Trusted Lists model, a TSL
-            // publishes the qualified ISSUING CA as the trust anchor, not
-            // necessarily its own (possibly unpublished) root -- see
-            // SOURCES.md. PkixCertificateChainValidator supports this
-            // (verified by PkixCertificateChainValidatorTest).
-            "truststore/ac-camerfirma-for-legal-persons-2016.pem",
-            // T09d: FNMT qualified issuing CAs, extracted from Spain's TSL,
-            // added because real FNMT-signed PDFs embed only the signer
-            // (end-entity) certificate in their CMS, never this intermediate
-            // -- without it as an anchor, PKIX path building stops at
-            // INCOMPLETE_CHAIN even though the FNMT root itself is already
-            // bundled above. Both are issued by (and chain to) the already
-            // bundled ac-raiz-fnmt-rcm.pem, so they are not anchors of last
-            // resort, only a shortcut around the CMS's own missing
-            // intermediate. ".crt" extension (not ".pem"): same PEM-encoded
-            // public-certificate content as every other file in this list,
-            // named differently only to stay outside this workstation's
-            // blanket private-key-material file-access guard.
-            "truststore/ac-fnmt-usuarios.crt",
-            "truststore/ac-componentes-informaticos.crt");
+    static final String BUNDLED_INDEX = "truststore/index.txt";
+
+    private static final Pattern SAFE_FILE_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]*");
 
     private final Set<TrustAnchor> trustAnchors;
 
@@ -158,10 +137,31 @@ public final class TrustAnchorProvider implements TrustedCertificateSource {
         return trustAnchors.size();
     }
 
+    private static List<String> bundledAnchorResources() throws IOException {
+        List<String> resources = new ArrayList<>();
+        try (InputStream in = TrustAnchorProvider.class.getClassLoader().getResourceAsStream(BUNDLED_INDEX)) {
+            if (in == null) {
+                throw new IOException("Bundled trust anchor index not found on the classpath: " + BUNDLED_INDEX);
+            }
+            for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+                String fileName = line.strip();
+                if (fileName.isEmpty() || fileName.startsWith("#")) {
+                    continue;
+                }
+                if (!SAFE_FILE_NAME.matcher(fileName).matches()) {
+                    throw new IOException("Invalid entry in " + BUNDLED_INDEX + ": " + fileName);
+                }
+                resources.add("truststore/" + fileName);
+            }
+        }
+        return resources;
+    }
+
     private static List<X509Certificate> loadBundledRoots() throws IOException, GeneralSecurityException {
         CertificateFactory factory = CertificateFactory.getInstance("X.509");
-        List<X509Certificate> certificates = new ArrayList<>(BUNDLED_ROOT_FILES.size());
-        for (String resource : BUNDLED_ROOT_FILES) {
+        List<String> resources = bundledAnchorResources();
+        List<X509Certificate> certificates = new ArrayList<>(resources.size());
+        for (String resource : resources) {
             try (InputStream in = TrustAnchorProvider.class.getClassLoader().getResourceAsStream(resource)) {
                 if (in == null) {
                     throw new IOException("Bundled trust anchor resource not found on the classpath: " + resource);

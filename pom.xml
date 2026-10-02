@@ -263,6 +263,30 @@
 
   <profiles>
     <profile>
+      <!-- T14 maintainer tool, never part of the runtime jar or the Docker image: its code lives
+           under src/test/java/com/coam/pdfvalidator/tools/tsl/ (tested by the normal build) and
+           runs on the test classpath. It downloads the EU LOTL and the Spanish TSL, verifies both
+           XML signatures and regenerates src/main/resources/truststore/ (anchors, index.txt,
+           SOURCES.md). Run: ./mvnw -q -Ptsl-sync -->
+      <id>tsl-sync</id>
+      <build>
+        <defaultGoal>test-compile exec:java</defaultGoal>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <configuration>
+              <mainClass>com.coam.pdfvalidator.tools.tsl.TslSync</mainClass>
+              <classpathScope>test</classpathScope>
+              <arguments>
+                <argument>${project.basedir}/src/main/resources/truststore</argument>
+              </arguments>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
       <!-- Mutation testing, deliberately outside the default build (slow):
            ./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
            Report: target/pit-reports/index.html (and mutations.xml). -->
