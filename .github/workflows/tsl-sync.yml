@@ -1,0 +1,117 @@
+name: TSL sync
+
+# T14: weekly regeneration of the bundled trust store (src/main/resources/truststore/) from the
+# EU List of Trusted Lists and the Spanish Trusted List, with the maintainer tool
+# com.coam.pdfvalidator.tools.tsl.TslSync (./mvnw -q -Ptsl-sync). When the result differs from
+# the repository, the job runs the full build on it and opens (or updates) a pull request; a
+# human reviews and merges it. The running server never downloads anything.
+#
+# The PR step needs the repository setting "Allow GitHub Actions to create and approve pull
+# requests" (Settings > Actions > General > Workflow permissions).
+
+on:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: tsl-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The token is not left in .git/config while Maven runs; the push below passes it explicitly.
+          persist-credentials: false
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Fails (and leaves the trust store untouched) on any download, signature, pin or freshness
+      # problem; the failed run is the alert. A LOTL signer rotation needs new pins (see README).
+      - name: Regenerate the trust store from the LOTL and the ES TSL
+        run: ./mvnw -B -q -Ptsl-sync
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain -- src/main/resources/truststore)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git status --short -- src/main/resources/truststore
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The trust store is already up to date."
+          fi
+
+      # Pull requests opened with GITHUB_TOKEN do not trigger ci.yml, so the full build (tests and
+      # quality gates) runs here on the regenerated store and its result goes into the PR.
+      - name: Build and verify with the regenerated trust store
+        id: verify
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          if ./mvnw -B verify; then
+            echo "result=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          VERIFY_RESULT: ${{ steps.verify.outputs.result }}
+        run: |
+          sources=src/main/resources/truststore/SOURCES.md
+          lotl_seq=$(grep '^| EU List of Trusted Lists' "$sources" | awk -F'|' '{gsub(/ /, "", $4); print $4}')
+          tsl_seq=$(grep '^| Spanish Trusted List' "$sources" | awk -F'|' '{gsub(/ /, "", $4); print $4}')
+          anchors=$(grep -c '\.crt$' src/main/resources/truststore/index.txt)
+          branch="chore/truststore-lotl-${lotl_seq}-es-tsl-${tsl_seq}"
+          title="chore(truststore): regenerate from LOTL seq ${lotl_seq} / ES TSL seq ${tsl_seq}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -A src/main/resources/truststore
+          git commit -m "$title"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+
+          {
+            echo "Weekly regeneration of \`src/main/resources/truststore/\` by \`TslSync\` (\`./mvnw -q -Ptsl-sync\`)."
+            echo
+            echo "- EU LOTL sequence number: ${lotl_seq}"
+            echo "- ES TSL sequence number: ${tsl_seq}"
+            echo "- Anchors: ${anchors}"
+            echo "- \`./mvnw -B verify\` on this branch: **${VERIFY_RESULT}** (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            echo "Review the diff of \`SOURCES.md\` (added and removed services). CI does not run"
+            echo "automatically on pull requests opened by GitHub Actions: close and reopen this PR to run it."
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          if [ "$(gh pr list --head "$branch" --state open --json number --jq 'length')" = "0" ]; then
+            draft=""
+            if [ "$VERIFY_RESULT" != "passed" ]; then draft="--draft"; fi
+            gh pr create --base "$BASE_BRANCH" --head "$branch" --title "$title" \
+              --body-file "$RUNNER_TEMP/pr-body.md" $draft
+          else
+            gh pr edit "$branch" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
+
+      - name: Fail the run when the regenerated store breaks the build
+        if: steps.verify.outputs.result == 'failed'
+        run: |
+          echo "./mvnw -B verify failed on the regenerated trust store; the pull request was opened as a draft."
+          exit 1
