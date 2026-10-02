@@ -1,0 +1,10 @@
+# Transitional index of the hand-curated anchors (T14 replaces them with the generated trust store).
+ac-raiz-fnmt-rcm.pem
+ac-raiz-fnmt-rcm-servidores-seguros.pem
+accvraiz1.pem
+firmaprofesional-ac-raiz.pem
+izenpe-com.pem
+ac-raiz-dnie-2.pem
+ac-camerfirma-for-legal-persons-2016.pem
+ac-fnmt-usuarios.crt
+ac-componentes-informaticos.crt
