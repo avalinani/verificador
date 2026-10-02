@@ -2,7 +2,7 @@
 
 > Trabajo Fin de Máster · Servicio web para la auditoría técnica y forense de documentos PDF.
 >
-> **Estado:** completo y desplegado en <https://vps-651608c6.vps.ovh.net/> (§4); diapositivas de la presentación en §9. Este README es un documento vivo: se actualiza con cada cambio. Solo queda como mejora futura (⏳) la carga automática de anclas de confianza (T14, §10).
+> **Estado:** completo y desplegado en <https://vps-651608c6.vps.ovh.net/> (§4); diapositivas de la presentación en §9. Este README es un documento vivo: se actualiza con cada cambio. Desde T14 las anclas de confianza se generan desde las Listas de Confianza oficiales de la UE (§2.7, §4).
 
 ## Índice
 
@@ -171,30 +171,29 @@ Aquí se responde a "¿el certificado del firmante llega a una autoridad en la q
 - **Revocación desactivada aquí** (`setRevocationEnabled(false)`): se aplica por separado (§2.8), una vez la cadena ya es de confianza.
 - **Estados** (`ChainStatus`): `TRUSTED` (la ruta se construye), `UNTRUSTED_ROOT` (llega a un autofirmado que no está en el almacén), `INCOMPLETE_CHAIN` (falta un emisor), `EXPIRED` (algún certificado está fuera de vigencia en `validationTime`; comprobación previa e independiente de PKIX), `NOT_CHECKED` (lista vacía). Como el `CertPathBuilder` no distingue de forma estable `UNTRUSTED_ROOT` de `INCOMPLETE_CHAIN`, se aplica una comprobación propia: si la cadena presentada es estructuralmente completa (cada certificado verifica contra el siguiente hasta un autofirmado) el problema es la raíz; si no, falta un eslabón. Un certificado que no puede reparsearse desde su DER se informa como `INCOMPLETE_CHAIN`.
 - **Ruta validada.** `validatedPath` devuelve los certificados que PKIX realmente usó (incluido el ancla si no venía en el CMS); la revocación usa esa ruta y no la cadena presentada (§2.8).
-- **Almacén de confianza** (`TrustAnchorProvider`): combina las raíces españolas empaquetadas en `src/main/resources/truststore/` con, opcionalmente, un directorio externo de certificados y/o un fichero PKCS#12 (propiedades `pdfvalidator.truststore.*`, §4). Un fichero inválido del directorio externo se omite sin abortar la carga.
-- **Sin lista de confianza europea (TSL/EU LOTL):** la cadena se valida contra este almacén propio (§10).
+- **Almacén de confianza** (`TrustAnchorProvider`): combina las anclas empaquetadas en `src/main/resources/truststore/` (los ficheros que enumera `truststore/index.txt`) con, opcionalmente, un directorio externo de certificados y/o un fichero PKCS#12 (propiedades `pdfvalidator.truststore.*`, §4). Un fichero inválido del directorio externo se omite sin abortar la carga.
+- **Origen de las anclas: la Lista de Confianza española, verificada a través de la LOTL de la UE (T14).** El servidor nunca descarga nada en ejecución: las anclas se generan **fuera** de él con una herramienta de mantenimiento (`TslSync`, §4) que una tarea semanal de GitHub Actions ejecuta y propone como *pull request* (§10).
 
-**Anclas de confianza empaquetadas** (`src/main/resources/truststore/`, con procedencia completa y huellas SHA-256 en `truststore/SOURCES.md`):
+**Anclas de confianza empaquetadas** (`src/main/resources/truststore/`; generadas, no se editan a mano). La herramienta descarga la LOTL de la UE y la Lista de Confianza española (TSL), verifica la firma XML de ambas y escribe un fichero `.crt` (certificado en PEM) por ancla, con nombre `<tsp>__<servicio>__<prefijo-sha256>.crt`, más `index.txt` y `SOURCES.md` (URLs, números de secuencia, fechas de emisión y `NextUpdate`, huellas SHA-256 de los firmantes de las listas, reglas de selección y una tabla con cada ancla: TSP, servicio, tipo, fecha de inicio del estado, sujeto, SHA-256 y fin de vigencia). Solo cuenta el estado **actual** de cada servicio (`ServiceInformation/ServiceStatus`; el historial `ServiceHistory` se ignora), y entran los certificados `X509Certificate` de:
 
-| Fichero | Autoridad | Válida hasta |
-|---|---|---|
-| `ac-raiz-fnmt-rcm.pem` | AC RAIZ FNMT-RCM | 2030-01-01 |
-| `ac-raiz-fnmt-rcm-servidores-seguros.pem` | AC RAIZ FNMT-RCM SERVIDORES SEGUROS | 2043-12-20 |
-| `accvraiz1.pem` | ACCVRAIZ1 (Agencia de Tecnología y Certificación Electrónica, GVA) | 2030-12-31 |
-| `firmaprofesional-ac-raiz.pem` | Autoridad de Certificacion Firmaprofesional CIF A62634068 | 2036-05-05 |
-| `izenpe-com.pem` | Izenpe.com | 2037-12-13 |
-| `ac-raiz-dnie-2.pem` | AC RAIZ DNIE 2 (Dirección General de la Policía) | 2043-09-27 |
-| `ac-camerfirma-for-legal-persons-2016.pem` | AC CAMERFIRMA FOR LEGAL PERSONS - 2016 (CA emisora cualificada, **no autofirmada**) | 2040-03-09 |
-| `ac-fnmt-usuarios.crt` | AC FNMT Usuarios (CA emisora cualificada, emisor: AC RAIZ FNMT-RCM) | 2029-10-28 |
-| `ac-componentes-informaticos.crt` | AC Componentes Informáticos (CA emisora cualificada; el mismo certificado cubre también el servicio TSL "AC Representación") | 2028-06-24 |
+- servicios `CA/QC` en estado `granted` que emiten certificados **para firma electrónica**: con `AdditionalServiceInformation` `…/SvcInfoExt/ForeSignatures`, con el calificador `…/SvcInfoExt/QCForESig`, o **sin ninguna restricción de uso** (ni `ForeSignatures`, ni `ForeSeals`, ni `ForWebSiteAuthentication`). Los servicios solo para sellos electrónicos o solo para autenticación de sitios web quedan fuera;
+- servicios `TSA/QTST` (sellos de tiempo cualificados) en estado `granted`;
+- siempre que el certificado no haya caducado ya cuando se genera el almacén (`notAfter` futuro). Un certificado que aparece en varios servicios se empaqueta una sola vez (por SHA-256).
 
-Cada ancla se descargó por HTTPS de la web oficial de su autoridad (o, para las CA emisoras de Camerfirma y FNMT, se extrajo de la Lista de Confianza española) y se incluye **solo** si su huella SHA-256 se verificó de forma independiente (informe de CCADB y/o Lista de Confianza española). Los dos ficheros `.crt` de FNMT tienen el mismo contenido PEM que el resto; solo cambia la extensión.
+Generación del 2026-10-02 (LOTL n.º 395, TSL española n.º 189): **145 anclas**, 77 `CA/QC` y 68 `TSA/QTST`. Sustituyen a las 9 anclas curadas a mano que había antes (5 raíces de CCADB y 4 CA emisoras extraídas de la TSL). Qué pasa con aquellas:
 
-**No todas las anclas son raíces autofirmadas.** El modelo eIDAS publica la CA **emisora** cualificada como servicio de confianza, no necesariamente su raíz (el emisor de "AC CAMERFIRMA FOR LEGAL PERSONS - 2016" no está en la Lista española). El `CertPathBuilder` de la JDK resuelve una ruta en cuanto alcanza *cualquier* certificado configurado como ancla. La retirada de las raíces de Camerfirma de los almacenes TLS de los navegadores (2021-2022) no afecta a su posición en la confianza eIDAS para firma de documentos.
+| Ancla anterior | Situación con el almacén generado |
+|---|---|
+| AC RAIZ FNMT-RCM, ACCVRAIZ1, Firmaprofesional CIF A62634068, Izenpe.com (raíces) | Las raíces no se publican en la TSL; entran sus **CA emisoras** cualificadas para firma (p. ej. AC FNMT Usuarios, AC Representación, AC Sector Público y sus versiones G2; ACCVCA-120, ACCV RSA1/ECC1; las CA de Firmaprofesional e Izenpe) y sus TSA |
+| AC RAIZ FNMT-RCM SERVIDORES SEGUROS (raíz TLS) | Fuera: no emite certificados de firma |
+| AC RAIZ DNIE 2 | Dentro (la TSL la publica como servicio `CA/QC`), junto con AC DGP 004 |
+| AC FNMT Usuarios | Dentro |
+| AC CAMERFIRMA FOR LEGAL PERSONS - 2016 | **Fuera**: la TSL la limita a sellos electrónicos (`ForeSeals`); sí entran otras CA de Camerfirma para firma (p. ej. AC CAMERFIRMA FOR NATURAL PERSONS - 2016) |
+| AC Componentes Informáticos (FNMT) | **Fuera**: la TSL la limita a sellos y autenticación web (`ForeSeals`, `ForWebSiteAuthentication`) |
 
-**Por qué las CA emisoras de FNMT son anclas aunque su raíz ya está empaquetada.** Un PDF real firmado con un certificado FNMT solo trae en su CMS el certificado del firmante, nunca la CA intermedia; sin ella como ancla, la ruta se queda a un paso de la raíz y el análisis daba `INCOMPLETE_CHAIN`. Se empaquetaron los servicios CA/QC "AC FNMT Usuarios" y "AC Componentes Informáticos" (el de "AC Representación" es el mismo certificado); el resto de servicios FNMT de la TSL queda fuera.
+**Las anclas no son raíces autofirmadas.** El modelo eIDAS publica la CA **emisora** cualificada (y el certificado de la unidad TSA) como servicio de confianza, no su raíz. El `CertPathBuilder` de la JDK resuelve una ruta en cuanto alcanza *cualquier* certificado configurado como ancla, aunque no sea autofirmado, y acepta como ruta vacía un certificado que es él mismo un ancla (el de una TSA publicada en la TSL). Esto resuelve también el caso real de los PDF firmados con FNMT, cuyo CMS solo trae el certificado del firmante: el ancla es directamente la CA emisora.
 
-**Cómo añadir raíces propias:** sin tocar el código, con un directorio externo (un certificado por fichero, PEM o DER) y/o un PKCS#12; se combinan con las empaquetadas, nunca las sustituyen.
+**Cómo añadir raíces propias:** sin tocar el código, con un directorio externo (un certificado por fichero, PEM o DER) y/o un PKCS#12; se combinan con las empaquetadas, nunca las sustituyen. Es también la vía para confiar en una CA que la regla anterior deja fuera (por ejemplo, una CA solo de sellos).
 
 ### 2.8 Revocación OCSP/CRL
 
@@ -233,7 +232,7 @@ Todos los límites son configurables (`pdfvalidator.revocation.*`, §4).
 
 **Puerta de confianza.** La revocación solo se comprueba para una cadena `TRUSTED`. Las URLs OCSP/CRL de una cadena de confianza las escribió una CA real, no quien subió el documento, lo que cierra el vector principal de SSRF (un certificado autofirmado con una URL interna nunca llega a `TRUSTED`); la guarda de red queda como defensa en profundidad. Además, certificado y emisor se toman de `validatedPath` (§2.7), nunca de la cadena que trae el CMS: un CMS hostil podría embeber un certificado adicional ajeno a la ruta real.
 
-Esto **no** es una validación contra la Lista de Confianza europea (TSL): se comprueba OCSP/CRL contra el emisor tal como aparece en el certificado (mejora futura T14, §10).
+La revocación no consulta la Lista de Confianza: se comprueba OCSP/CRL contra el emisor tal como aparece en el certificado. La TSL solo decide qué anclas se empaquetan (§2.7).
 
 ### 2.9 Validación formal PDF/A-1b (*preflight*)
 
@@ -418,6 +417,32 @@ Con la configuración por defecto (`application.yml`), una vez arrancada:
 - Estado de la aplicación (Actuator, solo `health`/`info` expuestos): <http://localhost:8963/actuator/health>, <http://localhost:8963/actuator/info>
 - Docker / Docker Compose: ver «Ejecución con Docker» más abajo.
 
+### Regenerar el almacén de confianza desde las Listas de Confianza (T14)
+
+Herramienta de mantenimiento, **no** una función del servidor: su código está en `src/test/java/com/coam/pdfvalidator/tools/tsl/` (lo prueba el `verify` normal, sin red) y se ejecuta con el *classpath* de test, así que nunca llega al jar ni a la imagen Docker. Un único comando:
+
+```bash
+./mvnw -q -Ptsl-sync
+```
+
+Descarga por HTTPS la LOTL de la UE (`https://ec.europa.eu/tools/lotl/eu-lotl.xml`) y la TSL española a la que apunta (`https://tsl.digital.gob.es/TSL.xml`), verifica la firma XML de las dos y **sustituye por completo** `src/main/resources/truststore/` (anclas `.crt`, `index.txt` y `SOURCES.md`; reglas de selección en §2.7). Si nada cambió en las listas, la salida es idéntica byte a byte (sin marcas de tiempo de ejecución; los ficheros se fijan a LF en `.gitattributes`), así que `git status` queda limpio. Después, `./mvnw verify` y revisar el diff de `SOURCES.md`.
+
+Comprobaciones de seguridad (cualquier fallo aborta **sin tocar** el almacén: todo se descarga, verifica y genera en memoria y solo al final se escribe, pasando por un directorio temporal):
+
+- **Descarga:** solo HTTPS con validación PKIX normal de la JDK y del nombre de host, sin seguir redirecciones, con plazos (conexión 20 s, respuesta 60 s, cuerpo 120 s) y tope de 20 MB. La confianza TLS es el `cacerts` de la JDK más **una** raíz fijada por SHA-256, AC RAIZ FNMT-RCM (`src/test/resources/.../tls-root-ac-raiz-fnmt-rcm.crt`, descargada de la sede de FNMT y con la misma huella que su registro en CCADB): `tsl.digital.gob.es` se sirve bajo ella y la JDK no la incluye. El TLS es defensa en profundidad; lo que hace fiable una lista es su firma.
+- **XML seguro:** con espacios de nombres, cualquier `DOCTYPE` rechazado (`disallow-doctype-decl`, lo que impide expansión de entidades y XXE), sin DTD, entidades ni esquemas externos, sin XInclude y con `FEATURE_SECURE_PROCESSING`.
+- **Firma:** exactamente un `ds:Signature` en todo el documento, hijo directo de la raíz (envolvente); su primera `Reference` es `URI=""` (el documento entero) con solo las transformaciones *enveloped-signature* y de canonicalización (una XPath que excluyera contenido se rechaza) y el resto de referencias son internas (`#id`); solo se registran como ID el `Id` de la raíz y el de `xades:SignedProperties`; validación con `javax.xml.crypto.dsig` de la JDK y su modo *secure validation* activo.
+- **Firmante:** `KeyInfo` debe traer exactamente un certificado, cuya SHA-256 se comprueba **antes** de usar su clave: para la LOTL, uno de los seis anunciados por la Comisión Europea en el Diario Oficial (OJ C/2026/1944), fijados en `TslSync.LOTL_SIGNER_SHA256`; para la TSL española, uno de los `ServiceDigitalIdentities` del puntero `OtherTSLPointer` de la LOTL ya verificada con `SchemeTerritory` `ES` y `MimeType` `application/vnd.etsi.tsl+xml` (nunca valores fijados en el código). El certificado firmante debe estar vigente y el `NextUpdate` de la lista debe ser futuro.
+- **Contenido:** `SchemeTerritory` `EU` y `ES`, solo identidades `X509Certificate`, deduplicación por SHA-256 y nunca un almacén vacío.
+
+**Pines de la LOTL y su rotación.** Las seis huellas se tomaron del primer `OtherTSLPointer` de la propia LOTL (2026-10-01), porque EUR-Lex no era accesible desde aquí. **Pendiente, a mano y una sola vez:** cotejarlas con la publicación OJ C/2026/1944 en EUR-Lex. Cuando la Comisión cambie sus certificados de firma, la herramienta falla con un mensaje que lo indica (*"The LOTL signer certificate … is not pinned … update TslSync.LOTL_SIGNER_SHA256"*); hay que tomar los nuevos certificados del aviso del Diario Oficial que los anuncie y actualizar ese conjunto (y su test). Las LOTL "pivote" de la rotación no se siguen automáticamente.
+
+**Tarea semanal** (`.github/workflows/tsl-sync.yml`): cada lunes a las 05:17 UTC (y a demanda, `workflow_dispatch`) ejecuta la herramienta con JDK 25 Temurin; si `src/main/resources/truststore/` cambió, ejecuta `./mvnw -B verify` sobre el resultado, crea la rama `chore/truststore-lotl-<n>-es-tsl-<m>` y abre (o actualiza) un *pull request* con `gh pr create` y el `GITHUB_TOKEN` (`permissions: contents: write, pull-requests: write`); si el `verify` falla, el PR se abre como borrador y la ejecución termina en error. Las acciones de terceros están fijadas por SHA de commit. Requisitos y límites:
+
+- En el repositorio debe estar activado **«Allow GitHub Actions to create and approve pull requests»** (*Settings → Actions → General → Workflow permissions*); sin ello falla el paso del PR.
+- Los PR abiertos con `GITHUB_TOKEN` no disparan `ci.yml`; la tarea ya ejecuta el `verify` y lo indica en el PR. Para lanzar la CI, basta cerrar y reabrir el PR.
+- Una ejecución fallida (lista caducada, firma inválida, firmante no fijado, red) es la alerta: no se abre PR y el almacén no cambia.
+
 ### Ejecución con Docker
 
 Requiere Docker con el daemon en marcha (no hace falta JDK ni Maven en el equipo).
@@ -470,7 +495,7 @@ Otras opciones: `-XX:+UseSerialGC` (sin hilos de GC paralelos, menor consumo en 
 
 **Endurecimiento.** Usuario no root (`app`, uid 10001); `read_only: true` con `/tmp` como `tmpfs` de 256 MB (única ruta escribible: directorio de trabajo de Tomcat, subidas multiparte y ficheros temporales de PDFBox); `security_opt: no-new-privileges:true`; `cap_drop: [ALL]`; `HEALTHCHECK` con `wget` sobre `/actuator/health` (Docker solo marca el contenedor como `unhealthy`: `restart: unless-stopped` reinicia los que terminan, no los no saludables); Actuator solo expone `health` e `info`.
 
-**Configuración por variables de entorno** (bloque `environment` de `docker-compose.yml`, comentado por defecto): `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR`, `PDFVALIDATOR_REVOCATION_TIMEOUT`, `PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT`, `PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT`, `SERVER_PORT`. Para añadir raíces de confianza propias, monta un directorio de solo lectura con un certificado por fichero (`volumes: ["./mi-truststore:/truststore:ro"]`) y apunta `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR=/truststore`; se suman a las raíces españolas empaquetadas (§2.7).
+**Configuración por variables de entorno** (bloque `environment` de `docker-compose.yml`, comentado por defecto): `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR`, `PDFVALIDATOR_REVOCATION_TIMEOUT`, `PDFVALIDATOR_ANALYSIS_MAX_CONCURRENT`, `PDFVALIDATOR_ANALYSIS_ACQUIRE_TIMEOUT`, `SERVER_PORT`. Para añadir raíces de confianza propias, monta un directorio de solo lectura con un certificado por fichero (`volumes: ["./mi-truststore:/truststore:ro"]`) y apunta `PDFVALIDATOR_TRUSTSTORE_EXTERNAL_DIR=/truststore`; se suman a las anclas empaquetadas (§2.7).
 
 **Verificación.** El job `docker` de CI construye la imagen, la arranca con los límites de producción, espera a `/actuator/health` = `UP` (hasta ~90 s), comprueba `GET /` = 200 y ejecuta la prueba de carga anterior; no se publica ninguna imagen. La imagen también se construyó y probó en un VPS real (ver más abajo).
 
@@ -588,7 +613,7 @@ Si la cadena **no** es `TRUSTED` (como en el ejemplo de arriba, `UNTRUSTED_ROOT`
 | `pdfvalidator.analysis.max-certificates-per-signature` | Certificados tomados de un mismo CMS (§2.5) | `50` |
 | `pdfvalidator.analysis.max-chain-length` | Certificados enlazados firmante → raíz al ordenar la cadena (§2.5) | `10` |
 | `pdfvalidator.analysis.max-pdfa-issues` | Incidencias PDF/A distintas que conserva el informe; el resto se resume en `TRUNCATED` (§2.9) | `200` |
-| `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las raíces españolas empaquetadas | (ninguno) |
+| `pdfvalidator.truststore.external-dir` | Directorio con certificados adicionales (uno por fichero, PEM o DER), añadidos a las anclas empaquetadas | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-path` | Fichero PKCS#12 con certificados de confianza adicionales | (ninguno) |
 | `pdfvalidator.truststore.pkcs12-password` | Contraseña del PKCS#12 anterior | (ninguna) |
 | `pdfvalidator.revocation.timeout` | Tope por petición OCSP/CRL (DNS + conexión + respuesta) (§2.8) | `2s` |
@@ -630,7 +655,7 @@ src/main/java/com/coam/pdfvalidator/
 
 src/main/resources/
 ├─ application.yml                Configuración (límite de subida 80 MB, Actuator, trust store opcional)
-├─ truststore/                    Anclas de confianza españolas empaquetadas (PEM, incluida una CA emisora no autofirmada) + SOURCES.md (procedencia y huellas)
+├─ truststore/                    Anclas de confianza generadas desde la TSL española (`.crt` en PEM) + index.txt + SOURCES.md (procedencia); no se editan a mano
 └─ static/                        Interfaz web "Validar"/"Firmar" -- sin frameworks, sin CDNs
    ├─ index.html                  Página única con ambas pestañas
    ├─ app.js                      Punto de entrada (tema + navegación entre pestañas)
@@ -644,6 +669,7 @@ src/main/resources/
 src/test/java/com/coam/pdfvalidator/
 ├─ fixtures/                      Generación de PDFs de prueba (CA de test, firma, cifrado…), TestHttpServer/TestRevocationResponder (servidor y respuestas OCSP/CRL reales)
 ├─ spike/                         Prueba de concepto inicial de verificación de firma
+├─ tools/tsl/                     Herramienta de mantenimiento TslSync (genera el truststore desde la LOTL/TSL, §4) y sus tests sin red
 ├─ domain/                        Tests del modelo de dominio
 │  └─ policy/                     SignatureVerdictPolicyTest (tabla de decisión completa)
 ├─ application/                   AnalyzePdfUseCaseTest (fakes) + AnalyzePdfUseCaseIntegrationTest (adaptadores reales)
@@ -677,6 +703,7 @@ odd/tasks/pdf-validator.md        Plan de tareas y evidencias de progreso
 | Datos del certificado firmante y su cadena (sujeto, emisor, fechas, URLs OCSP/CRL); DN legible y `commonName` propio (§2.5) | ✅ |
 | Sello de tiempo RFC 3161 (sello de firma; imprint, firma y confianza de la TSA) | ✅ |
 | Cadena de confianza contra almacén configurable (trust store) | ✅ |
+| Anclas generadas desde la LOTL de la UE y la TSL española, firmas XML verificadas, con regeneración semanal por PR (T14, §4) | ✅ |
 | Revocación OCSP / CRL (opcional, toda la ruta validada menos el ancla, plazo total 6 s, solo para cadena `TRUSTED`, guarda SSRF con anclaje de conexión) | ✅ |
 | Declaración XMP `pdfaid` (lectura) | ✅ |
 | Validación formal PDF/A-1b (*preflight*) | ✅ |
@@ -699,7 +726,7 @@ El proyecto se desarrolla con **TDD** (primero el test en rojo, luego la impleme
 
 Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una CA de pruebas en memoria firma documentos, y a partir de ellos se crean variantes manipuladas, con actualización incremental, rotadas, cifradas o corruptas. Así los tests son reproducibles y no dependen de ficheros con datos personales (los dos PDFs reales firmados usados para reproducir casos de FNMT y Camerfirma nunca se incorporaron al repositorio).
 
-**Estado actual:** 494 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
+**Estado actual:** 528 tests, todos en verde con `./mvnw verify` (que además genera el informe de cobertura de JaCoCo).
 
 | Suite | Qué comprueba |
 |---|---|
@@ -716,7 +743,9 @@ Los PDFs de prueba **se generan por código** (`fixtures/TestPdfFactory`): una C
 | `SignatureTimestampVerifierTest` | Sin sello → `absent()`, bytes ASN.1 corruptos → inválido con nota, TSA sin `timeStamping` → nota y `tsaTimeStampingEku=false`, cadena de la TSA (TSA primero) y EKU de un sello genuino, el adaptador nunca declara `trusted`, certificado de TSA no mapeable → se conserva el resto del resultado |
 | `X509CertificateInfoMapperTest` | Extensiones AIA/CDP mal formadas → sin URLs; DN legible sin `#16<hex>` con `emailAddress`; `commonName` sin escapes RFC 2253, con RDN multivalor, sin CN y con valor no cadena |
 | `PkixCertificateChainValidatorTest` | `TRUSTED`, `UNTRUSTED_ROOT`, `INCOMPLETE_CHAIN`, `EXPIRED`, `NOT_CHECKED`; certificado no parseable → `INCOMPLETE_CHAIN`; ancla no autofirmada (caso Camerfirma); cadena con solo el firmante y la CA intermedia como ancla (caso FNMT); `validatedPath` (cadena completa, ancla añadida, certificado ajeno excluido, vacía si no es `TRUSTED`) |
-| `TrustAnchorProviderTest` | El almacén empaquetado carga exactamente las 9 anclas de `truststore/SOURCES.md` (por huella SHA-256), vigentes en una fecha fija de referencia; directorio externo (PEM/DER, fichero inválido omitido, directorio inexistente) y PKCS#12 |
+| `TrustAnchorProviderTest` | El almacén empaquetado carga exactamente los ficheros de `truststore/index.txt`, cada uno documentado por su SHA-256 en `SOURCES.md`; contiene AC FNMT Usuarios y AC RAIZ DNIE 2 (aviso si una regeneración los pierde); todas las anclas vigentes y sin caducar en una fecha fija de referencia; directorio externo (PEM/DER, fichero inválido omitido, directorio inexistente) y PKCS#12 |
+| `SecureXmlTest`, `TrustedListLoaderTest` | (T14, sin red, listas firmadas en el test con `XMLSignatureFactory`) XML seguro: `DOCTYPE`, expansión de entidades y XXE rechazados sin leer el fichero; lista válida aceptada; contenido manipulado, firmante no fijado, firmante caducado, `NextUpdate` vencido, segunda firma, primera referencia que no cubre el documento, transformación XPath que excluye contenido y lista sin firmar → rechazados |
+| `AnchorSelectorTest`, `TslSyncTest`, `HttpsFetcherTest` | (T14) Filtro: `CA/QC` `granted` con `ForeSignatures`, `QCForESig` o sin restricción y `TSA/QTST` `granted` dentro; solo sellos, solo web, `withdrawn`, otros tipos y certificados caducados fuera; deduplicación por SHA-256; nombres de fichero legibles y orden estable; extremo a extremo LOTL → puntero ES → TSL con salida idéntica en dos ejecuciones; TSL firmada por un certificado no anunciado, LOTL no fijada (mensaje para actualizar los pines), puntero no HTTPS o ausente → error; el directorio se sustituye entero y queda intacto si algo falla; solo HTTPS y confianza TLS = `cacerts` + raíz FNMT fijada |
 | `PreflightPdfaValidatorTest` | `NON_COMPLIANT` con códigos reales (`3.1.3`, `2.4.3`, `7.1`), `COMPLIANT` con `OutputIntent` sRGB del JDK, corrupto/cifrado → `NOT_VALIDATED`, no-PDF → `InvalidPdfException`, más de 200 incidencias deduplicadas y truncadas |
 | `AnalyzePdfUseCaseTest` | Con *fakes* escritos a mano: ensamblado del informe, el `validationTime` (solo un sello de confianza lo mueve: TSA no de confianza, sin EKU, `genTime` futuro con tolerancia de 5 minutos, imprint/firma inválidos, sin cadena de TSA, fallo inesperado; la fecha declarada nunca se usa) y el motivo `VALIDATED_AT_CURRENT_TIME`, revocación desactivada/activada y su puerta de confianza (sin invocar al *checker* si la cadena no es `TRUSTED`; se usa `validatedPath`), PDF/A-2/3 → `NOT_VALIDATED` sin invocar a *preflight*, aislamiento de fallos por sección con `SectionError` y textos fijos, veredicto final, `ANALYSIS_INCOMPLETE`, propagación de `EncryptedPdfException`/`InvalidPdfException`, `analyzedAt` del `Clock` |
 | `AnalyzePdfUseCaseIntegrationTest` | Adaptadores reales contra un PDF firmado y sellado en tiempo real por una TSA emitida bajo la raíz de confianza: integridad `INTACT`, cadena `TRUSTED`, sello `trusted`, veredicto `VALID` |
@@ -809,9 +838,9 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 - **La cadena de certificados se extrae siempre que el CMS se pudo parsear**, aunque la verificación falle; todo resultado no `INTACT` lleva un motivo legible.
 - **`ETSI.RFC3161` (sello de tiempo de *documento*) se mantiene `UNSUPPORTED`.** Verificarlo exigiría un camino distinto (interpretar el CMS como `TimeStampToken`, sin cadena de firmante habitual), y el sello de **firma** (§2.6) ya cubre lo que pide el TFM: demostrar cuándo existía una firma. Es una decisión consciente, no una omisión.
 - **Nombres de certificado con Bouncy Castle `X500Name` + `BCStyle` y `commonName` en el dominio.** El RFC 2253 de la JDK vuelca `emailAddress` como `#16<hex>`; y como `api` no puede depender de `infrastructure`, el CN se extrae en el adaptador y se expone desde `CertificateInfo` (§2.5).
-- **Anclas de confianza no autofirmadas.** Una Lista de Confianza de la UE puede publicar una CA emisora cualificada sin su raíz (caso Camerfirma), y un PDF real firmado con FNMT no trae la CA intermedia en el CMS aunque la raíz esté empaquetada; en ambos casos la CA emisora se empaqueta como ancla, y el `CertPathBuilder` de la JDK lo soporta de forma nativa (§2.7).
-- **Solo se empaquetan certificados extraídos de la propia TSL** (`https://tsl.digital.gob.es/TSL.xml`, localizada a través de la LOTL de la UE) o descargados de la web oficial de su autoridad, y siempre verificados por huella de forma independiente; nunca un certificado visto en un PDF de usuario.
-- **Sin lista de confianza europea (TSL).** La cadena se valida contra un almacén de raíces configurable con las CA españolas.
+- **Anclas de confianza no autofirmadas.** Una Lista de Confianza de la UE publica la CA emisora cualificada (y la unidad TSA) sin su raíz, y un PDF real firmado con FNMT no trae la CA intermedia en el CMS; el `CertPathBuilder` de la JDK acepta como ancla cualquier certificado configurado (§2.7).
+- **Anclas generadas desde las Listas de Confianza oficiales, con una herramienta de mantenimiento y no en el servidor (T14).** Sustituye a la curación manual de 9 anclas. Se descartó que el servidor descargara la TSL en ejecución: añadiría tráfico saliente, dependencia de red al arrancar y una caché en un contenedor de solo lectura. En su lugar, `TslSync` (§4) verifica la LOTL contra los firmantes anunciados en el Diario Oficial, la TSL española contra los firmantes que anuncia la LOTL ya verificada, y regenera el almacén empaquetado; una tarea semanal propone el cambio como PR, que revisa una persona. Vive en `src/test/java` porque así se prueba con el `verify` normal y nunca llega al jar, sin un módulo Maven aparte; a cambio, SpotBugs, PMD y JaCoCo (que solo analizan `src/main`) no la cubren. La verificación usa solo `javax.xml.crypto.dsig` de la JDK (sin la dependencia DSS).
+- **Qué servicios son anclas.** `CA/QC` `granted` para firma electrónica (`ForeSignatures`, `QCForESig` o sin restricción de uso) y `TSA/QTST` `granted`; se excluyen las CA solo de sellos o de autenticación web (p. ej. AC CAMERFIRMA FOR LEGAL PERSONS - 2016 y AC Componentes Informáticos, que estaban en el almacén manual). Un sello electrónico emitido por ellas deja de llegar a `TRUSTED` salvo que se añada como ancla externa (§2.7).
 - **PDF/A-1b únicamente.** *Preflight* solo valida PDF/A-1b. Para PDF/A-2/3 se informa la declaración XMP y `NOT_VALIDATED` (`PDFA_PART_NOT_SUPPORTED`), sin validar formalmente.
 - **(⏳ mejora futura, T14) Carga automática de anclas desde la Lista de Confianza española.** En vez de curar manualmente cada ancla, una tarea futura opcional podría descargar y verificar la TSL (resuelta a través de la LOTL de la UE), interpretar los `TSPService` de tipo CA/QC con su estado (`granted`/`withdrawn`), verificar la firma XML de la propia TSL y cachear el resultado con vuelta al almacén empaquetado si no hay red. No implementado; ver T14 en `odd/tasks/pdf-validator.md`.
 
@@ -888,6 +917,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-10-01 | **(T24)** Análisis estático: triaje y puerta (§7). SpotBugs pasa de 26 avisos a 0 y PMD de 52 a 24 (solo prioridad 3 de complejidad); CPD de 2 duplicados a 0. Se corrigieron los defectos reales (copias defensivas en los DTO, subida sin nombre de fichero, que antes daba 500, un `SecureRandom` compartido para los nonce OCSP, causa conservada al relanzar, colecciones vacías en lugar de `null`, `PdfBoxDocumentReader` `final`) y se compartieron el bucle de URL de OCSP/CRL y el lector de la declaración PDF/A. Dos exclusiones de SpotBugs justificadas en `config/spotbugs/exclude.xml`. Las tres herramientas son ahora una puerta de `verify` (SpotBugs en *Medium*, PMD en prioridad 1-2, CPD en 100 tokens), con comprobación negativa de cada una. 485 tests. |
 | 2026-10-01 | **(T25)** Diapositivas actualizadas a 17: capturas nuevas de «Validar» (sello de tiempo de confianza, fecha declarada no verificada), diapositiva de páginas agrupadas y recortes, calidad con 486 tests y las puertas de análisis estático, y diapositiva de seguridad (auditoría, pentest y correcciones). PDF y PPTX en `docs/` (§9). |
 | 2026-10-01 | **(T26)** (a) El certificado de la TSA ya no tiene que ir dentro del sello: un sello pedido con `certReq=false` (RFC 3161 §2.4.1) se resuelve buscando el certificado en el CMS de la firma y, después, entre los anclas de confianza (nuevo puerto de dominio `TrustedCertificateSource`, que implementa `TrustAnchorProvider`), con la condición de coincidir con el identificador del firmante del sello **y** con el hash `ESSCertID`/`ESSCertIDv2` firmado por la TSA, de modo que no se puede sustituir por otro certificado; la decisión de confianza sigue en `AnalyzePdfUseCase` (§2.6). (b) Seguimientos de T12f: `server.tomcat.connection-timeout=20s` libera el hueco de análisis de un cliente que deja de enviar el cuerpo, y `deploy/Caddyfile` añade `read_body 10m` como plazo máximo de toda la subida (validado con `caddy validate` en la imagen fijada 2.11.4; `read_body_idle` no existe en esa versión); prueba de que las peticiones no multiparte no compiten por el permiso; Javadoc de `AnalysisProperties` con los valores reales; filas del historial sobre la guarda del 95 % y el `tmpfs` corregidas (§4, §7). 486 → 494 tests. |
+| 2026-10-02 | **(T14)** El almacén de confianza se genera desde las Listas de Confianza oficiales: la herramienta de mantenimiento `TslSync` (`./mvnw -q -Ptsl-sync`, fuera del jar) descarga la LOTL de la UE y la TSL española, verifica sus firmas XML contra firmantes fijados (los seis del Diario Oficial para la LOTL; los que anuncia la LOTL para la TSL) con XML seguro, HTTPS, tope de tamaño y comprobación de `NextUpdate`, y regenera `src/main/resources/truststore/` (`.crt`, `index.txt`, `SOURCES.md`) de forma determinista. `TrustAnchorProvider` lee `index.txt`. Las 9 anclas curadas a mano se sustituyen por 145 (77 `CA/QC` de firma electrónica y 68 `TSA/QTST`; LOTL n.º 395, TSL n.º 189); quedan fuera AC CAMERFIRMA FOR LEGAL PERSONS - 2016 y AC Componentes Informáticos (solo sellos/web). Tarea semanal `.github/workflows/tsl-sync.yml` que abre un PR si cambia. Pendiente a mano: cotejar los pines con OJ C/2026/1944 y activar «Allow GitHub Actions to create and approve pull requests» (§2.7, §4, §10). 494 → 528 tests. |
 
 ## 12. Repositorio y licencia
 
