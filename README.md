@@ -437,14 +437,14 @@ Comprobaciones de seguridad (cualquier fallo aborta **sin tocar** el almacén: t
 
 **Pines de la LOTL y su rotación.** Las seis huellas se tomaron del primer `OtherTSLPointer` de la propia LOTL (2026-10-01), porque EUR-Lex no era accesible desde aquí. **Pendiente, a mano y una sola vez:** cotejarlas con la publicación OJ C/2026/1944 en EUR-Lex. Cuando la Comisión cambie sus certificados de firma, la herramienta falla con un mensaje que lo indica (*"The LOTL signer certificate … is not pinned … update TslSync.LOTL_SIGNER_SHA256"*); hay que tomar los nuevos certificados del aviso del Diario Oficial que los anuncie y actualizar ese conjunto (y su test). Las LOTL "pivote" de la rotación no se siguen automáticamente.
 
-Huellas SHA-256 fijadas (`TslSync.LOTL_SIGNER_SHA256`), para cotejar con OJ C/2026/1944 (<https://eur-lex.europa.eu/eli/C/2026/1944/oj>):
+Huellas SHA-256 fijadas (`TslSync.LOTL_SIGNER_SHA256`, donde figuran sin espacios), separadas por pares de dígitos como en el Diario Oficial, para cotejar con OJ C/2026/1944 (<https://eur-lex.europa.eu/eli/C/2026/1944/oj>):
 
-- `d2064fdd70f6982dcc516b86d9d5c56aea939417c624b2e478c0b29de54f8474`
-- `e0a620fbb6747362bb933ac44169d676a553444716cf5f31605f12a22b8396b1`
-- `c0641c4f7d56c431b1c924742db7fce9c1eef7d7fd212113a2768486b3abcdc5`
-- `df7e29360c34b2b8d6d5f40325c1d4d12c9922cecd33b7407674a74b2b3ca1e5`
-- `b63d416744e7098bf9ec2caa596a93bc2468e37f8284ba65ecc061711bcbaa18`
-- `236103f03a8031ae8f47f9059bf8de38564cdbfebedde4a597d50f8980aa653b`
+- `d2 06 4f dd 70 f6 98 2d cc 51 6b 86 d9 d5 c5 6a ea 93 94 17 c6 24 b2 e4 78 c0 b2 9d e5 4f 84 74`
+- `e0 a6 20 fb b6 74 73 62 bb 93 3a c4 41 69 d6 76 a5 53 44 47 16 cf 5f 31 60 5f 12 a2 2b 83 96 b1`
+- `c0 64 1c 4f 7d 56 c4 31 b1 c9 24 74 2d b7 fc e9 c1 ee f7 d7 fd 21 21 13 a2 76 84 86 b3 ab cd c5`
+- `df 7e 29 36 0c 34 b2 b8 d6 d5 f4 03 25 c1 d4 d1 2c 99 22 ce cd 33 b7 40 76 74 a7 4b 2b 3c a1 e5`
+- `b6 3d 41 67 44 e7 09 8b f9 ec 2c aa 59 6a 93 bc 24 68 e3 7f 82 84 ba 65 ec c0 61 71 1b cb aa 18`
+- `23 61 03 f0 3a 80 31 ae 8f 47 f9 05 9b f8 de 38 56 4c db fe be dd e4 a5 97 d5 0f 89 80 aa 65 3b`
 
 **Alcance: solo España.** La herramienta sigue únicamente el puntero de la LOTL a la Lista de Confianza española (`SchemeTerritory` `ES`). Una firma de una CA cualificada de otro Estado miembro de la UE se informa como `UNTRUSTED_ROOT` (veredicto `NOT_ADMITTED`), aunque esa CA figure en la lista de su país. Ampliarlo al resto de países sería seguir los demás punteros de la LOTL con la misma verificación; queda fuera del alcance del TFM por decisión explícita.
 
