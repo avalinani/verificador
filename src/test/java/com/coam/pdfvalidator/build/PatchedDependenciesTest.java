@@ -9,7 +9,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * T18b: Spring Boot 4.1.1 (the latest release) still manages Tomcat 11.0.24
  * and Jackson 3.1.5 / 2.21.5, which OSV.dev flags (Tomcat CVE-2026-65905,
  * CVE-2026-65182, CVE-2026-68525; Jackson 3 CVE-2026-68497, CVE-2026-83557,
- * CVE-2026-19032; Jackson 2 fixed in 2.21.6). The pom overrides the managed
+ * CVE-2026-19032; Jackson 2 fixed in 2.21.6, and in 2.21.7 for the Snyk-reported
+ * CVE-2026-89407, CVE-2026-89425, CVE-2026-91776 and CVE-2026-91777). The pom overrides the managed
  * versions; this test fails if the override is dropped or a BOM bump
  * regresses the resolved versions below the patched ones.
  */
@@ -31,7 +32,7 @@ class PatchedDependenciesTest {
     @Test
     void jackson2IsAtLeastTheFirstPatchedRelease() {
         String version = com.fasterxml.jackson.core.json.PackageVersion.VERSION.toString();
-        assertThat(atLeast(version, 2, 21, 6)).as("resolved Jackson 2 %s", version).isTrue();
+        assertThat(atLeast(version, 2, 21, 7)).as("resolved Jackson 2 %s", version).isTrue();
     }
 
     private static boolean atLeast(String version, int major, int minor, int patch) {
