@@ -129,14 +129,20 @@ jobs:
           else
             gh pr edit "$branch" --body-file "$RUNNER_TEMP/pr-body.md"
             # Keep the draft state in step with this run's verify result.
+            # A PR already in the requested state is not an error worth failing the run for.
             if [ "$VERIFY_RESULT" = "passed" ]; then
-              gh pr ready "$branch"
+              gh pr ready "$branch" || echo "::warning::Could not mark the PR for ${branch} as ready."
             else
-              gh pr ready "$branch" --undo
+              gh pr ready "$branch" --undo || echo "::warning::Could not turn the PR for ${branch} into a draft."
             fi
           fi
 
-          # Close the PRs of older regenerations: the new one supersedes them.
+          # Close the PRs of older regenerations, but only when the new one passed
+          # verify: a failing draft must never replace a mergeable older PR.
+          if [ "$VERIFY_RESULT" != "passed" ]; then
+            echo "verify failed: older trust-store PRs are left open."
+            exit 0
+          fi
           pr_url=$(gh pr view "$branch" --json url --jq '.url')
           gh pr list --state open --limit 100 --json number,headRefName \
             --jq '.[] | select(.headRefName | startswith("chore/truststore-lotl-")) | "\(.number) \(.headRefName)"' |
