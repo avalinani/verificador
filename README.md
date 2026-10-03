@@ -364,7 +364,7 @@ Permite firmar un PDF con el propio certificado del usuario (DNIe, FNMT, ...) us
 | Servidor embebido | Apache Tomcat (sobrescrito, ver «Dependencias parcheadas» en §10) | 11.0.26 |
 | Serialización JSON | Jackson 3 / Jackson 2 (esta última vía springdoc; sobrescritas, ver §10) | 3.1.7 / 2.21.6 |
 | Documentación API | springdoc-openapi (Swagger UI) | 3.1.1 |
-| Tests | JUnit 5, AssertJ, Mockito, ArchUnit | — / 1.5.1 |
+| Tests | JUnit 6 (Jupiter), AssertJ, Mockito, ArchUnit | 6.0.3 / 3.27.7 / 5.23.0 / 1.5.1 |
 | Cobertura | JaCoCo (con umbral mínimo que hace fallar la compilación) | 0.8.15 |
 | Análisis estático | SpotBugs + FindSecBugs, PMD + CPD (solo informan), CodeQL en CI | 4.10.4 / 1.14.0, 7.28.0, — |
 | Pruebas de mutación | PIT (perfil Maven `mutation`, fuera de la compilación normal) | 1.30.0 |
