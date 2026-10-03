@@ -79,15 +79,35 @@ jobs:
           lotl_seq=$(grep '^| EU List of Trusted Lists' "$sources" | awk -F'|' '{gsub(/ /, "", $4); print $4}')
           tsl_seq=$(grep '^| Spanish Trusted List' "$sources" | awk -F'|' '{gsub(/ /, "", $4); print $4}')
           anchors=$(grep -c '\.crt$' src/main/resources/truststore/index.txt)
+
+          # Never build a branch or a PR from values that did not parse.
+          if ! [[ "$lotl_seq" =~ ^[0-9]+$ && "$tsl_seq" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read the sequence numbers from ${sources} (LOTL='${lotl_seq}', ES TSL='${tsl_seq}'); both must be digits."
+            exit 1
+          fi
+
           branch="chore/truststore-lotl-${lotl_seq}-es-tsl-${tsl_seq}"
           title="chore(truststore): regenerate from LOTL seq ${lotl_seq} / ES TSL seq ${tsl_seq}"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
-          git add -A src/main/resources/truststore
-          git commit -m "$title"
-          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          # The branch name is keyed by both sequence numbers and the tool is deterministic, so an
+          # existing branch already holds this exact content (plus any commit a maintainer added).
+          # Never push over it: keep it and only refresh the PR. ls-remote exits 2 when absent.
+          if git ls-remote --exit-code --heads "$remote" "$branch" > /dev/null 2>&1; then
+            echo "Branch $branch already exists on the remote; it is kept as is."
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              echo "::error::Could not query the remote for branch ${branch} (git ls-remote exit code ${status})."
+              exit 1
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -c "$branch"
+            git add -A src/main/resources/truststore
+            git commit -m "$title"
+            git push "$remote" "$branch"
+          fi
 
           {
             echo "Weekly regeneration of \`src/main/resources/truststore/\` by \`TslSync\` (\`./mvnw -q -Ptsl-sync\`)."
@@ -108,10 +128,28 @@ jobs:
               --body-file "$RUNNER_TEMP/pr-body.md" $draft
           else
             gh pr edit "$branch" --body-file "$RUNNER_TEMP/pr-body.md"
+            # Keep the draft state in step with this run's verify result.
+            if [ "$VERIFY_RESULT" = "passed" ]; then
+              gh pr ready "$branch"
+            else
+              gh pr ready "$branch" --undo
+            fi
           fi
+
+          # Close the PRs of older regenerations: the new one supersedes them.
+          pr_url=$(gh pr view "$branch" --json url --jq '.url')
+          gh pr list --state open --limit 100 --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("chore/truststore-lotl-")) | "\(.number) \(.headRefName)"' |
+          while read -r number head; do
+            if [ "$head" != "$branch" ]; then
+              gh pr close "$number" --delete-branch \
+                --comment "Superseded by ${pr_url} (branch \`${branch}\`)." ||
+                echo "::warning::Could not close superseded PR #${number} (${head})."
+            fi
+          done
 
       - name: Fail the run when the regenerated store breaks the build
         if: steps.verify.outputs.result == 'failed'
         run: |
-          echo "./mvnw -B verify failed on the regenerated trust store; the pull request was opened as a draft."
+          echo "./mvnw -B verify failed on the regenerated trust store; the pull request (new or already open) is left as a draft."
           exit 1
