@@ -362,7 +362,7 @@ Permite firmar un PDF con el propio certificado del usuario (DNIe, FNMT, ...) us
 | Validación PDF/A | Apache PDFBox *preflight* (PDF/A-1b) | 3.0.8 |
 | Criptografía | Bouncy Castle `bcprov` / `bcpkix` (jdk18on) | 1.86 |
 | Servidor embebido | Apache Tomcat (sobrescrito, ver «Dependencias parcheadas» en §10) | 11.0.26 |
-| Serialización JSON | Jackson 3 / Jackson 2 (esta última vía springdoc; sobrescritas, ver §10) | 3.1.7 / 2.21.6 |
+| Serialización JSON | Jackson 3 / Jackson 2 (esta última vía springdoc; sobrescritas, ver §10) | 3.1.7 / 2.21.7 |
 | Documentación API | springdoc-openapi (Swagger UI) | 3.1.1 |
 | Tests | JUnit 6 (Jupiter), AssertJ, Mockito, ArchUnit | 6.0.3 / 3.27.7 / 5.23.0 / 1.5.1 |
 | Cobertura | JaCoCo (con umbral mínimo que hace fallar la compilación) | 0.8.15 |
@@ -837,7 +837,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 - **Java 25 en lugar de 21.** Java 25 es la LTS más reciente (soporte hasta 2031) y está dentro del rango soportado por Spring Boot 4.1 (17–26). Aporta mejoras útiles en una VM de poca memoria, como las *compact object headers*. Se descartó Java 27 porque no es LTS y queda fuera del rango soportado.
 - **OpenLogic en local, Temurin en CI y contenedor.** Las dos distribuciones son OpenJDK con la misma licencia (GPLv2 + Classpath Exception) y la misma política criptográfica (`crypto.policy=unlimited`); no hay diferencias funcionales para el proyecto.
 - **Límite de concurrencia como filtro de servlet (*bulkhead*), no en el controlador.** Spring lee la subida multiparte antes de invocar al controlador; el filtro toma el permiso antes y se aplica a toda petición `multipart/*` en cualquier ruta, porque comparar la URL exacta se podía evadir con variantes de ruta (`;jsessionid=x`, `%61nalyze`). Se prefirió limitar la concurrencia a usar ficheros temporales de PDFBox para acotar la memoria (§4).
-- **Segundo análisis de dependencias con Snyk (2026-10-03).** Además de OSV.dev, el proyecto se analiza con Snyk. Encontró 5 avisos (2 altos, 3 medios) en Jackson 2, transitivo vía springdoc, y en logback; ninguno es explotable en este servicio. Análisis completo, motivos y propuesta de actuación en [`docs/seguridad/snyk-2026-10-03.md`](docs/seguridad/snyk-2026-10-03.md).
+- **Segundo análisis de dependencias con Snyk (2026-10-03).** Además de OSV.dev, el proyecto se analiza con Snyk. Encontró 5 avisos (2 altos, 3 medios) en Jackson 2, transitivo vía springdoc, y en logback; ninguno es explotable en este servicio. Jackson 2 se actualizó a 2.21.7 y queda solo el de logback, aceptado porque no se usa `SiftingAppender` ni MDC. Análisis completo y motivos en [`docs/seguridad/snyk-2026-10-03.md`](docs/seguridad/snyk-2026-10-03.md).
 
 **Arquitectura y errores**
 
@@ -938,6 +938,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 | 2026-10-02 | Documentados en §4 las huellas fijadas de la LOTL (para cotejarlas con el Diario Oficial) y el alcance limitado a la Lista de Confianza española: las firmas de CA de otros países de la UE salen `NOT_ADMITTED`. |
 | 2026-10-02 | Diapositivas actualizadas (17): 528 tests, almacén de confianza generado desde la Lista de Confianza oficial con actualización semanal, y alcance limitado a CA españolas. PDF y PPTX en `docs/` (§9). |
 | 2026-10-03 | **(T27)** (a) `TrustAnchorProvider` falla al arrancar si `truststore/index.txt` no enumera ninguna ancla (antes el servicio arrancaba sin anclas empaquetadas y todas las firmas daban `UNTRUSTED_ROOT`); el análisis del índice es el método `parseIndex`, con tests (§2.7, §7). (b) Endurecimiento de `tsl-sync.yml`: sin `git push --force` (la rama existente se conserva), validación de los números de secuencia, estado de borrador sincronizado con el `verify`, mensaje final veraz, cierre de los PR superados y documentación del correo de GitHub ante ejecuciones fallidas (§4). 528 → 532 tests. |
+| 2026-10-03 | Jackson 2 (transitivo vía springdoc) sube a 2.21.7 por cuatro CVE detectados por Snyk; `PatchedDependenciesTest` exige esa versión mínima. Análisis de Snyk documentado en `docs/seguridad/snyk-2026-10-03.md` (§10). |
 
 ## 12. Repositorio y licencia
 
