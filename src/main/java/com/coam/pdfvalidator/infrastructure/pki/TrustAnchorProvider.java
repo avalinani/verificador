@@ -138,21 +138,34 @@ public final class TrustAnchorProvider implements TrustedCertificateSource {
     }
 
     private static List<String> bundledAnchorResources() throws IOException {
-        List<String> resources = new ArrayList<>();
         try (InputStream in = TrustAnchorProvider.class.getClassLoader().getResourceAsStream(BUNDLED_INDEX)) {
             if (in == null) {
                 throw new IOException("Bundled trust anchor index not found on the classpath: " + BUNDLED_INDEX);
             }
-            for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
-                String fileName = line.strip();
-                if (fileName.isEmpty() || fileName.startsWith("#")) {
-                    continue;
-                }
-                if (!SAFE_FILE_NAME.matcher(fileName).matches()) {
-                    throw new IOException("Invalid entry in " + BUNDLED_INDEX + ": " + fileName);
-                }
-                resources.add("truststore/" + fileName);
+            return parseIndex(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * Parses the content of the bundled index into classpath resource names, in order. Blank lines
+     * and {@code #} comments are skipped; an index that lists nothing is rejected, because the
+     * service would otherwise start with zero bundled anchors and report every signature as
+     * untrusted.
+     */
+    static List<String> parseIndex(String content) throws IOException {
+        List<String> resources = new ArrayList<>();
+        for (String line : content.split("\\R")) {
+            String fileName = line.strip();
+            if (fileName.isEmpty() || fileName.startsWith("#")) {
+                continue;
             }
+            if (!SAFE_FILE_NAME.matcher(fileName).matches()) {
+                throw new IOException("Invalid entry in " + BUNDLED_INDEX + ": " + fileName);
+            }
+            resources.add("truststore/" + fileName);
+        }
+        if (resources.isEmpty()) {
+            throw new IOException("Bundled trust anchor index lists no trust anchors: " + BUNDLED_INDEX);
         }
         return resources;
     }

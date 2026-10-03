@@ -4,6 +4,7 @@ import com.coam.pdfvalidator.fixtures.TestPki;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -23,6 +24,7 @@ import java.util.Locale;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link TrustAnchorProvider#bundled()} loads exactly the classpath {@code
@@ -202,5 +204,36 @@ class TrustAnchorProviderTest {
         } catch (java.security.cert.CertificateEncodingException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Test
+    void parseIndexReturnsTheEntriesInOrderSkippingCommentsAndBlankLines() throws Exception {
+        String content = "# generated\n\nroot-a.crt\n  \n# note\nroot-b.crt\r\nroot-c.crt\n";
+
+        assertThat(TrustAnchorProvider.parseIndex(content))
+                .containsExactly("truststore/root-a.crt", "truststore/root-b.crt", "truststore/root-c.crt");
+    }
+
+    @Test
+    void parseIndexRejectsAnEmptyIndex() {
+        assertThatThrownBy(() -> TrustAnchorProvider.parseIndex(""))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("lists no trust anchors")
+                .hasMessageContaining(TrustAnchorProvider.BUNDLED_INDEX);
+    }
+
+    @Test
+    void parseIndexRejectsAnIndexWithOnlyCommentsAndBlankLines() {
+        assertThatThrownBy(() -> TrustAnchorProvider.parseIndex("# generated\n\n   \n# nothing here\n"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("lists no trust anchors");
+    }
+
+    @Test
+    void parseIndexRejectsAnInvalidEntry() {
+        assertThatThrownBy(() -> TrustAnchorProvider.parseIndex("root-a.crt\n../evil.crt\n"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Invalid entry")
+                .hasMessageContaining("../evil.crt");
     }
 }
