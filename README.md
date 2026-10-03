@@ -832,6 +832,7 @@ Demostración en vivo: <https://vps-651608c6.vps.ovh.net/>
 - **Java 25 en lugar de 21.** Java 25 es la LTS más reciente (soporte hasta 2031) y está dentro del rango soportado por Spring Boot 4.1 (17–26). Aporta mejoras útiles en una VM de poca memoria, como las *compact object headers*. Se descartó Java 27 porque no es LTS y queda fuera del rango soportado.
 - **OpenLogic en local, Temurin en CI y contenedor.** Las dos distribuciones son OpenJDK con la misma licencia (GPLv2 + Classpath Exception) y la misma política criptográfica (`crypto.policy=unlimited`); no hay diferencias funcionales para el proyecto.
 - **Límite de concurrencia como filtro de servlet (*bulkhead*), no en el controlador.** Spring lee la subida multiparte antes de invocar al controlador; el filtro toma el permiso antes y se aplica a toda petición `multipart/*` en cualquier ruta, porque comparar la URL exacta se podía evadir con variantes de ruta (`;jsessionid=x`, `%61nalyze`). Se prefirió limitar la concurrencia a usar ficheros temporales de PDFBox para acotar la memoria (§4).
+- **Segundo análisis de dependencias con Snyk (2026-10-03).** Además de OSV.dev, el proyecto se analiza con Snyk. Encontró 5 avisos (2 altos, 3 medios) en Jackson 2, transitivo vía springdoc, y en logback; ninguno es explotable en este servicio. Análisis completo, motivos y decisión en [`docs/seguridad/snyk-2026-10-03.md`](docs/seguridad/snyk-2026-10-03.md).
 
 **Arquitectura y errores**
 
