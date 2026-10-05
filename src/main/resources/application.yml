@@ -2,6 +2,13 @@
 # other local servers (e.g. WildFly). Override with SERVER_PORT or --server.port.
 server:
   port: 8963
+  # Behind Caddy (deploy/Caddyfile) HTTPS ends at the proxy, which forwards over plain HTTP on
+  # loopback with X-Forwarded-Proto/-Host/-For. "native" lets Tomcat's RemoteIpValve apply them, so
+  # generated absolute URLs (e.g. the OpenAPI "servers" entry used by Swagger UI's "Try it out")
+  # are https://<public host> instead of http://. The valve only trusts those headers from internal
+  # proxy addresses (loopback and private ranges by default); the app publishes its port on
+  # 127.0.0.1 only, so no client can reach it directly to spoof them.
+  forward-headers-strategy: native
   tomcat:
     # Bounded concurrency keeps thread stacks, per-request heap and /tmp usage
     # inside the container memory budget (see Dockerfile). Override with
